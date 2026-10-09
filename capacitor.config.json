@@ -1,0 +1,25 @@
+{
+  "appId": "com.animemod.otakuhub",
+  "appName": "أنمي MOD",
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true,
+    "allowNavigation": [
+      "*.run.app",
+      "*.anilist.co",
+      "*.myanimelist.net",
+      "*.googleapis.com",
+      "*.firebaseio.com",
+      "*.vidlink.pro",
+      "*.autoembed.cc",
+      "*.2embed.cc"
+    ]
+  },
+  "android": {
+    "allowMixedContent": true,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": true
+  }
+}
