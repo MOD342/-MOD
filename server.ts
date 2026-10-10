@@ -39,8 +39,7 @@ async function startServer() {
     next();
   });
 
-  // تهيئة مجدول المهام التلقائي (Task Scheduling عبر node-cron)
-  schedulerService.init();
+  // وضع البث المباشر الفوري (Zero-Cache Mode): تم إيقاف التخزين المؤقت المسبق
 
   // الاتصال بقاعدة البيانات بشكل غير حاصر للتأكد من إطلاق الخادم فوراً وبسرعة قصوى
   connectDB().catch(err => {
@@ -51,7 +50,7 @@ async function startServer() {
   app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Cache-Control, Pragma');
     if (req.method === 'OPTIONS') {
       res.sendStatus(200);
     } else {
@@ -62,18 +61,18 @@ async function startServer() {
   // Middleware لمعالجة JSON
   app.use(express.json());
 
-  // توجيه ترويسات التخزين المؤقت لطلبات الـ API لتحسين سرعة التصفح وتخفيف الضغط
+  // منع أي تخزين مؤقت لطلبات الـ API لضمان جلب البيانات الحية مباشرة في كل مرة
   app.use('/api', (req: Request, res: Response, next: NextFunction) => {
-    if (req.method === 'GET') {
-      res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
-    }
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
     next();
   });
 
   // توجيه الطلبات الخاصة بالـ API
   app.use('/api', apiRoutes);
 
-  // مسارات تطبيق الويب التقدمي (PWA) لتمكين تثبيت التطبيق
+  // مسارات تطبيق الويب التقدمي (PWA) لتمكين تثبيت التطبيق بدون أي كاش قديم
   app.get('/manifest.json', (req: Request, res: Response) => {
     res.setHeader('Content-Type', 'application/json');
     res.send({
@@ -102,58 +101,19 @@ async function startServer() {
 
   app.get('/sw.js', (req: Request, res: Response) => {
     res.setHeader('Content-Type', 'application/javascript');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.send(`
-const CACHE_NAME = 'anime-mod-cache-v8';
-const ASSETS_TO_CACHE = [
-  '/',
-  '/index.html',
-  '/manifest.json'
-];
-
-self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(ASSETS_TO_CACHE).catch(() => {});
-    })
-  );
+self.addEventListener('install', () => {
   self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((cacheNames) => {
-      return Promise.all(
-        cacheNames.map((cache) => {
-          if (cache !== CACHE_NAME) {
-            return caches.delete(cache);
-          }
-        })
-      );
-    })
+      return Promise.all(cacheNames.map((cache) => caches.delete(cache)));
+    }).then(() => self.registration.unregister())
   );
   self.clients.claim();
-});
-
-self.addEventListener('fetch', (event) => {
-  const url = new URL(event.request.url);
-  if (event.request.method !== 'GET' || url.pathname.startsWith('/api') || url.pathname.includes('chrome-extension')) {
-    return;
-  }
-  event.respondWith(
-    fetch(event.request)
-      .then((response) => {
-        if (response && response.status === 200 && response.type === 'basic') {
-          const responseToCache = response.clone();
-          caches.open(CACHE_NAME).then((cache) => {
-            cache.put(event.request, responseToCache);
-          });
-        }
-        return response;
-      })
-      .catch(() => {
-        return caches.match(event.request);
-      })
-  );
 });
     `);
   });

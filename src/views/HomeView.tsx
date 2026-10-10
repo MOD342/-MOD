@@ -139,11 +139,11 @@ export default function HomeView({
   const prefetchDetails = (id: string | number) => clientCache.prefetchDetails(id);
 
   const getFallbackDashboard = () => ({
-    top5: getCuratedTop5(),
-    recentEpisodes: getCuratedRecentEpisodes(),
-    popular: getCuratedSeasonAnime().slice(0, 10),
-    currentSeason: getCuratedSeasonAnime(),
-    schedule: getCuratedTop5()
+    top5: [],
+    recentEpisodes: [],
+    popular: [],
+    currentSeason: [],
+    schedule: []
   });
 
   const [dashboard, setDashboard] = useState<{
@@ -152,63 +152,28 @@ export default function HomeView({
     popular: any[];
     currentSeason: any[];
     schedule: any[];
-  }>(() => {
-    try {
-      const daysMap = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-      const clientDay = daysMap[new Date().getDay()];
-      const settings = JSON.parse(
-        localStorage.getItem('adminSliderSettings') ||
-          '{"limit": 5, "season": "auto", "sliderMode": "best_season", "speed": 3, "globalAnnouncement": ""}'
-      );
-      const activeSeason = settings?.season || 'auto';
-      const activeMode = settings?.sliderMode || 'best_season';
-      const key = `client_dashboard_v5_cache_${activeSeason}_${activeMode}_${clientDay}`;
-      const cached =
-        clientCache.get<{
-          top5: any[];
-          recentEpisodes: any[];
-          popular: any[];
-          currentSeason: any[];
-          schedule: any[];
-        }>(key) ||
-        clientCache.get<{
-          top5: any[];
-          recentEpisodes: any[];
-          popular: any[];
-          currentSeason: any[];
-          schedule: any[];
-        }>('client_dashboard_v5_cache');
-      if (cached && (cached.top5?.length > 0 || cached.recentEpisodes?.length > 0)) {
-        return cached;
-      }
-    } catch {}
-    return getFallbackDashboard();
-  });
+  }>(() => getFallbackDashboard());
 
   const [history, setHistory] = useState<any[]>([]);
   const [animeCuration, setAnimeCuration] = useState<{
     pinnedAnime: any[];
     hiddenAnime: any[];
-  }>(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem('adminAnimeCuration') || '{"pinnedAnime": [], "hiddenAnime": []}');
-      return {
-        pinnedAnime: Array.isArray(saved.pinnedAnime) ? saved.pinnedAnime : [],
-        hiddenAnime: Array.isArray(saved.hiddenAnime) ? saved.hiddenAnime : []
-      };
-    } catch {
-      return { pinnedAnime: [], hiddenAnime: [] };
-    }
-  });
-  const [sliderSettings, setSliderSettings] = useState(() => {
-    try {
-      return JSON.parse(
-        localStorage.getItem('adminSliderSettings') ||
-          '{"limit": 5, "season": "auto", "sliderMode": "best_season", "customAnime": [], "speed": 3, "globalAnnouncement": ""}'
-      );
-    } catch {
-      return { limit: 5, season: 'auto', sliderMode: 'best_season', customAnime: [], speed: 3, globalAnnouncement: '' };
-    }
+  }>({ pinnedAnime: [], hiddenAnime: [] });
+
+  const [sliderSettings, setSliderSettings] = useState<{
+    limit: number;
+    season: string;
+    sliderMode: string;
+    customAnime: any[];
+    speed: number;
+    globalAnnouncement: string;
+  }>({
+    limit: 5,
+    season: 'auto',
+    sliderMode: 'best_season',
+    customAnime: [],
+    speed: 3,
+    globalAnnouncement: ''
   });
 
   // Hero Slider Live Drag-Follow & Snap State
@@ -225,7 +190,7 @@ export default function HomeView({
       ? sliderSettings.customAnime
       : dashboard.top5 && dashboard.top5.length > 0
       ? dashboard.top5
-      : getCuratedTop5();
+      : [];
   const clampedAdminLimit = Math.min(10, Math.max(3, Number(sliderSettings.limit) || 5));
   const topVisibleLimit = Math.min(displayTop5.length || 1, clampedAdminLimit);
 
@@ -262,21 +227,19 @@ export default function HomeView({
       const activeMode = customSliderMode || sliderSettings.sliderMode || 'best_season';
 
       const freshData = await clientCache.fetchWithRevalidate<any>(
-        `client_dashboard_v5_cache_${activeSeason}_${activeMode}_${clientDay}`,
+        `direct_dashboard_${activeSeason}_${activeMode}_${clientDay}`,
         `/api/dashboard?day=${clientDay}&season=${activeSeason}&sliderMode=${activeMode}`,
         (data) => {
           if (data && (data.top5?.length > 0 || data.recentEpisodes?.length > 0)) {
             setDashboard(data);
-            clientCache.set('client_dashboard_v5_cache', data, 15 * 60 * 1000);
           }
-        },
-        15 * 60 * 1000
+        }
       );
       if (freshData && (freshData.top5?.length > 0 || freshData.recentEpisodes?.length > 0)) {
         setDashboard(freshData);
       }
     } catch (e) {
-      console.warn('Using local curated dashboard:', e);
+      console.warn('Direct dashboard fetch notice:', e);
     } finally {
       setIsRefreshing(false);
     }
@@ -290,18 +253,6 @@ export default function HomeView({
       const clientDay = daysMap[new Date().getDay()];
       const activeSeason = sliderSettings.season || 'auto';
       const activeMode = sliderSettings.sliderMode || 'best_season';
-
-      clientCache.clearPrefix('client_dashboard');
-      clientCache.clearPrefix('client_recent_episodes');
-      clientCache.clearPrefix('recent_');
-      clientCache.clearPrefix('client_anime_details');
-      clientCache.clearPrefix('servers_');
-      clientCache.delete(`client_dashboard_v5_cache_${activeSeason}_${activeMode}_${clientDay}`);
-      clientCache.delete('client_dashboard_v5_cache');
-      clientCache.delete('client_recent_episodes_list');
-      try {
-        sessionStorage.clear();
-      } catch {}
 
       const ts = Date.now();
       const [dashRes, recentRes] = await Promise.all([
@@ -345,7 +296,6 @@ export default function HomeView({
             }
           };
         });
-        clientCache.set('client_recent_episodes_list', freshRecent, 15 * 60 * 1000);
       }
 
       if (dashRes?.success && dashRes.data) {
@@ -355,23 +305,8 @@ export default function HomeView({
             freshRecent.length > 0 ? freshRecent : dashRes.data.recentEpisodes || []
         };
         setDashboard(updatedDashboard);
-        clientCache.set(
-          `client_dashboard_v5_cache_${activeSeason}_${activeMode}_${clientDay}`,
-          updatedDashboard,
-          15 * 60 * 1000
-        );
-        clientCache.set('client_dashboard_v5_cache', updatedDashboard, 15 * 60 * 1000);
       } else if (freshRecent.length > 0) {
-        setDashboard((prev) => {
-          const updated = { ...prev, recentEpisodes: freshRecent };
-          clientCache.set(
-            `client_dashboard_v5_cache_${activeSeason}_${activeMode}_${clientDay}`,
-            updated,
-            15 * 60 * 1000
-          );
-          clientCache.set('client_dashboard_v5_cache', updated, 15 * 60 * 1000);
-          return updated;
-        });
+        setDashboard((prev) => ({ ...prev, recentEpisodes: freshRecent }));
       }
     } catch (e) {
       console.warn('On-demand refresh fallback:', e);
@@ -387,7 +322,9 @@ export default function HomeView({
 
     setScheduleDayLoading(true);
     try {
-      const res = await fetch(`/api/dashboard?day=${dayKey}&season=${sliderSettings.season || 'auto'}`)
+      const res = await fetch(`/api/dashboard?day=${dayKey}&season=${sliderSettings.season || 'auto'}`, {
+        cache: 'no-store'
+      })
         .then((r) => r.json())
         .catch(() => null);
       if (res?.success && Array.isArray(res.data?.schedule) && res.data.schedule.length > 0) {
@@ -400,20 +337,11 @@ export default function HomeView({
 
   const handleRemoveHistoryItem = (e: React.MouseEvent, itemId: string | number) => {
     e.stopPropagation();
-    try {
-      const updated = history.filter((h) => String(h.id) !== String(itemId));
-      setHistory(updated);
-      const fullSaved = JSON.parse(localStorage.getItem('animeHistory') || '[]');
-      const filteredFull = fullSaved.filter((h: any) => String(h.id) !== String(itemId));
-      localStorage.setItem('animeHistory', JSON.stringify(filteredFull));
-    } catch {}
+    setHistory((prev) => prev.filter((h) => String(h.id) !== String(itemId)));
   };
 
   const handleClearAllHistory = () => {
-    try {
-      setHistory([]);
-      localStorage.removeItem('animeHistory');
-    } catch {}
+    setHistory([]);
   };
 
   useEffect(() => {
@@ -421,16 +349,15 @@ export default function HomeView({
       doc(db, 'globalSettings', 'slider'),
       (snap) => {
         if (snap.exists()) {
-          const fireConfigs = snap.data();
-          setSliderSettings(fireConfigs);
-          localStorage.setItem('adminSliderSettings', JSON.stringify(fireConfigs));
+          const fireConfigs = snap.data() as any;
+          setSliderSettings((prev) => ({ ...prev, ...fireConfigs }));
           fetchDashboard(fireConfigs.season || 'auto', fireConfigs.sliderMode || 'best_season');
         } else {
           fetchDashboard('auto', 'best_season');
         }
       },
       (err) => {
-        console.warn('Failed to query real-time slider configs, using fallback:', err);
+        console.warn('Failed to query real-time slider configs, using direct fetch:', err);
         fetchDashboard();
         try {
           handleFirestoreError(err, OperationType.GET, 'globalSettings/slider');
@@ -448,25 +375,14 @@ export default function HomeView({
             hiddenAnime: Array.isArray(d.hiddenAnime) ? d.hiddenAnime : []
           };
           setAnimeCuration(cur);
-          localStorage.setItem('adminAnimeCuration', JSON.stringify(cur));
         }
       },
       () => {}
     );
 
-    const loadHistory = () => {
-      try {
-        const saved = JSON.parse(localStorage.getItem('animeHistory') || '[]');
-        setHistory(saved.slice(0, 8));
-      } catch {}
-    };
-    loadHistory();
-    window.addEventListener('storage', loadHistory);
-
     return () => {
       unsub();
       unsubCuration();
-      window.removeEventListener('storage', loadHistory);
     };
   }, []);
 

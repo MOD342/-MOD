@@ -17,13 +17,18 @@
     <script src="https://accounts.google.com/gsi/client" async defer></script>
     
     <script>
-      // تسجيل الـ Service Worker فقط في بيئة المتصفح القياسية (http/https) وتجنبه في بيئة APK (file:// أو capacitor://) لمنع أخطاء التحويل
-      if ('serviceWorker' in navigator && (window.location.protocol === 'https:' || window.location.protocol === 'http:') && !window.Capacitor && !window.cordova && !/;\s*wv\)/i.test(navigator.userAgent)) {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker.register('/sw.js')
-            .then(reg => console.log('Service Worker registered successfully!', reg.scope))
-            .catch(err => console.warn('Service Worker skipped:', err));
-        });
+      // وضع الاتصال المباشر بدون تخزين مؤقت: تنظيف وإلغاء أي Service Worker أو CacheStorage قديم في المتصفح
+      if ('caches' in window) {
+        caches.keys().then((names) => {
+          names.forEach((name) => caches.delete(name));
+        }).catch(() => {});
+      }
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then((registrations) => {
+          for (const reg of registrations) {
+            reg.unregister().catch(() => {});
+          }
+        }).catch(() => {});
       }
 
       // اعتراض حدث التثبيت التلقائي لحفظه وطلب التثبيت يدوياً عند ضغط الزر في واجهة المستخدم

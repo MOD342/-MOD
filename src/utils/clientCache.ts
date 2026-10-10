@@ -1,9 +1,3 @@
-interface CacheWrapper<T> {
-  data: T;
-  expireAt: number;
-  lastAccessed?: number;
-}
-
 export interface ClientCacheStats {
   memoryItemsCount: number;
   localStorageKeysCount: number;
@@ -13,419 +7,155 @@ export interface ClientCacheStats {
   inFlightRequestsCount: number;
 }
 
+/**
+ * Direct Zero-Storage Client Manager (وضع الجلب المباشر الفوري بدون أي تخزين محلي أو مؤقت)
+ * يقوم بتنظيف وحذف أي بيانات قديمة مخزنة في المتصفح (localStorage / sessionStorage / CacheStorage / ServiceWorker)
+ * ويعمل بشكل مباشر 100% من الخادم والإنترنت دون تخزين أي بيانات.
+ */
 class ClientCacheManager {
-  // Cache version bump automatically invalidates legacy static localStorage & sessionStorage caches
-  private readonly CACHE_VERSION = 'v17_launch_clean_slate';
-
-  // Layer 1: High-Speed In-Memory Cache (0ms latency, zero JSON parsing overhead)
-  private memoryCache = new Map<string, CacheWrapper<any>>();
-  
-  // In-flight request deduplication map to collapse simultaneous calls into 1 network promise
   private inFlight = new Map<string, Promise<any>>();
-  
-  // Prefetch tracking to prevent duplicate prefetch bursts
-  private prefetchedSet = new Set<string>();
-
-  // Diagnostic metrics
-  private hits = 0;
-  private misses = 0;
+  private directRequests = 0;
 
   constructor() {
-    this.ensureCacheVersion();
+    this.purgeAllBrowserStorage();
   }
 
-  private ensureCacheVersion(): void {
+  public purgeAllBrowserStorage(): void {
     try {
-      if (typeof window === 'undefined' || !window.localStorage) return;
-      localStorage.removeItem('is_api_unreachable');
-      const currentVer = localStorage.getItem('__anime_cache_version__');
-      if (currentVer !== this.CACHE_VERSION) {
+      if (typeof window === 'undefined') return;
+
+      // 1. Wipe localStorage completely (except active Firebase auth session if needed, or full wipe of app keys)
+      if (window.localStorage) {
         const keysToRemove: string[] = [];
         for (let i = 0; i < localStorage.length; i++) {
           const k = localStorage.key(i);
-          if (
-            k &&
-            (k.startsWith('client_') ||
-              k.startsWith('servers_') ||
-              k.startsWith('anime_') ||
-              k.startsWith('recent_') ||
-              k.startsWith('schedule_') ||
-              k.startsWith('season_') ||
-              k.startsWith('explore_') ||
-              k.startsWith('mod_user_data_') ||
-              k.startsWith('arena_') ||
-              k.startsWith('otaku_') ||
-              k === 'is_api_unreachable' ||
-              k === 'adminSliderSettings' ||
-              k === 'adminAnimeCuration')
-          ) {
+          if (k && !k.startsWith('firebase:authUser:')) {
             keysToRemove.push(k);
           }
         }
-        keysToRemove.forEach((k) => localStorage.removeItem(k));
+        keysToRemove.forEach((k) => {
+          try {
+            localStorage.removeItem(k);
+          } catch {}
+        });
+      }
+
+      // 2. Wipe sessionStorage completely
+      if (window.sessionStorage) {
         try {
           sessionStorage.clear();
         } catch {}
-        // Also unregister any stale Service Worker caches if present
-        if (typeof window !== 'undefined' && 'caches' in window) {
-          caches.keys().then((names) => {
-            names.forEach((name) => caches.delete(name));
-          }).catch(() => {});
-        }
-        localStorage.setItem('__anime_cache_version__', this.CACHE_VERSION);
       }
-      // Always sweep expired items on boot
-      this.clearExpired();
+
+      // 3. Wipe Browser CacheStorage API
+      if ('caches' in window) {
+        caches
+          .keys()
+          .then((names) => {
+            names.forEach((name) => caches.delete(name));
+          })
+          .catch(() => {});
+      }
+
+      // 4. Unregister any old Service Workers so they never serve cached responses
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker
+          .getRegistrations()
+          .then((registrations) => {
+            for (const reg of registrations) {
+              reg.unregister().catch(() => {});
+            }
+          })
+          .catch(() => {});
+      }
     } catch {}
   }
 
-  /**
-   * Get a cached item. Checks Layer 1 (Memory) first, then Layer 2 (LocalStorage).
-   * Automatically validates dashboard data integrity and prunes expired keys.
-   */
-  get<T>(key: string): T | null {
-    const now = Date.now();
-
-    // 1. Layer 1: Check In-Memory Map (Fastest, avoids JSON.parse)
-    const memEntry = this.memoryCache.get(key);
-    if (memEntry) {
-      if (now < memEntry.expireAt) {
-        memEntry.lastAccessed = now;
-        this.hits++;
-        return memEntry.data as T;
-      } else {
-        this.memoryCache.delete(key);
-      }
-    }
-
-    // 2. Layer 2: Check LocalStorage
-    try {
-      if (typeof window === 'undefined' || !window.localStorage) {
-        this.misses++;
-        return null;
-      }
-
-      const raw = localStorage.getItem(key);
-      if (!raw) {
-        this.misses++;
-        return null;
-      }
-
-      const parsed: CacheWrapper<T> = JSON.parse(raw);
-      if (now < parsed.expireAt) {
-        // Validation: If it's a dashboard cache, reject only if completely empty
-        if (key.includes('dashboard_cache') && parsed.data && typeof parsed.data === 'object') {
-          const d = parsed.data as any;
-          const hasAnyData = (Array.isArray(d.top5) && d.top5.length > 0) ||
-                             (Array.isArray(d.recentEpisodes) && d.recentEpisodes.length > 0) ||
-                             (Array.isArray(d.popular) && d.popular.length > 0);
-          if (!hasAnyData) {
-            console.warn(`[ClientCache] Rejecting empty dashboard cache for key: ${key}`);
-            this.delete(key);
-            this.misses++;
-            return null;
-          }
-        }
-
-        // Store back in Layer 1 (Memory) for subsequent instant access
-        parsed.lastAccessed = now;
-        this.memoryCache.set(key, parsed);
-        this.hits++;
-        return parsed.data;
-      } else {
-        // Remove expired client item
-        this.delete(key);
-      }
-    } catch (e) {
-      console.warn(`[ClientCache] Error reading key "${key}"`, e);
-    }
-
-    this.misses++;
+  get<T>(_key: string): T | null {
     return null;
   }
 
-  /**
-   * Set cache item in both Layer 1 (Memory) and Layer 2 (LocalStorage) with configurable TTL.
-   * Gracefully handles QuotaExceededError by pruning old entries.
-   */
-  set<T>(key: string, data: T, ttlMs: number = 60 * 60 * 1000): void {
-    const now = Date.now();
-    const expireAt = now + ttlMs;
-    const wrapper: CacheWrapper<T> = {
-      data,
-      expireAt,
-      lastAccessed: now,
-    };
-
-    // 1. Save in Layer 1 (Memory)
-    this.memoryCache.set(key, wrapper);
-
-    // Limit memory cache size to 150 items to keep footprint ultra-light
-    if (this.memoryCache.size > 150) {
-      const oldestKey = this.memoryCache.keys().next().value;
-      if (oldestKey) this.memoryCache.delete(oldestKey);
-    }
-
-    // 2. Save in Layer 2 (LocalStorage)
-    try {
-      if (typeof window !== 'undefined' && window.localStorage) {
-        localStorage.setItem(key, JSON.stringify(wrapper));
-      }
-    } catch (e: any) {
-      console.warn(`[ClientCache] Storage quota or write warning for "${key}", initiating auto-prune...`);
-      // Evict expired and oldest entries to free up storage space
-      this.clearExpired();
-      this.pruneOldest(10);
-      try {
-        localStorage.setItem(key, JSON.stringify(wrapper));
-      } catch {
-        // If still full, it safely lives in Layer 1 Memory without crashing the application!
-      }
-    }
+  set<T>(_key: string, _data: T, _ttlMs?: number): void {
+    // No-op: Direct live mode does not store any cache in memory or localStorage
   }
 
-  /**
-   * Remove a specific cached item from all tiers
-   */
-  delete(key: string): void {
-    this.memoryCache.delete(key);
-    try {
-      if (typeof window !== 'undefined' && window.localStorage) {
-        localStorage.removeItem(key);
-      }
-    } catch (e) {
-      console.error(e);
-    }
+  delete(_key: string): void {
+    // No-op
   }
 
-  /**
-   * Prefetch details for instant viewing experience with request deduplication
-   */
-  prefetchDetails(id: string | number): void {
-    if (!id || id === 'random') return;
-    const cacheKey = `client_anime_details_v8_${id}`;
-    if (this.get(cacheKey) || this.prefetchedSet.has(String(id))) return;
-    
-    this.prefetchedSet.add(String(id));
-
-    // Limit prefetched set size
-    if (this.prefetchedSet.size > 200) {
-      this.prefetchedSet.clear();
-    }
-
-    const runFetch = () => {
-      fetch(`/api/anime/details/${id}`)
-        .then(res => res.json())
-        .then(res => {
-          if (res.success && res.data) {
-            // Cache for 12 hours
-            this.set(cacheKey, res.data, 12 * 60 * 60 * 1000);
-          }
-        })
-        .catch(() => {});
-    };
-
-    // Use requestIdleCallback if supported by the browser to avoid blocking frame rendering
-    if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
-      (window as any).requestIdleCallback(runFetch, { timeout: 1500 });
-    } else {
-      setTimeout(runFetch, 100);
-    }
+  prefetchDetails(_id: string | number): void {
+    // No-op in zero-storage direct mode
   }
 
-  /**
-   * Clears all cache items matching a pattern
-   */
-  clearPrefix(prefix: string): void {
-    // Clear from Memory
-    for (const key of this.memoryCache.keys()) {
-      if (key.startsWith(prefix)) {
-        this.memoryCache.delete(key);
-      }
-    }
-
-    // Clear from LocalStorage
-    try {
-      if (typeof window === 'undefined' || !window.localStorage) return;
-      const keysToRemove: string[] = [];
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key && key.startsWith(prefix)) {
-          keysToRemove.push(key);
-        }
-      }
-      keysToRemove.forEach(key => localStorage.removeItem(key));
-    } catch (e) {
-      console.error(e);
-    }
+  clearPrefix(_prefix: string): void {
+    this.purgeAllBrowserStorage();
   }
 
-  /**
-   * Clears old, expired items to free up browser storage
-   */
   clearExpired(): void {
-    const now = Date.now();
-
-    // Clean Memory
-    for (const [key, val] of this.memoryCache.entries()) {
-      if (now >= val.expireAt) {
-        this.memoryCache.delete(key);
-      }
-    }
-
-    // Clean LocalStorage
-    try {
-      if (typeof window === 'undefined' || !window.localStorage) return;
-      const keysToRemove: string[] = [];
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key) {
-          try {
-            const raw = localStorage.getItem(key);
-            if (raw) {
-              const parsed = JSON.parse(raw);
-              if (parsed && typeof parsed.expireAt === 'number' && now >= parsed.expireAt) {
-                keysToRemove.push(key);
-              }
-            }
-          } catch {
-            // Non-JSON item, leave alone
-          }
-        }
-      }
-      keysToRemove.forEach(key => localStorage.removeItem(key));
-    } catch (e) {
-      console.error(e);
-    }
+    this.purgeAllBrowserStorage();
   }
 
-  /**
-   * Prune oldest accessed items to keep browser storage healthy
-   */
-  private pruneOldest(count: number = 10): void {
-    try {
-      if (typeof window === 'undefined' || !window.localStorage) return;
-      const items: { key: string; lastAccessed: number }[] = [];
-      
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key && (key.startsWith('client_') || key.startsWith('anime_'))) {
-          try {
-            const raw = localStorage.getItem(key);
-            if (raw) {
-              const parsed = JSON.parse(raw);
-              items.push({
-                key,
-                lastAccessed: parsed.lastAccessed || parsed.expireAt || 0,
-              });
-            }
-          } catch {}
-        }
-      }
-
-      items.sort((a, b) => a.lastAccessed - b.lastAccessed);
-      items.slice(0, count).forEach(item => {
-        localStorage.removeItem(item.key);
-        this.memoryCache.delete(item.key);
-      });
-    } catch {}
-  }
-
-  /**
-   * Clear the entire cache
-   */
   clear(): void {
-    this.memoryCache.clear();
     this.inFlight.clear();
-    this.prefetchedSet.clear();
-    this.hits = 0;
-    this.misses = 0;
-    try {
-      if (typeof window !== 'undefined' && window.localStorage) {
-        localStorage.clear();
-      }
-    } catch (e) {
-      console.error(e);
-    }
+    this.directRequests = 0;
+    this.purgeAllBrowserStorage();
   }
 
-  /**
-   * Helper to perform a fetch with Stale-While-Revalidate pattern and in-flight deduplication.
-   * Returns cached data immediately if available, then fetches fresh data in background.
-   */
   async fetchWithRevalidate<T>(
-    key: string,
+    _key: string,
     url: string,
     onSuccess: (data: T) => void,
-    ttlMs: number = 15 * 60 * 1000
+    _ttlMs?: number
   ): Promise<T | null> {
-    const cached = this.get<T>(key);
-    
-    // If cached data exists, deliver it immediately for 0ms perception
-    if (cached !== null) {
-      onSuccess(cached);
-    }
+    this.directRequests++;
 
-    // Deduplicate in-flight requests: if another component is already requesting this URL, await it
     let fetchPromise = this.inFlight.get(url);
     if (!fetchPromise) {
       fetchPromise = (async () => {
         try {
-          const res = await fetch(url);
+          const sep = url.includes('?') ? '&' : '?';
+          const liveUrl = `${url}${sep}_live=${Date.now()}`;
+          const res = await fetch(liveUrl, {
+            cache: 'no-store',
+            headers: {
+              'Cache-Control': 'no-cache, no-store, must-revalidate',
+              Pragma: 'no-cache',
+            },
+          });
           if (!res.ok) throw new Error(`HTTP error ${res.status}`);
           const json = await res.json();
-          if (json && json.success && json.data) {
-            const freshData = json.data;
-            this.set(key, freshData, ttlMs);
-            onSuccess(freshData);
-            return freshData;
+          if (json && json.success && json.data !== undefined) {
+            onSuccess(json.data);
+            return json.data;
           }
         } catch (err) {
-          console.warn(`[ClientCache] Fetch failed for ${url}:`, err);
+          console.warn(`[DirectFetch] Live request failed for ${url}:`, err);
         } finally {
           this.inFlight.delete(url);
         }
-        return cached;
+        return null;
       })();
 
       this.inFlight.set(url, fetchPromise);
     } else {
-      // Attach success handler to in-flight promise
-      fetchPromise.then((freshData) => {
-        if (freshData) onSuccess(freshData);
-      }).catch(() => {});
+      fetchPromise
+        .then((freshData) => {
+          if (freshData) onSuccess(freshData);
+        })
+        .catch(() => {});
     }
 
-    // Critical fix: If there was no cached data, await the network request
-    // so the UI does not clear loading indicators while data is empty!
-    if (cached === null) {
-      const freshResult = await fetchPromise;
-      return freshResult !== undefined ? freshResult : null;
-    }
-
-    return cached;
+    const result = await fetchPromise;
+    return result !== undefined ? result : null;
   }
 
-  /**
-   * Diagnostic statistics for client-side cache
-   */
   getStats(): ClientCacheStats {
-    let lsKeys = 0;
-    try {
-      if (typeof window !== 'undefined' && window.localStorage) {
-        lsKeys = localStorage.length;
-      }
-    } catch {}
-
-    const total = this.hits + this.misses;
-    const hitRatio = total > 0 ? Math.round((this.hits / total) * 100) : 0;
-
     return {
-      memoryItemsCount: this.memoryCache.size,
-      localStorageKeysCount: lsKeys,
-      hits: this.hits,
-      misses: this.misses,
-      hitRatioPercent: hitRatio,
+      memoryItemsCount: 0,
+      localStorageKeysCount: 0,
+      hits: 0,
+      misses: this.directRequests,
+      hitRatioPercent: 0,
       inFlightRequestsCount: this.inFlight.size,
     };
   }

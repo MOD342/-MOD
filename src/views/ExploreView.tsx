@@ -107,25 +107,13 @@ export default function ExploreView({ onAnimeClick, initialQuery }: ExploreViewP
     { mal_id: 41, name: "Suspense" }
   ]);
   
-  // Persisted state
-  const [selectedGenres, setSelectedGenres] = useState<number[]>(() => {
-    try { return JSON.parse(localStorage.getItem('animeSelectedGenres') || '[]'); } catch { return []; }
-  });
-  const [minScore, setMinScore] = useState(() => localStorage.getItem('animeMinScore') || '');
-  const [status, setStatus] = useState(() => localStorage.getItem('animeStatus') || '');
-  const [year, setYear] = useState(() => localStorage.getItem('animeYear') || '');
-  const [orderBy, setOrderBy] = useState(() => localStorage.getItem('animeOrderBy') || '');
-  const [sortOrder, setSortOrder] = useState(() => localStorage.getItem('animeSortOrder') || 'desc');
-
-  // Save to local storage on change
-  useEffect(() => {
-    localStorage.setItem('animeSelectedGenres', JSON.stringify(selectedGenres));
-    localStorage.setItem('animeMinScore', minScore);
-    localStorage.setItem('animeStatus', status);
-    localStorage.setItem('animeYear', year);
-    localStorage.setItem('animeOrderBy', orderBy);
-    localStorage.setItem('animeSortOrder', sortOrder);
-  }, [selectedGenres, minScore, status, year, orderBy, sortOrder]);
+  // Direct in-memory filter state (Zero-Storage Mode)
+  const [selectedGenres, setSelectedGenres] = useState<number[]>([]);
+  const [minScore, setMinScore] = useState('');
+  const [status, setStatus] = useState('');
+  const [year, setYear] = useState('');
+  const [orderBy, setOrderBy] = useState('');
+  const [sortOrder, setSortOrder] = useState('desc');
 
   // Fetch genres with clientCache (7 days TTL)
   useEffect(() => {

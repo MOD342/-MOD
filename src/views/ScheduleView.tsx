@@ -127,32 +127,19 @@ export default function ScheduleView({ onBack, onAnimeClick, initialDay }: Sched
   const [allWeekData, setAllWeekData] = useState<Record<string, any[]>>({});
   const [weekLoading, setWeekLoading] = useState(false);
 
-  // Fetch target day schedule
+  // Fetch target day schedule directly (Zero-Storage Live Mode)
   useEffect(() => {
     let active = true;
     const fetchSchedule = async () => {
+      if (active) setLoading(true);
       try {
-        const cached = sessionStorage.getItem(`client_sched_${selectedDay}`);
-        if (cached) {
-          const parsed = JSON.parse(cached);
-          if (active) {
-            setSchedule(parsed);
-            setLoading(false);
-          }
-        } else {
-          if (active) setLoading(true);
-        }
-      } catch (e) {}
-
-      try {
-        const res = await fetch(`/api/anime/jikan-schedule?day=${selectedDay}`);
+        const res = await fetch(`/api/anime/jikan-schedule?day=${selectedDay}`, {
+          cache: 'no-store'
+        });
         const json = await res.json();
         if (json.success && json.data) {
           if (active) {
             setSchedule(json.data);
-            try {
-              sessionStorage.setItem(`client_sched_${selectedDay}`, JSON.stringify(json.data));
-            } catch (e) {}
           }
         }
       } catch (e) {
@@ -169,7 +156,7 @@ export default function ScheduleView({ onBack, onAnimeClick, initialDay }: Sched
     };
   }, [selectedDay, viewMode]);
 
-  // Fetch full week schedule for "All Week" dashboard
+  // Fetch full week schedule for "All Week" dashboard directly
   useEffect(() => {
     let active = true;
     if (viewMode === 'all-week' && Object.keys(allWeekData).length === 0) {
@@ -180,18 +167,14 @@ export default function ScheduleView({ onBack, onAnimeClick, initialDay }: Sched
           await Promise.all(
             DAYS.map(async (day) => {
               try {
-                const cached = sessionStorage.getItem(`client_sched_${day.id}`);
-                if (cached) {
-                  dataMap[day.id] = JSON.parse(cached);
+                const res = await fetch(`/api/anime/jikan-schedule?day=${day.id}`, {
+                  cache: 'no-store'
+                });
+                const json = await res.json();
+                if (json.success && json.data) {
+                  dataMap[day.id] = json.data;
                 } else {
-                  const res = await fetch(`/api/anime/jikan-schedule?day=${day.id}`);
-                  const json = await res.json();
-                  if (json.success && json.data) {
-                    dataMap[day.id] = json.data;
-                    sessionStorage.setItem(`client_sched_${day.id}`, JSON.stringify(json.data));
-                  } else {
-                    dataMap[day.id] = [];
-                  }
+                  dataMap[day.id] = [];
                 }
               } catch (err) {
                 console.error(`Error loading ${day.id}:`, err);

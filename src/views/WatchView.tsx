@@ -82,20 +82,6 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
   
   useEffect(() => {
     if (anime && episode) {
-      try {
-        const history = JSON.parse(localStorage.getItem('animeHistory') || '[]');
-        const updated = history.filter((h: any) => h.id !== anime._id);
-        updated.unshift({
-          id: anime._id,
-          title: anime.title,
-          posterUrl: anime.posterUrl,
-          lastEpisode: episode.num,
-          watchedAt: new Date().toISOString()
-        });
-        // Keep only last 20
-        localStorage.setItem('animeHistory', JSON.stringify(updated.slice(0, 20)));
-      } catch (e) {}
-
       if (user) {
         const parseEpisodeNumber = (numVal: any, titleStr: string): number => {
           if (numVal !== undefined && numVal !== null && !isNaN(Number(numVal))) return Number(numVal);
@@ -313,22 +299,7 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
       return;
     }
 
-    // 3. فحص التخزين المؤقت للاستخراج المباشر (للسيرفرات القابلة للاستخراج مثل 4Shared, Uqload, Filemoon, Sibnet)
-    try {
-      const cached = sessionStorage.getItem(`client_extracted_v4_${url}`);
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        if (parsed.directUrl && !String(parsed.directUrl).includes('commondatastorage.googleapis.com')) {
-          setExtractedUrl(parsed.directUrl);
-          setExtractedType(parsed.type === 'hls' ? 'hls' : parsed.type === 'direct' ? 'direct' : 'iframe');
-          setExtractedSources(parsed.sources || []);
-          setExtracting(false);
-          return;
-        }
-      }
-    } catch (e) {}
-
-    // 4. محاولة استخراج رابط MP4/M3U8 خام من السيرفر، وإذا كان محمياً يتم تشغيله مباشرة كـ Embed حقيقي
+    // 3. استخراج رابط MP4/M3U8 خام من السيرفر مباشرة بدون تخزين مؤقت، وإذا كان محمياً يتم تشغيله مباشرة كـ Embed حقيقي
     setExtracting(true);
     try {
       const res = await fetch('/api/anime/extract', {
@@ -353,16 +324,6 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
         setExtractedUrl(resolvedStream);
         setExtractedType(resolvedType);
         setExtractedSources(resolvedSources);
-        try {
-          sessionStorage.setItem(
-            `client_extracted_v4_${url}`,
-            JSON.stringify({
-              directUrl: resolvedStream,
-              type: resolvedType,
-              sources: resolvedSources
-            })
-          );
-        } catch (e) {}
       } else {
         setExtractedUrl(url);
         setExtractedType('iframe');

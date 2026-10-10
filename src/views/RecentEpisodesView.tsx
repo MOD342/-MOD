@@ -7,19 +7,8 @@ import { cleanAnimeTitle } from '../utils/animeTitleCleaner';
 export default function RecentEpisodesView({ onBack, onAnimeClick }: { onBack: () => void, onAnimeClick: (id: string, epNum?: string) => void }) {
   const [page, setPage] = useState<number>(1);
   const [hasNext, setHasNext] = useState<boolean>(true);
-  const [episodes, setEpisodes] = useState<any[]>(() => {
-    const listCached = clientCache.get<any[]>('client_recent_episodes_list_p1') || clientCache.get<any[]>('client_recent_episodes_list');
-    if (Array.isArray(listCached) && listCached.length > 0) {
-      return listCached;
-    }
-    const cached = clientCache.get<any>('client_dashboard_v5_cache') || clientCache.get<any>('client_dashboard_cache');
-    if (cached?.recentEpisodes && Array.isArray(cached.recentEpisodes) && cached.recentEpisodes.length > 0) {
-      return cached.recentEpisodes;
-    }
-    return getCuratedRecentEpisodes();
-  });
-
-  const [loading, setLoading] = useState(false);
+  const [episodes, setEpisodes] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
   const loadEpisodes = async (targetPage = 1, forceBypass = false) => {
@@ -27,35 +16,15 @@ export default function RecentEpisodesView({ onBack, onAnimeClick }: { onBack: (
     if (forceBypass) {
       setRefreshing(true);
     } else {
-      const cachedPageList = clientCache.get<any[]>(`client_recent_episodes_list_p${safePage}`);
-      if (Array.isArray(cachedPageList) && cachedPageList.length > 0) {
-        setEpisodes(cachedPageList);
-        setHasNext(cachedPageList.length >= 10);
-      } else {
-        setLoading(true);
-      }
+      setLoading(true);
     }
 
     try {
-      if (forceBypass) {
-        clientCache.clearPrefix('client_recent_episodes');
-        clientCache.clearPrefix('client_dashboard');
-        clientCache.clearPrefix('recent_');
-        clientCache.clearPrefix('client_anime_details');
-        clientCache.clearPrefix('servers_');
-        clientCache.delete('client_recent_episodes_list');
-        clientCache.delete(`client_recent_episodes_list_p${safePage}`);
-        clientCache.delete('client_dashboard_v5_cache');
-        clientCache.delete('client_dashboard_cache');
-        try {
-          sessionStorage.clear();
-        } catch {}
-      }
-
       const ts = Date.now();
-      const fetchOpts: RequestInit = forceBypass
-        ? { cache: 'no-store', headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' } }
-        : {};
+      const fetchOpts: RequestInit = {
+        cache: 'no-store',
+        headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' }
+      };
 
       const queryParams = new URLSearchParams({ page: String(safePage) });
       if (forceBypass) {
@@ -88,14 +57,6 @@ export default function RecentEpisodesView({ onBack, onAnimeClick }: { onBack: (
           });
           setEpisodes(formatted);
           setHasNext(typeof json.hasNext === 'boolean' ? json.hasNext : formatted.length >= 10);
-          clientCache.set(`client_recent_episodes_list_p${safePage}`, formatted, 15 * 60 * 1000);
-          if (safePage === 1) {
-            clientCache.set('client_recent_episodes_list', formatted, 15 * 60 * 1000);
-            const cachedDash = clientCache.get<any>('client_dashboard_v5_cache');
-            if (cachedDash) {
-              clientCache.set('client_dashboard_v5_cache', { ...cachedDash, recentEpisodes: formatted }, 15 * 60 * 1000);
-            }
-          }
           setRefreshing(false);
           setLoading(false);
           return;
@@ -104,7 +65,7 @@ export default function RecentEpisodesView({ onBack, onAnimeClick }: { onBack: (
 
       // 2. استعلام مسار لوحة التحكم كبديل موثوق للصفحة الأولى فقط
       if (safePage === 1) {
-        const rDash = await fetch(`/api/dashboard${forceBypass ? `?bypass=true&_t=${ts}` : ''}`, fetchOpts);
+        const rDash = await fetch(`/api/dashboard?bypass=true&_t=${ts}`, fetchOpts);
         if (rDash.ok) {
           const jsonDash = await rDash.json();
           if (jsonDash.success && Array.isArray(jsonDash.data?.recentEpisodes) && jsonDash.data.recentEpisodes.length > 0) {
@@ -118,9 +79,6 @@ export default function RecentEpisodesView({ onBack, onAnimeClick }: { onBack: (
             }));
             setEpisodes(cleanedDash);
             setHasNext(true);
-            clientCache.set('client_recent_episodes_list_p1', cleanedDash, 15 * 60 * 1000);
-            clientCache.set('client_recent_episodes_list', cleanedDash, 15 * 60 * 1000);
-            clientCache.set('client_dashboard_v5_cache', jsonDash.data, 15 * 60 * 1000);
             setRefreshing(false);
             setLoading(false);
             return;
@@ -150,45 +108,7 @@ export default function RecentEpisodesView({ onBack, onAnimeClick }: { onBack: (
     setPage((prev) => Math.max(1, prev - 1));
   };
 
-  // ضمان وجود قائمة حلقات دائماً مع تنظيف كامل للأسماء وتطبيق قواعد التثبيت والإخفاء من الإدارة
-  const rawEpisodes = (episodes && episodes.length > 0) ? episodes : getCuratedRecentEpisodes();
-  const displayEpisodes = (() => {
-    try {
-      const cur = JSON.parse(localStorage.getItem('adminAnimeCuration') || '{"pinnedAnime":[],"hiddenAnime":[]}');
-      const hiddenList: any[] = Array.isArray(cur.hiddenAnime) ? cur.hiddenAnime : [];
-      const pinnedList: any[] = Array.isArray(cur.pinnedAnime) ? cur.pinnedAnime : [];
-      const filtered = rawEpisodes.filter((ep: any) => {
-        const epId = String(ep.animeId?._id || ep._id || '').toLowerCase();
-        const epTitle = cleanAnimeTitle(ep.animeId?.title || ep.title || '').toLowerCase().trim();
-        return !hiddenList.some(
-          (h: any) =>
-            (h._id && String(h._id).toLowerCase() === epId) ||
-            (h.title && epTitle && String(h.title).toLowerCase().trim() === epTitle)
-        );
-      });
-      if (page === 1 && pinnedList.length > 0) {
-        const pinnedFormatted = pinnedList.map((p: any, idx: number) => ({
-          _id: `pinned-${p._id}-${idx}`,
-          episodeNumber: p.pinnedEpisode || 'مُثبت',
-          title: p.title,
-          isPinned: true,
-          animeId: {
-            _id: p._id,
-            title: p.title,
-            titleAr: p.title,
-            posterUrl: p.posterUrl,
-            thumbnailUrl: p.posterUrl
-          }
-        }));
-        const pinnedIds = new Set(pinnedList.map((p: any) => String(p._id)));
-        const rest = filtered.filter((ep: any) => !pinnedIds.has(String(ep.animeId?._id || ep._id)));
-        return [...pinnedFormatted, ...rest];
-      }
-      return filtered;
-    } catch {
-      return rawEpisodes;
-    }
-  })();
+  const displayEpisodes = episodes || [];
 
   return (
     <div className="min-h-screen bg-black text-white pb-28">
