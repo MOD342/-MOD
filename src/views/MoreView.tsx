@@ -167,10 +167,7 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
     {
       title: 'الترفيه والمتجر',
       items: [
-        { id: 'games', label: 'الألعاب', icon: Gamepad2, color: 'text-purple-400', bg: 'bg-purple-500/10' },
-        { id: 'tournaments', label: 'البطولات', icon: Trophy, color: 'text-red-400', bg: 'bg-red-500/10' },
-        { id: 'leaderboard', label: 'المتصدرون', icon: Crown, color: 'text-yellow-500', bg: 'bg-yellow-500/10' },
-        { id: 'suggestions_hub', label: 'الساحة', icon: Sparkles, color: 'text-pink-400', bg: 'bg-pink-500/10' },
+        { id: 'games', label: 'حلبة الأوتاكو', icon: Swords, color: 'text-purple-400', bg: 'bg-purple-500/10' },
         { id: 'store', label: 'المتجر', icon: ShoppingCart, color: 'text-orange-400', bg: 'bg-orange-500/10' },
         { id: 'schedule', label: 'المواعيد', icon: CalendarDays, color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
       ]

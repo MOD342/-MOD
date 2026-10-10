@@ -170,12 +170,18 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
   const [rewardGranted, setRewardGranted] = useState<{ coins: number; xp: number; bonusCoins?: number } | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
   const [limitError, setLimitError] = useState(false);
-  const [popupBlocked, setPopupBlocked] = useState(false);
+  const [cooldownError, setCooldownError] = useState<number | null>(null);
+  const [hasClickedSponsorLink, setHasClickedSponsorLink] = useState(false);
+  const [isUsingWebView, setIsUsingWebView] = useState(false);
+  const [copiedPageUrl, setCopiedPageUrl] = useState(false);
 
   const [monetization, setMonetization] = useState<{
-    mode: 'simulation' | 'direct_link' | 'script';
+    mode: 'simulation' | 'direct_link' | 'script' | 'hybrid';
     directLinkUrl: string;
+    backupDirectLinkUrl?: string;
     scriptCode: string;
+    requireClickVerification?: boolean;
+    cooldownSeconds?: number;
     stayTime: number;
     rewardCoins: number;
     rewardXp: number;
@@ -189,9 +195,12 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
       buttonText?: string;
     }>;
   }>({
-    mode: 'direct_link',
-    directLinkUrl: 'https://www.effectivecpmnetwork.com/pt97wb2w?key=f76147a23264a74437b153780898337a',
+    mode: 'hybrid',
+    directLinkUrl: 'https://uplcm.com/4/11992531',
+    backupDirectLinkUrl: 'https://www.profitableratecpmnetwork.com/xw38hehu?key=f928ec53ec71574a775e118d9d0b4f38',
     scriptCode: '',
+    requireClickVerification: true,
+    cooldownSeconds: 20,
     stayTime: 12,
     rewardCoins: 25,
     rewardXp: 120,
@@ -202,6 +211,19 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
   const DAILY_LIMIT = monetization.dailyLimit || 20;
   const STREAK_STEP = 5;
   const STREAK_BONUS_COINS = 100;
+
+  // Detect In-App WebView (Telegram, Instagram, etc.) which ad networks penalize
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const ua = navigator.userAgent || navigator.vendor || (window as any).opera || '';
+      const checkWebView =
+        /webview/i.test(ua) ||
+        /wv/i.test(ua) ||
+        /(iPhone|iPod|iPad).*AppleWebKit(?!.*Safari)/i.test(ua) ||
+        /FBAV|FBAN|Instagram|Twitter|Telegram|Snapchat/i.test(ua);
+      setIsUsingWebView(Boolean(checkWebView));
+    }
+  }, []);
 
   // Load settings
   useEffect(() => {
@@ -218,12 +240,21 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
         const monetizationDoc = await getDoc(doc(db, 'globalSettings', 'monetization'));
         if (monetizationDoc.exists()) {
           const data = monetizationDoc.data();
+          const savedPrimary =
+            data.directLinkUrl && !data.directLinkUrl.includes('effectivecpmnetwork.com')
+              ? data.directLinkUrl
+              : 'https://uplcm.com/4/11992531';
+          const savedSecondary =
+            data.backupDirectLinkUrl ||
+            'https://www.profitableratecpmnetwork.com/xw38hehu?key=f928ec53ec71574a775e118d9d0b4f38';
+
           setMonetization({
-            mode: data.mode ?? 'direct_link',
-            directLinkUrl:
-              data.directLinkUrl ??
-              'https://www.effectivecpmnetwork.com/pt97wb2w?key=f76147a23264a74437b153780898337a',
+            mode: data.mode ?? 'hybrid',
+            directLinkUrl: savedPrimary,
+            backupDirectLinkUrl: savedSecondary,
             scriptCode: data.scriptCode ?? '',
+            requireClickVerification: data.requireClickVerification ?? true,
+            cooldownSeconds: Number(data.cooldownSeconds) || 20,
             stayTime: Number(data.stayTime) || 12,
             rewardCoins: Number(data.rewardCoins) || 25,
             rewardXp: Number(data.rewardXp) || 120,
@@ -263,10 +294,19 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
     return () => unsub();
   }, [user?.id]);
 
-  // Ad timer loop
+  // Ad timer loop (with click verification gate for Direct Link / Hybrid modes)
   useEffect(() => {
     let timer: NodeJS.Timeout;
+    const needsClickGate =
+      (monetization.mode === 'direct_link' || monetization.mode === 'hybrid') &&
+      monetization.requireClickVerification !== false &&
+      Boolean(monetization.directLinkUrl);
+
     if (isPlaying && countdown > 0) {
+      // If click verification is enabled, pause the last 3 seconds until user opens the sponsor link
+      if (needsClickGate && !hasClickedSponsorLink && countdown <= 3) {
+        return;
+      }
       timer = setTimeout(() => {
         setCountdown(prev => prev - 1);
       }, 1000);
@@ -274,7 +314,24 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
       finishAdPlay();
     }
     return () => clearTimeout(timer);
-  }, [isPlaying, countdown]);
+  }, [isPlaying, countdown, hasClickedSponsorLink, monetization]);
+
+  // Cooldown ticker
+  useEffect(() => {
+    if (cooldownError === null || cooldownError <= 0) {
+      if (cooldownError !== null && cooldownError <= 0) setCooldownError(null);
+      return;
+    }
+    const t = setTimeout(() => setCooldownError(prev => (prev && prev > 1 ? prev - 1 : null)), 1000);
+    return () => clearTimeout(t);
+  }, [cooldownError]);
+
+  const getActiveSmartlinkUrl = () => {
+    if (monetization.backupDirectLinkUrl && watchedToday % 2 === 1) {
+      return monetization.backupDirectLinkUrl;
+    }
+    return monetization.directLinkUrl;
+  };
 
   const startAdPlay = () => {
     if (watchedToday >= DAILY_LIMIT) {
@@ -282,10 +339,22 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
       return;
     }
 
-    setLimitError(false);
-    setPopupBlocked(false);
+    // Anti-bot / Ad-Network Policy Cooldown Check
+    const cooldownSec = monetization.cooldownSeconds || 20;
+    try {
+      const lastWatchTs = Number(localStorage.getItem(`last_ad_ts_${user?.id || 'guest'}`) || '0');
+      const elapsedSec = Math.floor((Date.now() - lastWatchTs) / 1000);
+      if (lastWatchTs > 0 && elapsedSec < cooldownSec) {
+        setCooldownError(cooldownSec - elapsedSec);
+        return;
+      }
+    } catch {}
 
-    if (monetization.mode === 'direct_link') {
+    setLimitError(false);
+    setCooldownError(null);
+    setHasClickedSponsorLink(false);
+
+    if (monetization.mode === 'direct_link' || monetization.mode === 'hybrid') {
       setIsPlaying(true);
       setCountdown(monetization.stayTime);
       setRewardGranted(null);
@@ -321,6 +390,7 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
 
     try {
       localStorage.setItem(storageCountKey, newCount.toString());
+      localStorage.setItem(`last_ad_ts_${user?.id || 'guest'}`, Date.now().toString());
     } catch {
       // Ignore storage error
     }
@@ -946,16 +1016,48 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
 
             {/* Ad Support Interactive Player */}
             <div className="bg-[#111115] border border-white/5 rounded-2xl p-5 space-y-4">
-              <div className="flex items-center justify-between border-b border-white/5 pb-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/5 pb-3">
                 <div className="flex items-center gap-2">
                   <Tv size={16} className="text-yellow-400" />
                   <h3 className="text-sm font-black text-white">دعم السيرفرات بمشاهدة إعلان</h3>
                 </div>
-                <span className="text-[10px] text-zinc-400">مجاني وفوري</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2.5 py-0.5 rounded-full font-bold">
+                    ✓ متوافق مع سياسات الإعلانات العالمية
+                  </span>
+                </div>
               </div>
 
+              {/* In-App WebView Protection Banner (Prevents Adsterra/Monetag Invalid Traffic Ban) */}
+              {isUsingWebView && (
+                <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="space-y-1 text-right">
+                    <div className="flex items-center gap-1.5 text-amber-400 text-xs font-black">
+                      <AlertTriangle size={14} />
+                      <span>تنبيه المتصفح الداخلي (WebView):</span>
+                    </div>
+                    <p className="text-[11px] text-zinc-300 leading-relaxed">
+                      لضمان احتساب الإعلان بشكل رسمي وعدم رفض الزيارة من شبكات الإعلانات، يُنصح بفتح التطبيق في متصفح الهاتف الرسمي (Chrome أو Safari).
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (typeof window !== 'undefined') {
+                        navigator.clipboard.writeText(window.location.href);
+                        setCopiedPageUrl(true);
+                        setTimeout(() => setCopiedPageUrl(false), 2500);
+                      }
+                    }}
+                    className="px-3.5 py-2 bg-amber-500 hover:bg-amber-400 text-black font-black text-[11px] rounded-xl transition shrink-0 cursor-pointer"
+                  >
+                    {copiedPageUrl ? '✓ تم نسخ الرابط' : 'نسخ الرابط لفتحه في المتصفح'}
+                  </button>
+                </div>
+              )}
+
               <div
-                className="bg-zinc-950 border border-zinc-800/80 rounded-2xl p-6 relative overflow-hidden flex flex-col items-center justify-center min-h-[210px] text-center"
+                className="bg-zinc-950 border border-zinc-800/80 rounded-2xl p-6 relative overflow-hidden flex flex-col items-center justify-center min-h-[220px] text-center"
                 id="ad_action_zone_portal"
               >
                 <AnimatePresence mode="wait">
@@ -973,7 +1075,7 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
                       <div className="space-y-1">
                         <h4 className="text-white font-black text-sm">شاهد إعلاناً قصيراً واكسب مكافأتك</h4>
                         <p className="text-xs text-zinc-400 max-w-sm leading-relaxed mx-auto">
-                          مساهمتك تساعدنا في تغطية تكاليف خوادم المشاهدة مع إبقاء الحلقات خالية من الإعلانات المزعجة.
+                          مساهمتك الاختيارية تساعدنا في تغطية تكاليف خوادم البث السريعة مع إبقاء الحلقات خالية من النوافذ المزعجة.
                         </p>
                       </div>
 
@@ -981,6 +1083,13 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
                         <div className="bg-rose-500/10 border border-rose-500/20 text-rose-400 px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5">
                           <AlertTriangle size={14} />
                           <span>وصلت للحد اليومي ({DAILY_LIMIT} إعلاناً). عد غداً للمزيد!</span>
+                        </div>
+                      )}
+
+                      {cooldownError !== null && cooldownError > 0 && (
+                        <div className="bg-amber-500/10 border border-amber-500/25 text-amber-300 px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5">
+                          <Clock size={14} />
+                          <span>فترة أمان بين الإعلانات لحماية الحساب: يرجى الانتظار {cooldownError} ثانية...</span>
                         </div>
                       )}
 
@@ -993,11 +1102,15 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
 
                       <button
                         onClick={startAdPlay}
-                        disabled={watchedToday >= DAILY_LIMIT}
+                        disabled={watchedToday >= DAILY_LIMIT || (cooldownError !== null && cooldownError > 0)}
                         className="bg-gradient-to-r from-yellow-400 to-amber-500 hover:from-yellow-300 hover:to-amber-400 disabled:opacity-40 py-2.5 px-7 text-black font-black text-xs rounded-xl shadow-lg transition cursor-pointer flex items-center gap-2"
                       >
                         <Tv size={14} />
-                        <span>بدء مشاهدة الإعلان (+{monetization.rewardCoins} كوين)</span>
+                        <span>
+                          {cooldownError !== null && cooldownError > 0
+                            ? `انتظر ${cooldownError} ثانية...`
+                            : `بدء مشاهدة الإعلان (+${monetization.rewardCoins} كوين)`}
+                        </span>
                       </button>
                     </motion.div>
                   )}
@@ -1013,7 +1126,14 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
                       <div className="flex items-center justify-between border-b border-zinc-800 pb-2.5">
                         <div className="flex items-center gap-2">
                           <span className="w-2 h-2 bg-rose-500 rounded-full animate-ping" />
-                          <span className="text-xs text-zinc-300 font-bold">جاري احتساب مكافأة الدعم...</span>
+                          <span className="text-xs text-zinc-300 font-bold">
+                            {(monetization.mode === 'direct_link' || monetization.mode === 'hybrid') &&
+                            monetization.requireClickVerification !== false &&
+                            !hasClickedSponsorLink &&
+                            countdown <= 3
+                              ? 'بانتظار زيارة رابط الراعي لإتمام المكافأة...'
+                              : 'جاري احتساب مكافأة الدعم...'}
+                          </span>
                         </div>
                         <div className="bg-zinc-900 border border-zinc-700 px-3 py-1 rounded-full text-yellow-400 font-mono text-xs font-black flex items-center gap-1.5">
                           <Clock size={12} />
@@ -1021,30 +1141,78 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
                         </div>
                       </div>
 
-                      <div className="py-2 text-center">
-                        {monetization.mode === 'direct_link' && (
-                          <div className="space-y-3">
-                            <p className="text-xs text-zinc-300 max-w-md mx-auto leading-relaxed">
-                              اضغط على الزر أدناه لزيارة صفحة الراعي الرسمي في نافذة جديدة بينما يكتمل عداد المكافأة:
-                            </p>
-                            <a
-                              href={monetization.directLinkUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="bg-[#FF1744] hover:bg-red-600 text-white font-black py-2 px-5 rounded-xl text-xs transition inline-flex items-center gap-1.5 cursor-pointer"
-                            >
-                              <ExternalLink size={13} />
-                              <span>فتح صفحة الراعي في نافذة جديدة</span>
-                            </a>
-                          </div>
-                        )}
+                      <div className="py-2 text-center space-y-3">
+                        {/* Direct Smartlink CTA (shown in direct_link AND hybrid modes) */}
+                        {(monetization.mode === 'direct_link' || monetization.mode === 'hybrid') &&
+                          monetization.directLinkUrl && (
+                            <div className="bg-zinc-900/70 border border-zinc-800 rounded-xl p-3.5 space-y-2.5">
+                              <div className="flex items-center justify-center gap-1.5">
+                                <span className="text-[10px] font-black bg-[#FF1744]/15 text-[#FF1744] border border-[#FF1744]/30 px-2 py-0.5 rounded-full">
+                                  إعلان الراعي المباشر (Smartlink)
+                                </span>
+                                {hasClickedSponsorLink && (
+                                  <span className="text-[10px] font-black bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full">
+                                    ✓ تم التحقق من الزيارة
+                                  </span>
+                                )}
+                              </div>
 
-                        {monetization.mode === 'script' && (
-                          <div className="space-y-2 overflow-hidden">
-                            <AdScriptRunner scriptCode={monetization.scriptCode} />
-                          </div>
-                        )}
+                              <p className="text-xs text-zinc-300 max-w-md mx-auto leading-relaxed">
+                                {hasClickedSponsorLink
+                                  ? 'شكراً لزيارة الراعي! انتظر انتهاء الثواني القليلة المتبقية لاستلام الكوينز والـ XP.'
+                                  : 'اضغط على زر فتح الإعلان أدناه لزيارة الراعي الرسمي وتأكيد المكافأة (إذا كان الرابط الأول محجوباً من شبكة هاتفك، استخدم الرابط البديل 2):'}
+                              </p>
 
+                              <div className="flex flex-wrap items-center justify-center gap-2">
+                                <a
+                                  href={getActiveSmartlinkUrl()}
+                                  target="_blank"
+                                  rel="noopener"
+                                  onClick={() => setHasClickedSponsorLink(true)}
+                                  className={`font-black py-2.5 px-5 rounded-xl text-xs transition inline-flex items-center gap-2 cursor-pointer shadow-lg ${
+                                    hasClickedSponsorLink
+                                      ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-600/20'
+                                      : 'bg-[#FF1744] hover:bg-red-600 text-white shadow-[#FF1744]/25 animate-pulse'
+                                  }`}
+                                >
+                                  <ExternalLink size={14} />
+                                  <span>
+                                    {hasClickedSponsorLink
+                                      ? 'إعادة فتح الإعلان الأساسي'
+                                      : 'فتح إعلان الراعي (سيرفر 1)'}
+                                  </span>
+                                </a>
+
+                                {monetization.backupDirectLinkUrl && (
+                                  <a
+                                    href={
+                                      getActiveSmartlinkUrl() === monetization.backupDirectLinkUrl
+                                        ? monetization.directLinkUrl
+                                        : monetization.backupDirectLinkUrl
+                                    }
+                                    target="_blank"
+                                    rel="noopener"
+                                    onClick={() => setHasClickedSponsorLink(true)}
+                                    className="font-black py-2.5 px-4 rounded-xl text-xs bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-amber-400 transition inline-flex items-center gap-1.5 cursor-pointer"
+                                  >
+                                    <ExternalLink size={13} />
+                                    <span>رابط بديل (سيرفر 2)</span>
+                                  </a>
+                                )}
+                              </div>
+                            </div>
+                          )}
+
+                        {/* Compact Embedded Banner / Script (shown in script AND hybrid modes) */}
+                        {(monetization.mode === 'script' || monetization.mode === 'hybrid') &&
+                          monetization.scriptCode && (
+                            <div className="bg-zinc-900/40 border border-zinc-800/80 rounded-xl p-2.5 overflow-hidden">
+                              <span className="text-[9px] text-zinc-500 block mb-1">مساحة إعلانية مصغرة</span>
+                              <AdScriptRunner scriptCode={monetization.scriptCode} compact />
+                            </div>
+                          )}
+
+                        {/* Internal Community / Sponsor Cards (shown in simulation mode or if hybrid has no script) */}
                         {monetization.mode === 'simulation' && activeAd && (
                           <div className="space-y-2.5">
                             <span className="bg-yellow-500/10 text-yellow-400 text-[10px] font-bold px-2.5 py-0.5 rounded border border-yellow-500/20 inline-block">
@@ -1065,6 +1233,7 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
                                   href={activeAd.targetUrl}
                                   target="_blank"
                                   rel="noopener noreferrer"
+                                  onClick={() => setHasClickedSponsorLink(true)}
                                   className="bg-yellow-500 hover:bg-yellow-400 text-black font-black py-1.5 px-4 rounded-xl text-[11px] transition inline-flex items-center gap-1.5 cursor-pointer"
                                 >
                                   <ExternalLink size={12} />

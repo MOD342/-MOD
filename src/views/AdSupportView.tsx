@@ -116,7 +116,7 @@ export default function AdSupportView({ onBack }: AdSupportViewProps) {
     rewardCoins: number;
   }>({
     mode: 'direct_link',
-    directLinkUrl: 'https://www.effectivecpmnetwork.com/pt97wb2w?key=f76147a23264a74437b153780898337a',
+    directLinkUrl: 'https://www.profitableratecpmnetwork.com/xw38hehu?key=f928ec53ec71574a775e118d9d0b4f38',
     scriptCode: '',
     stayTime: 12,
     rewardCoins: 25
@@ -135,7 +135,7 @@ export default function AdSupportView({ onBack }: AdSupportViewProps) {
           const data = docSnap.data();
           setMonetization({
             mode: data.mode ?? 'direct_link',
-            directLinkUrl: data.directLinkUrl ?? 'https://www.effectivecpmnetwork.com/pt97wb2w?key=f76147a23264a74437b153780898337a',
+            directLinkUrl: data.directLinkUrl || 'https://www.profitableratecpmnetwork.com/xw38hehu?key=f928ec53ec71574a775e118d9d0b4f38',
             scriptCode: data.scriptCode ?? '',
             stayTime: data.stayTime ?? 12,
             rewardCoins: data.rewardCoins ?? 25

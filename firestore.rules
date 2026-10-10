@@ -205,7 +205,7 @@ service cloud.firestore {
     match /usernames/{username} {
       allow read: if true;
       allow create: if isSignedIn() && incoming().id == request.auth.uid;
-      allow delete: if isSignedIn() && existing().id == request.auth.uid;
+      allow delete: if isAdminAuth() || (isSignedIn() && existing().id == request.auth.uid);
     }
 
     match /reports/{reportId} {
@@ -220,7 +220,7 @@ service cloud.firestore {
     }
 
     match /users/{userId}/notifications/{notifId} {
-      allow read: if isOwner(userId);
+      allow read: if isOwner(userId) || isAdminAuth();
       allow create: if isSignedIn();
       allow update, delete: if isOwner(userId) || isAdminAuth();
     }
@@ -275,7 +275,7 @@ service cloud.firestore {
         && incoming().diff(existing()).affectedKeys().hasOnly(['score', 'updatedAt'])
         && incoming().score is number && incoming().score >= 1 && incoming().score <= 10
         && incoming().updatedAt == request.time;
-      allow delete: if false;
+      allow delete: if isModeratorAuth();
     }
 
     match /gameQuestions/{questionId} {
@@ -356,15 +356,15 @@ service cloud.firestore {
           incoming().diff(existing()).affectedKeys().hasOnly(['likesReceived', 'dislikesReceived', 'xp', 'level', 'modPoints', 'coins', 'dailyStats'])
         )
       );
-      allow delete: if false;
+      allow delete: if isAdminAuth();
 
       match /customLists/{listId} {
-        allow read: if isOwner(userId);
+        allow read: if isOwner(userId) || isAdminAuth();
         allow create: if isOwner(userId) && isValidId(listId) && isValidCustomList(incoming());
         allow update: if isOwner(userId) && isValidId(listId) &&
           incoming().diff(existing()).affectedKeys().hasOnly(['name']) &&
           incoming().name is string && incoming().name.size() > 0 && incoming().name.size() <= 100;
-        allow delete: if isOwner(userId) && isValidId(listId);
+        allow delete: if isAdminAuth() || (isOwner(userId) && isValidId(listId));
       }
 
       match /animeEntries/{animeId} {
@@ -378,7 +378,7 @@ service cloud.firestore {
             (incoming().addedAt is string || incoming().addedAt is timestamp)
           )
           && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'customLists', 'score', 'isFavorite', 'animeId', 'updatedAt', 'title', 'posterUrl', 'releaseYear', 'completedXpClaimed', 'watchedEpisodes', 'episodesCount', 'progress', 'addedAt']);
-        allow delete: if isOwner(userId) && isValidId(animeId);
+        allow delete: if isAdminAuth() || (isOwner(userId) && isValidId(animeId));
       }
 
       match /tierList/{listId} {
@@ -388,7 +388,7 @@ service cloud.firestore {
           incoming().keys().size() == 2 &&
           incoming().placedCharacters is map &&
           incoming().updatedAt == request.time;
-        allow delete: if isOwner(userId) && isValidId(listId);
+        allow delete: if isAdminAuth() || (isOwner(userId) && isValidId(listId));
       }
     }
 

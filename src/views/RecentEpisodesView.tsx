@@ -12,7 +12,7 @@ export default function RecentEpisodesView({ onBack, onAnimeClick }: { onBack: (
     if (Array.isArray(listCached) && listCached.length > 0) {
       return listCached;
     }
-    const cached = clientCache.get<any>('client_dashboard_cache');
+    const cached = clientCache.get<any>('client_dashboard_v5_cache') || clientCache.get<any>('client_dashboard_cache');
     if (cached?.recentEpisodes && Array.isArray(cached.recentEpisodes) && cached.recentEpisodes.length > 0) {
       return cached.recentEpisodes;
     }
@@ -39,11 +39,13 @@ export default function RecentEpisodesView({ onBack, onAnimeClick }: { onBack: (
     try {
       if (forceBypass) {
         clientCache.clearPrefix('client_recent_episodes');
-        clientCache.clearPrefix('client_dashboard_cache');
+        clientCache.clearPrefix('client_dashboard');
         clientCache.clearPrefix('recent_');
         clientCache.clearPrefix('client_anime_details');
+        clientCache.clearPrefix('servers_');
         clientCache.delete('client_recent_episodes_list');
         clientCache.delete(`client_recent_episodes_list_p${safePage}`);
+        clientCache.delete('client_dashboard_v5_cache');
         clientCache.delete('client_dashboard_cache');
         try {
           sessionStorage.clear();
@@ -89,9 +91,9 @@ export default function RecentEpisodesView({ onBack, onAnimeClick }: { onBack: (
           clientCache.set(`client_recent_episodes_list_p${safePage}`, formatted, 15 * 60 * 1000);
           if (safePage === 1) {
             clientCache.set('client_recent_episodes_list', formatted, 15 * 60 * 1000);
-            const cachedDash = clientCache.get<any>('client_dashboard_cache');
+            const cachedDash = clientCache.get<any>('client_dashboard_v5_cache');
             if (cachedDash) {
-              clientCache.set('client_dashboard_cache', { ...cachedDash, recentEpisodes: formatted }, 15 * 60 * 1000);
+              clientCache.set('client_dashboard_v5_cache', { ...cachedDash, recentEpisodes: formatted }, 15 * 60 * 1000);
             }
           }
           setRefreshing(false);
@@ -118,7 +120,7 @@ export default function RecentEpisodesView({ onBack, onAnimeClick }: { onBack: (
             setHasNext(true);
             clientCache.set('client_recent_episodes_list_p1', cleanedDash, 15 * 60 * 1000);
             clientCache.set('client_recent_episodes_list', cleanedDash, 15 * 60 * 1000);
-            clientCache.set('client_dashboard_cache', jsonDash.data, 15 * 60 * 1000);
+            clientCache.set('client_dashboard_v5_cache', jsonDash.data, 15 * 60 * 1000);
             setRefreshing(false);
             setLoading(false);
             return;

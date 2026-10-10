@@ -158,10 +158,11 @@ export default function HomeView({
       const clientDay = daysMap[new Date().getDay()];
       const settings = JSON.parse(
         localStorage.getItem('adminSliderSettings') ||
-          '{"limit": 5, "season": "auto", "speed": 3, "globalAnnouncement": ""}'
+          '{"limit": 5, "season": "auto", "sliderMode": "best_season", "speed": 3, "globalAnnouncement": ""}'
       );
       const activeSeason = settings?.season || 'auto';
-      const key = `client_dashboard_v4_cache_${activeSeason}_${clientDay}`;
+      const activeMode = settings?.sliderMode || 'best_season';
+      const key = `client_dashboard_v5_cache_${activeSeason}_${activeMode}_${clientDay}`;
       const cached =
         clientCache.get<{
           top5: any[];
@@ -176,7 +177,7 @@ export default function HomeView({
           popular: any[];
           currentSeason: any[];
           schedule: any[];
-        }>('client_dashboard_v4_cache');
+        }>('client_dashboard_v5_cache');
       if (cached && (cached.top5?.length > 0 || cached.recentEpisodes?.length > 0)) {
         return cached;
       }
@@ -266,7 +267,7 @@ export default function HomeView({
         (data) => {
           if (data && (data.top5?.length > 0 || data.recentEpisodes?.length > 0)) {
             setDashboard(data);
-            clientCache.set('client_dashboard_v4_cache', data, 15 * 60 * 1000);
+            clientCache.set('client_dashboard_v5_cache', data, 15 * 60 * 1000);
           }
         },
         15 * 60 * 1000
@@ -288,13 +289,15 @@ export default function HomeView({
       const daysMap = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
       const clientDay = daysMap[new Date().getDay()];
       const activeSeason = sliderSettings.season || 'auto';
+      const activeMode = sliderSettings.sliderMode || 'best_season';
 
-      clientCache.clearPrefix('client_dashboard_cache');
+      clientCache.clearPrefix('client_dashboard');
       clientCache.clearPrefix('client_recent_episodes');
       clientCache.clearPrefix('recent_');
       clientCache.clearPrefix('client_anime_details');
-      clientCache.delete(`client_dashboard_cache_${activeSeason}_${clientDay}`);
-      clientCache.delete('client_dashboard_cache');
+      clientCache.clearPrefix('servers_');
+      clientCache.delete(`client_dashboard_v5_cache_${activeSeason}_${activeMode}_${clientDay}`);
+      clientCache.delete('client_dashboard_v5_cache');
       clientCache.delete('client_recent_episodes_list');
       try {
         sessionStorage.clear();
@@ -302,7 +305,7 @@ export default function HomeView({
 
       const ts = Date.now();
       const [dashRes, recentRes] = await Promise.all([
-        fetch(`/api/dashboard?day=${clientDay}&season=${activeSeason}&bypass=true&_t=${ts}`, {
+        fetch(`/api/dashboard?day=${clientDay}&season=${activeSeason}&sliderMode=${activeMode}&bypass=true&_t=${ts}`, {
           cache: 'no-store',
           headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' }
         })
@@ -353,20 +356,20 @@ export default function HomeView({
         };
         setDashboard(updatedDashboard);
         clientCache.set(
-          `client_dashboard_cache_${activeSeason}_${clientDay}`,
+          `client_dashboard_v5_cache_${activeSeason}_${activeMode}_${clientDay}`,
           updatedDashboard,
           15 * 60 * 1000
         );
-        clientCache.set('client_dashboard_cache', updatedDashboard, 15 * 60 * 1000);
+        clientCache.set('client_dashboard_v5_cache', updatedDashboard, 15 * 60 * 1000);
       } else if (freshRecent.length > 0) {
         setDashboard((prev) => {
           const updated = { ...prev, recentEpisodes: freshRecent };
           clientCache.set(
-            `client_dashboard_cache_${activeSeason}_${clientDay}`,
+            `client_dashboard_v5_cache_${activeSeason}_${activeMode}_${clientDay}`,
             updated,
             15 * 60 * 1000
           );
-          clientCache.set('client_dashboard_cache', updated, 15 * 60 * 1000);
+          clientCache.set('client_dashboard_v5_cache', updated, 15 * 60 * 1000);
           return updated;
         });
       }

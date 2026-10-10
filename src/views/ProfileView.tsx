@@ -1761,7 +1761,26 @@ export default function ProfileView({
                   })}
                 </div>
 
-                <div className="pt-3 border-t border-white/5">
+                <div className="pt-3 border-t border-white/5 space-y-2">
+                  <button
+                    onClick={async () => {
+                      try {
+                        const { clientCache } = await import('../utils/clientCache');
+                        clientCache.clear();
+                        sessionStorage.clear();
+                        localStorage.removeItem('animeHistory');
+                        if ('caches' in window) {
+                          const names = await caches.keys();
+                          await Promise.all(names.map((n) => caches.delete(n)));
+                        }
+                        await fetch('/api/cache/clear', { method: 'POST' }).catch(() => {});
+                        window.location.reload();
+                      } catch {}
+                    }}
+                    className="p-3 w-full bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 rounded-xl text-amber-400 transition flex items-center justify-center gap-2 font-black cursor-pointer text-[10px]"
+                  >
+                    <RefreshCw size={13} /> تفريغ الكاش والبيانات المؤقتة وتحديث التطبيق
+                  </button>
                   <button
                     onClick={logout}
                     className="p-3.5 w-full bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 rounded-xl text-red-400 transition flex items-center justify-center gap-2 font-black cursor-pointer text-[10.5px]"

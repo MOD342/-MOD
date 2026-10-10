@@ -15,7 +15,7 @@ export interface ClientCacheStats {
 
 class ClientCacheManager {
   // Cache version bump automatically invalidates legacy static localStorage & sessionStorage caches
-  private readonly CACHE_VERSION = 'v15_clean_real_data';
+  private readonly CACHE_VERSION = 'v17_launch_clean_slate';
 
   // Layer 1: High-Speed In-Memory Cache (0ms latency, zero JSON parsing overhead)
   private memoryCache = new Map<string, CacheWrapper<any>>();
@@ -43,7 +43,22 @@ class ClientCacheManager {
         const keysToRemove: string[] = [];
         for (let i = 0; i < localStorage.length; i++) {
           const k = localStorage.key(i);
-          if (k && (k.startsWith('client_') || k.startsWith('servers_') || k.startsWith('anime_') || k.startsWith('recent_') || k === 'is_api_unreachable')) {
+          if (
+            k &&
+            (k.startsWith('client_') ||
+              k.startsWith('servers_') ||
+              k.startsWith('anime_') ||
+              k.startsWith('recent_') ||
+              k.startsWith('schedule_') ||
+              k.startsWith('season_') ||
+              k.startsWith('explore_') ||
+              k.startsWith('mod_user_data_') ||
+              k.startsWith('arena_') ||
+              k.startsWith('otaku_') ||
+              k === 'is_api_unreachable' ||
+              k === 'adminSliderSettings' ||
+              k === 'adminAnimeCuration')
+          ) {
             keysToRemove.push(k);
           }
         }
@@ -51,8 +66,16 @@ class ClientCacheManager {
         try {
           sessionStorage.clear();
         } catch {}
+        // Also unregister any stale Service Worker caches if present
+        if (typeof window !== 'undefined' && 'caches' in window) {
+          caches.keys().then((names) => {
+            names.forEach((name) => caches.delete(name));
+          }).catch(() => {});
+        }
         localStorage.setItem('__anime_cache_version__', this.CACHE_VERSION);
       }
+      // Always sweep expired items on boot
+      this.clearExpired();
     } catch {}
   }
 
@@ -180,7 +203,7 @@ class ClientCacheManager {
    */
   prefetchDetails(id: string | number): void {
     if (!id || id === 'random') return;
-    const cacheKey = `client_anime_details_v7_${id}`;
+    const cacheKey = `client_anime_details_v8_${id}`;
     if (this.get(cacheKey) || this.prefetchedSet.has(String(id))) return;
     
     this.prefetchedSet.add(String(id));

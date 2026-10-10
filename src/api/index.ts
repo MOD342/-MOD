@@ -858,9 +858,13 @@ router.get(
       await serverCache.delete("https://api.jikan.moe/v4/seasons/now?limit=25");
       const days = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
       const seasons = ["auto", "winter", "spring", "summer", "fall"];
+      const sliderModes = ["best_season", "trending_season", "all_time_best", "classic_historical", "custom"];
       for (const d of days) {
         for (const s of seasons) {
           await serverCache.delete(`dashboard-${d}-${s}`);
+          for (const m of sliderModes) {
+            await serverCache.delete(`dashboard-v5-${d}-${s}-${m}`);
+          }
         }
       }
     }
@@ -1439,7 +1443,42 @@ async function extractDirectStream(
       }
     }
 
-    // 3.5. دعم إضافي للسيرفرات الشهيرة (Uqload, Streamwish, MP4Upload, Sibnet, Vidmoly, Filemoon)
+    // 3.5. دعم إضافي للسيرفرات الشهيرة (4Shared, Uqload, Sibnet, Vidmoly, Filemoon)
+    // 4Shared Direct MP4 Extraction (بث مباشر فوري بدون عداد الانتظار 10 ثوانٍ)
+    if (currentUrl.includes("4shared.com")) {
+      const sharedMp4Match =
+        html.match(/<source\s+src=["'](https?:[^"']+\.mp4[^"']*)["']/i) ||
+        combinedCodeToScan.match(/(https?:\/\/dc\d+\.4shared\.com\/[^\s'"]+\.mp4[^\s'"]*)/i);
+      if (sharedMp4Match) {
+        return {
+          directUrl: sharedMp4Match[1],
+          type: "direct",
+          sources: [
+            {
+              file: sharedMp4Match[1],
+              label: "4Shared Direct (MP4)",
+              type: "mp4",
+            },
+          ],
+        };
+      }
+    }
+
+    // MP4Upload & Streamwish / AsnWish: مشغل السيرفر المدمج يتطلب جلسة المتصفح وترويسة Referer الأصلية
+    if (
+      currentUrl.includes("mp4upload.com") ||
+      currentUrl.includes("asnwish.com") ||
+      currentUrl.includes("streamwish") ||
+      currentUrl.includes("awish") ||
+      currentUrl.includes("swish")
+    ) {
+      return {
+        directUrl: currentUrl,
+        type: "iframe",
+        sources: [{ file: currentUrl, label: "FHD", type: "iframe" }],
+      };
+    }
+
     // Uqload Direct Extraction
     if (currentUrl.includes("uqload")) {
       const uqMatch =
@@ -1476,59 +1515,6 @@ async function extractDirectStream(
           file: fmMatch[1],
           label: "سيرفر Filemoon مباشر (HLS)",
           type: "hls",
-        });
-      }
-    }
-
-    // Streamwish / Swish / Strwish / Awish Direct Extraction
-    if (
-      currentUrl.includes("streamwish") ||
-      currentUrl.includes("awish") ||
-      currentUrl.includes("strwish") ||
-      currentUrl.includes("wish") ||
-      currentUrl.includes("swish")
-    ) {
-      const wishMatch =
-        html.match(
-          /sources\s*:\s*\[\s*\{\s*file\s*:\s*['"](https?:.+?\.m3u8[^'"]*)['"]/i,
-        ) ||
-        html.match(/file\s*:\s*['"](https?:[^'"]+?\.m3u8[^'"]*)['"]/i) ||
-        combinedCodeToScan.match(
-          /file\s*:\s*['"](https?:[^'"]+?\.m3u8[^'"]*)['"]/i,
-        ) ||
-        combinedCodeToScan.match(/(https?:\/\/[^\s'"]+?\.m3u8[^\s'"]*)/i);
-      if (wishMatch) {
-        sources.push({
-          file: wishMatch[1],
-          label: "بث Streamwish مباشر (HLS)",
-          type: "hls",
-        });
-      }
-    }
-
-    // MP4Upload Direct Extraction
-    if (
-      currentUrl.includes("mp4upload") ||
-      currentUrl.includes("md4") ||
-      currentUrl.includes("mdloader")
-    ) {
-      const mp4Match =
-        html.match(
-          /player\.src\(\s*\{\s*type\s*:\s*['"]video\/mp4['"]\s*,\s*src\s*:\s*['"](https?:[^'"]+\.mp4[^'"]*)['"]/i,
-        ) ||
-        html.match(/src\s*:\s*['"](https?:[^'"]+\.mp4[^'"]*)['"]/i) ||
-        html.match(/file\s*:\s*['"](https?:[^'"]+\.mp4[^'"]*)['"]/i) ||
-        combinedCodeToScan.match(
-          /src\s*:\s*['"](https?:[^'"]+\.mp4[^'"]*)['"]/i,
-        ) ||
-        combinedCodeToScan.match(
-          /file\s*:\s*['"](https?:[^'"]+\.mp4[^'"]*)['"]/i,
-        );
-      if (mp4Match) {
-        sources.push({
-          file: mp4Match[1],
-          label: "سيرفر MP4Upload مباشر",
-          type: "mp4",
         });
       }
     }
@@ -1838,9 +1824,29 @@ router.post(
   "/cache/clear",
   handleAsync(async (req: Request, res: Response) => {
     await serverCache.clear();
+    try {
+      const { ScraperQueue } = await import("../services/queueService");
+      ScraperQueue.clearJobs();
+    } catch {}
     res.json({
       success: true,
-      message: "تم تفريغ كافة مستويات التخزين المؤقت بنجاح (node-cache / Redis / Disk).",
+      message: "تم تفريغ كافة مستويات التخزين المؤقت بنجاح (node-cache / Redis / Disk / Queue).",
+    });
+  }),
+);
+
+router.post(
+  "/system/factory-reset",
+  handleAsync(async (req: Request, res: Response) => {
+    await serverCache.clear();
+    try {
+      const { ScraperQueue } = await import("../services/queueService");
+      ScraperQueue.clearJobs();
+    } catch {}
+    res.json({
+      success: true,
+      message: "تم تنظيف الخادم، حذف النسخ المؤقتة (.cache)، وتصفير قوائم الانتظار والذاكرة بنجاح.",
+      timestamp: Date.now(),
     });
   }),
 );
@@ -1927,10 +1933,16 @@ router.get(
       if (bypass) {
         await serverCache.delete(cacheKey);
         await serverCache.delete("recent_episodes");
+        await serverCache.delete("recent_episodes_animedar_isolated_v3_page_1");
         await serverCache.delete("https://api.jikan.moe/v4/seasons/now?limit=25");
+        const sliderModes = ["best_season", "trending_season", "all_time_best", "classic_historical", "custom"];
         for (const d of days) {
           await serverCache.delete(`dashboard-${d}-${requestedSeason}`);
           await serverCache.delete(`dashboard-${d}-auto`);
+          for (const m of sliderModes) {
+            await serverCache.delete(`dashboard-v5-${d}-${requestedSeason}-${m}`);
+            await serverCache.delete(`dashboard-v5-${d}-auto-${m}`);
+          }
         }
       } else {
         const cached = await serverCache.get<any>(cacheKey);

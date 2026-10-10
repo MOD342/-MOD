@@ -103,7 +103,7 @@ async function startServer() {
   app.get('/sw.js', (req: Request, res: Response) => {
     res.setHeader('Content-Type', 'application/javascript');
     res.send(`
-const CACHE_NAME = 'anime-mod-cache-v7';
+const CACHE_NAME = 'anime-mod-cache-v8';
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',

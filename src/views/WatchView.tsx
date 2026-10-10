@@ -116,13 +116,14 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
     if (episode) {
       window.scrollTo({ top: 0, behavior: 'smooth' });
       const activeSeasonNumber = episode?.seasonNumber || watchSeasonNum || 1;
-      const serversCacheKey = `servers_v7_${anime?._id || 'unknown'}_s_${activeSeasonNumber}_ep_${episode?.num || episode?.id || '1'}`;
+      const serversCacheKey = `servers_v8_${anime?._id || 'unknown'}_s_${activeSeasonNumber}_ep_${episode?.num || episode?.id || '1'}`;
       const cachedServers = clientCache.get<any[]>(serversCacheKey);
       
-      if (cachedServers && Array.isArray(cachedServers) && cachedServers.length > 0) {
+      if (cachedServers && Array.isArray(cachedServers) && cachedServers.length > 0 && cachedServers.some((s: any) => s.category === 'download')) {
         setServers(cachedServers);
         setLoadingServers(false);
-        handleServerSelect(cachedServers[0].url);
+        const firstWatch = cachedServers.find((s: any) => s.category !== 'download') || cachedServers[0];
+        handleServerSelect(firstWatch.url);
       } else {
         setLoadingServers(true);
         setServers([]);
@@ -149,8 +150,9 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
         if (data && data.success && data.data && Array.isArray(data.data) && data.data.length > 0) {
           setServers(data.data);
           clientCache.set(serversCacheKey, data.data, 2 * 60 * 60 * 1000); // 2 hours cache
-          if (!cachedServers || cachedServers.length === 0) {
-            handleServerSelect(data.data[0].url);
+          if (!cachedServers || cachedServers.length === 0 || !cachedServers.some((s: any) => s.category === 'download')) {
+            const firstWatch = data.data.find((s: any) => s.category !== 'download') || data.data[0];
+            handleServerSelect(firstWatch.url);
           }
         } else if (!cachedServers) {
           setServers([]);
@@ -205,10 +207,10 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
     if (lowerUrl.includes('sendvid')) return 'Sendvid';
     if (lowerUrl.includes('mp4upload')) return 'MP4Upload';
     if (lowerUrl.includes('uqload')) return 'Uqload';
-    if (lowerUrl.includes('streamwish') || lowerUrl.includes('asnwish') || lowerUrl.includes('awish') || lowerUrl.includes('swish')) return 'Streamwish';
+    if (lowerUrl.includes('streamwish') || lowerUrl.includes('asnwish') || lowerUrl.includes('awish') || lowerUrl.includes('swish') || lowerUrl.includes('sfastwish') || lowerUrl.includes('flaswish') || lowerUrl.includes('obeywish') || lowerUrl.includes('cdnwish')) return 'Streamwish';
     if (lowerUrl.includes('filemoon')) return 'Filemoon';
     if (lowerUrl.includes('lulustream')) return 'LuluStream';
-    if (lowerUrl.includes('filelions')) return 'VidHide';
+    if (lowerUrl.includes('filelions') || lowerUrl.includes('vidhide')) return 'VidHide';
     if (lowerUrl.includes('hgcloud') || lowerUrl.includes('dhcplay')) return 'CloudStream';
     if (lowerUrl.includes('ok.ru')) return 'Ok.ru';
     if (lowerUrl.includes('drive.google') || lowerUrl.includes('gdrive')) return 'Google Drive';
@@ -224,6 +226,13 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
     if (lowerUrl.includes('autoembed')) return 'AutoEmbed';
     if (lowerUrl.includes('multiembed')) return 'MultiEmbed';
     if (lowerUrl.includes('vidsrc')) return 'VidSrc';
+    if (lowerUrl.includes('pixeldrain')) return 'PixelDrain';
+    if (lowerUrl.includes('gofile')) return 'GoFile';
+    if (lowerUrl.includes('workupload')) return 'WorkUpload';
+    if (lowerUrl.includes('krakenfiles')) return 'KrakenFiles';
+    if (lowerUrl.includes('hexupload') || lowerUrl.includes('hexload')) return 'HexUpload';
+    if (lowerUrl.includes('drop.download')) return 'DropDownload';
+    if (lowerUrl.includes('megaup')) return 'MegaUp';
 
     const cleaned = (rawName || '')
       .replace(/\(.*?\)/g, '')
@@ -267,12 +276,20 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
       return;
     }
 
-    // 2. السيرفرات المضمنة المباشرة (Mega, Videa, 4Shared, Dailymotion, Ok.ru, Drive, VidLink, VidSrc, 2Embed...)
-    // تعمل فوراً عبر مشغل السيرفر الحقيقي المدمج بدون تأخير أو فيديوهات تجريبية وهمية
+    // 2. السيرفرات المضمنة المباشرة (Mega, Videa, MP4Upload, Streamwish, Dailymotion, Ok.ru, Drive, VidLink...)
+    // ملاحظة: 4Shared يتم تمريره لمستخرج الـ Backend لاستخراج ملف الـ MP4 المباشر وتخطي عداد الـ 10 ثوانٍ
     const isKnownEmbedHost =
       lowerUrl.includes('mega.nz') ||
       lowerUrl.includes('videa.hu') ||
-      lowerUrl.includes('4shared.com/web/embed') ||
+      lowerUrl.includes('mp4upload.com') ||
+      lowerUrl.includes('streamwish') ||
+      lowerUrl.includes('asnwish') ||
+      lowerUrl.includes('awish') ||
+      lowerUrl.includes('swish') ||
+      lowerUrl.includes('sfastwish') ||
+      lowerUrl.includes('flaswish') ||
+      lowerUrl.includes('obeywish') ||
+      lowerUrl.includes('cdnwish') ||
       lowerUrl.includes('dailymotion.com/embed') ||
       lowerUrl.includes('vk.com/video_ext') ||
       lowerUrl.includes('lulustream.com/e/') ||
@@ -296,9 +313,9 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
       return;
     }
 
-    // 3. فحص التخزين المؤقت للاستخراج المباشر (للسيرفرات القابلة للاستخراج مثل Uqload, MP4Upload, Streamwish, Filemoon, Sibnet)
+    // 3. فحص التخزين المؤقت للاستخراج المباشر (للسيرفرات القابلة للاستخراج مثل 4Shared, Uqload, Filemoon, Sibnet)
     try {
-      const cached = sessionStorage.getItem(`client_extracted_v3_${url}`);
+      const cached = sessionStorage.getItem(`client_extracted_v4_${url}`);
       if (cached) {
         const parsed = JSON.parse(cached);
         if (parsed.directUrl && !String(parsed.directUrl).includes('commondatastorage.googleapis.com')) {
@@ -338,7 +355,7 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
         setExtractedSources(resolvedSources);
         try {
           sessionStorage.setItem(
-            `client_extracted_v3_${url}`,
+            `client_extracted_v4_${url}`,
             JSON.stringify({
               directUrl: resolvedStream,
               type: resolvedType,

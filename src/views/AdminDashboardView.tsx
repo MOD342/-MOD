@@ -190,9 +190,12 @@ export default function AdminDashboardView({
   const [helpTelegramUrl, setHelpTelegramUrl] = useState('https://t.me/+St876s24-2I4N2U0');
   const [groupTelegramUrl, setGroupTelegramUrl] = useState('https://t.me/+pW720892GZRkN2I0');
   const [donateTelegramUrl, setDonateTelegramUrl] = useState('https://t.me/Mod_342');
-  const [monetizationMode, setMonetizationMode] = useState<'simulation' | 'direct_link' | 'script'>('simulation');
-  const [directLinkUrl, setDirectLinkUrl] = useState('');
+  const [monetizationMode, setMonetizationMode] = useState<'simulation' | 'direct_link' | 'script' | 'hybrid'>('hybrid');
+  const [directLinkUrl, setDirectLinkUrl] = useState('https://uplcm.com/4/11992531');
+  const [backupDirectLinkUrl, setBackupDirectLinkUrl] = useState('https://www.profitableratecpmnetwork.com/xw38hehu?key=f928ec53ec71574a775e118d9d0b4f38');
   const [scriptCode, setScriptCode] = useState('');
+  const [requireClickVerification, setRequireClickVerification] = useState(true);
+  const [adCooldownSeconds, setAdCooldownSeconds] = useState(20);
   const [stayTime, setStayTime] = useState(15);
   const [adRewardCoins, setAdRewardCoins] = useState(35);
   const [adRewardXp, setAdRewardXp] = useState(120);
@@ -234,6 +237,8 @@ export default function AdminDashboardView({
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
   const [confirmResetModal, setConfirmResetModal] = useState(false);
   const [isResettingAll, setIsResettingAll] = useState(false);
+  const [confirmFactoryWipeModal, setConfirmFactoryWipeModal] = useState(false);
+  const [isFactoryWiping, setIsFactoryWiping] = useState(false);
 
   // Toast Feedback
   const [toast, setToast] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
@@ -370,8 +375,13 @@ export default function AdminDashboardView({
         }
         if (monCfg) {
           if (monCfg.mode) setMonetizationMode(monCfg.mode);
-          if (monCfg.directLinkUrl !== undefined) setDirectLinkUrl(monCfg.directLinkUrl);
+          if (monCfg.directLinkUrl && !monCfg.directLinkUrl.includes('effectivecpmnetwork.com')) {
+            setDirectLinkUrl(monCfg.directLinkUrl);
+          }
+          if (monCfg.backupDirectLinkUrl) setBackupDirectLinkUrl(monCfg.backupDirectLinkUrl);
           if (monCfg.scriptCode !== undefined) setScriptCode(monCfg.scriptCode);
+          if (monCfg.requireClickVerification !== undefined) setRequireClickVerification(Boolean(monCfg.requireClickVerification));
+          if (monCfg.cooldownSeconds !== undefined) setAdCooldownSeconds(Number(monCfg.cooldownSeconds) || 20);
           if (monCfg.stayTime !== undefined) setStayTime(Number(monCfg.stayTime) || 15);
           if (monCfg.rewardCoins !== undefined) setAdRewardCoins(Number(monCfg.rewardCoins) || 35);
           if (monCfg.rewardXp !== undefined) setAdRewardXp(Number(monCfg.rewardXp) || 120);
@@ -1352,7 +1362,10 @@ export default function AdminDashboardView({
       await moderationService.updateGlobalSettings('monetization', {
         mode: monetizationMode,
         directLinkUrl,
+        backupDirectLinkUrl,
         scriptCode,
+        requireClickVerification,
+        cooldownSeconds: adCooldownSeconds,
         stayTime,
         rewardCoins: adRewardCoins,
         rewardXp: adRewardXp,
@@ -1422,6 +1435,43 @@ export default function AdminDashboardView({
     }
   };
 
+  const [isPurgingAllCaches, setIsPurgingAllCaches] = useState(false);
+
+  const handlePurgeAllSystemCaches = async () => {
+    try {
+      setIsPurgingAllCaches(true);
+      // 1. Purge Server Multi-Tier Cache (node-cache + .cache/*.json + Redis)
+      await fetch('/api/cache/clear', { method: 'POST' }).catch(() => {});
+
+      // 2. Purge Client Memory + LocalStorage Caches
+      const { clientCache } = await import('../utils/clientCache');
+      clientCache.clearPrefix('client_');
+      clientCache.clearPrefix('servers_');
+      clientCache.clearPrefix('anime_');
+      clientCache.clearPrefix('recent_');
+      clientCache.clearPrefix('schedule_');
+      clientCache.clearPrefix('season_');
+      clientCache.clearPrefix('explore_');
+
+      try {
+        sessionStorage.clear();
+      } catch {}
+
+      // 3. Purge Browser CacheStorage & Service Workers
+      if (typeof window !== 'undefined' && 'caches' in window) {
+        const names = await caches.keys();
+        await Promise.all(names.map((name) => caches.delete(name)));
+      }
+
+      writeAudit('settings', 'تخزين المنصة (Cache)', 'تفريغ شامل لجميع طبقات التخزين المؤقت في الخادم والمتصفح');
+      notify('تم تفريغ جميع البيانات القديمة والتخزين المؤقت من الخادم والمتصفح بنجاح!');
+    } catch {
+      notify('حدث خطأ أثناء تفريغ التخزين المؤقت', 'error');
+    } finally {
+      setIsPurgingAllCaches(false);
+    }
+  };
+
   const handleResetAllAccounts = async () => {
     try {
       setIsResettingAll(true);
@@ -1432,6 +1482,39 @@ export default function AdminDashboardView({
       notify('فشلت عملية تصفير الحسابات', 'error');
     } finally {
       setIsResettingAll(false);
+    }
+  };
+
+  const handleFactoryWipeForLaunch = async () => {
+    try {
+      setIsFactoryWiping(true);
+      // 1. Wipe all Firestore collections, accounts, subcollections, and cloud caches
+      const resStats = await moderationService.factoryWipeForLaunch();
+
+      // 2. Wipe Server Multi-Tier Cache (.cache/*.json, node-cache, Redis, ScraperQueue)
+      await fetch('/api/system/factory-reset', { method: 'POST' }).catch(() => {});
+
+      // 3. Wipe Client Memory, LocalStorage, SessionStorage, and Service Worker Caches
+      const { clientCache } = await import('../utils/clientCache');
+      clientCache.clear();
+      try {
+        sessionStorage.clear();
+      } catch {}
+      if (typeof window !== 'undefined' && 'caches' in window) {
+        try {
+          const names = await caches.keys();
+          await Promise.all(names.map((name) => caches.delete(name)));
+        } catch {}
+      }
+
+      setConfirmFactoryWipeModal(false);
+      notify(
+        `تم تنظيف الخوادم وحذف ${resStats.deletedUsers} حساب و ${resStats.deletedDocs} سجل وجميع النسخ والكاشات بنجاح — التطبيق جاهز للإطلاق!`
+      );
+    } catch {
+      notify('حدث خطأ أثناء التنظيف الشامل للإطلاق', 'error');
+    } finally {
+      setIsFactoryWiping(false);
     }
   };
 
@@ -4710,22 +4793,23 @@ export default function AdminDashboardView({
 
                   {/* Ad Mode & Economy Controls */}
                   <div className="border-t border-zinc-800/80 pt-4 space-y-4">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-                      <div className="lg:col-span-1">
-                        <label className="block text-[11px] text-zinc-400 font-bold mb-1">نمط الإعلانات</label>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
+                      <div className="lg:col-span-2">
+                        <label className="block text-[11px] text-zinc-400 font-bold mb-1">نمط الإعلانات والربح</label>
                         <select
                           value={monetizationMode}
                           onChange={e => setMonetizationMode(e.target.value as any)}
                           className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white font-bold focus:outline-none"
                         >
+                          <option value="hybrid">🔥 مدمج بأعلى ربح (Smartlink + بانر مصغر)</option>
+                          <option value="direct_link">رابط ربح مباشر (Direct Link / Smartlink)</option>
+                          <option value="script">بانر إعلاني مصغر (Script 300x250 / 320x50)</option>
                           <option value="simulation">إعلانات الرعاة والمجتمع الداخلية</option>
-                          <option value="direct_link">رابط مباشر (Direct Link / Smartlink)</option>
-                          <option value="script">كود إعلاني مخصص (Script / Iframe)</option>
                         </select>
                       </div>
 
                       <div>
-                        <label className="block text-[11px] text-zinc-400 font-bold mb-1">مدة الانتظار (ثواني)</label>
+                        <label className="block text-[11px] text-zinc-400 font-bold mb-1">مدة المشاهدة (ث)</label>
                         <input
                           type="number"
                           min={5}
@@ -4737,7 +4821,7 @@ export default function AdminDashboardView({
                       </div>
 
                       <div>
-                        <label className="block text-[11px] text-amber-400 font-bold mb-1">مكافأة الكوينز لكل إعلان</label>
+                        <label className="block text-[11px] text-amber-400 font-bold mb-1">مكافأة الكوينز</label>
                         <input
                           type="number"
                           min={5}
@@ -4749,7 +4833,7 @@ export default function AdminDashboardView({
                       </div>
 
                       <div>
-                        <label className="block text-[11px] text-sky-400 font-bold mb-1">مكافأة الخبرة (XP) لكل إعلان</label>
+                        <label className="block text-[11px] text-sky-400 font-bold mb-1">مكافأة XP</label>
                         <input
                           type="number"
                           min={10}
@@ -4761,7 +4845,7 @@ export default function AdminDashboardView({
                       </div>
 
                       <div>
-                        <label className="block text-[11px] text-emerald-400 font-bold mb-1">الحد اليومي لكل عضو</label>
+                        <label className="block text-[11px] text-emerald-400 font-bold mb-1">الحد اليومي</label>
                         <input
                           type="number"
                           min={1}
@@ -4773,37 +4857,126 @@ export default function AdminDashboardView({
                       </div>
                     </div>
 
-                    {monetizationMode === 'direct_link' && (
-                      <div>
-                        <label className="block text-[11px] text-amber-400 font-bold mb-1">
-                          رابط الربح المباشر (Smartlink URL)
-                        </label>
+                    {/* Policy & Anti-Fraud Protection Controls */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 bg-zinc-950/80 border border-zinc-800/80 rounded-xl p-3.5">
+                      <label className="flex items-center justify-between gap-3 cursor-pointer">
+                        <div>
+                          <span className="text-xs font-black text-white block">
+                            التحقق من فتح رابط الراعي قبل منح المكافأة
+                          </span>
+                          <span className="text-[10px] text-zinc-400 block mt-0.5">
+                            يضمن أن العضو فتح صفحة الـ Smartlink فعلياً للحصول على أعلى عائد (CPM)
+                          </span>
+                        </div>
                         <input
-                          type="text"
-                          dir="ltr"
-                          value={directLinkUrl}
-                          onChange={e => setDirectLinkUrl(e.target.value)}
-                          placeholder="https://..."
-                          className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white font-mono focus:outline-none"
+                          type="checkbox"
+                          checked={requireClickVerification}
+                          onChange={e => setRequireClickVerification(e.target.checked)}
+                          className="w-4 h-4 accent-[#FF1744] rounded cursor-pointer"
                         />
+                      </label>
+
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <span className="text-xs font-black text-white block">
+                            فاصل الأمان بين كل إعلانين (بالثواني)
+                          </span>
+                          <span className="text-[10px] text-zinc-400 block mt-0.5">
+                            يحمي حسابك في شركات الإعلانات من حظر النقرات المتتالية السريعة (Anti-Bot)
+                          </span>
+                        </div>
+                        <input
+                          type="number"
+                          min={5}
+                          max={120}
+                          value={adCooldownSeconds}
+                          onChange={e => setAdCooldownSeconds(Number(e.target.value))}
+                          className="w-20 bg-zinc-900 border border-zinc-800 rounded-xl px-2.5 py-1.5 text-xs text-amber-400 font-bold text-center focus:outline-none"
+                        />
+                      </div>
+                    </div>
+
+                    {(monetizationMode === 'direct_link' || monetizationMode === 'hybrid') && (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-[11px] text-amber-400 font-bold mb-1">
+                            رابط الربح المباشر الأساسي (Primary Smartlink - مثل Adsterra أو Monetag)
+                          </label>
+                          <input
+                            type="text"
+                            dir="ltr"
+                            value={directLinkUrl}
+                            onChange={e => setDirectLinkUrl(e.target.value)}
+                            placeholder="https://www.effectivecpmnetwork.com/..."
+                            className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white font-mono focus:outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] text-sky-400 font-bold mb-1">
+                            رابط ربح احتياطي للتناوب (Secondary Smartlink - اختياري لمضاعفة الـ eCPM)
+                          </label>
+                          <input
+                            type="text"
+                            dir="ltr"
+                            value={backupDirectLinkUrl}
+                            onChange={e => setBackupDirectLinkUrl(e.target.value)}
+                            placeholder="https://otieu.com/... (يتناوب تلقائياً مع الرابط الأساسي)"
+                            className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white font-mono focus:outline-none"
+                          />
+                        </div>
                       </div>
                     )}
 
-                    {monetizationMode === 'script' && (
+                    {(monetizationMode === 'script' || monetizationMode === 'hybrid') && (
                       <div>
                         <label className="block text-[11px] text-amber-400 font-bold mb-1">
-                          كود الإعلان (HTML / Script)
+                          كود البانر المصغر (HTML / Script — مقاس 300x250 أو 320x50)
                         </label>
                         <textarea
                           rows={4}
                           dir="ltr"
                           value={scriptCode}
                           onChange={e => setScriptCode(e.target.value)}
-                          placeholder="<script>...</script>"
+                          placeholder="<script type='text/javascript'>atOptions = { 'key' : '...', 'format' : 'iframe', 'height' : 250, 'width' : 300, 'params' : {} };</script><script type='text/javascript' src='...'></script>"
                           className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-xs text-white font-mono focus:outline-none resize-none"
                         />
                       </div>
                     )}
+
+                    {/* High-Yield Ad Networks & Policy Compliance Guide */}
+                    <div className="bg-gradient-to-l from-amber-500/10 via-zinc-950 to-zinc-950 border border-amber-500/25 rounded-2xl p-4 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h3 className="text-xs font-black text-amber-400 flex items-center gap-1.5">
+                          <Sparkles size={14} />
+                          <span>دليل تحقيق أعلى ربح من أصغر إعلان (متوافق 100% مع شروط الشبكات)</span>
+                        </h3>
+                        <span className="text-[10px] bg-amber-500/15 text-amber-300 px-2.5 py-0.5 rounded-full font-bold">
+                          أفضل استراتيجية
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-[11px] text-zinc-300 leading-relaxed">
+                        <div className="bg-zinc-900/70 border border-zinc-800/80 rounded-xl p-3 space-y-1">
+                          <strong className="text-white block">1. لماذا نمط (Hybrid) هو الأعلى ربحاً؟</strong>
+                          <p className="text-zinc-400">
+                            يدمج بين <strong>Smartlink</strong> (أعلى عائد لكل نقرة وظهور يصل إلى $3-$12 لكل 1000 زيارة) وبين <strong>بانر صغير 300x250</strong> يظهر داخل نفس البطاقة أثناء العد التنازلي، فتحصل على ربح مزدوج من حركة واحدة.
+                          </p>
+                        </div>
+                        <div className="bg-zinc-900/70 border border-zinc-800/80 rounded-xl p-3 space-y-1">
+                          <strong className="text-white block">2. أفضل الشبكات لمواقع الأنمي:</strong>
+                          <p className="text-zinc-400">
+                            • <strong>Adsterra</strong>: اطلب (Direct Link) + بانر (300x250). قبول فوري ودفعات من $5.<br />
+                            • <strong>Monetag</strong>: اطلب (Direct Link / Smartlink) وضع رابطه في خانة الرابط الاحتياطي للتناوب.<br />
+                            • <strong>A-Ads</strong>: بانر صغير بدون كوكيز يدفع بالعملات الرقمية فوراً.
+                          </p>
+                        </div>
+                        <div className="bg-zinc-900/70 border border-zinc-800/80 rounded-xl p-3 space-y-1">
+                          <strong className="text-white block">3. الحماية من إغلاق الحساب:</strong>
+                          <p className="text-zinc-400">
+                            يمنع جوجل AdSense إعلانات المكافآت (Incentivized Traffic) ومحتوى الأنمي، بينما <strong>تسمح بها Adsterra و Monetag رسمياً في روابط الـ Direct Link</strong> بشرط عدم فتح نوافذ إجبارية مخفية، وهو ما يطبقه هذا النظام تلقائياً.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
 
                     {/* Custom Sponsor & Community Ads Builder */}
                     {monetizationMode === 'simulation' && (
@@ -4965,12 +5138,21 @@ export default function AdminDashboardView({
                     <h2 className="text-sm font-black text-white">محرك مهام السحب والـ Caching</h2>
                     <p className="text-[11px] text-zinc-400 mt-0.5">جدولة وتحديث بيانات الأنمي والحلقات في الخلفية</p>
                   </div>
-                  <button
-                    onClick={handleClearQueueLogs}
-                    className="px-3 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 text-xs font-bold cursor-pointer transition"
-                  >
-                    مسح السجل
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handlePurgeAllSystemCaches}
+                      disabled={isPurgingAllCaches}
+                      className="px-3 py-1.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 text-xs font-bold cursor-pointer transition"
+                    >
+                      {isPurgingAllCaches ? 'جاري التفريغ...' : 'تفريغ الكاش القديم بالكامل'}
+                    </button>
+                    <button
+                      onClick={handleClearQueueLogs}
+                      className="px-3 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 text-xs font-bold cursor-pointer transition"
+                    >
+                      مسح السجل
+                    </button>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -5063,46 +5245,107 @@ export default function AdminDashboardView({
 
             {/* SUB-TAB 5.4: DATABASE MAINTENANCE */}
             {platformSubTab === 'maintenance' && (
-              <div className="bg-[#121215] border border-rose-500/30 rounded-2xl p-5 space-y-4">
-                <div>
-                  <h2 className="text-sm font-black text-rose-400 flex items-center gap-2">
-                    <AlertTriangle size={16} />
-                    <span>تصفير وإعادة تهيئة حسابات الموسم</span>
-                  </h2>
-                  <p className="text-xs text-zinc-400 mt-1 leading-relaxed">
-                    يقوم هذا الإجراء بإعادة تعيين نقاط الخبرة (XP) والمستويات والكوينز لجميع الحسابات إلى الصفر لبدء موسم تنافسي جديد.
-                  </p>
+              <div className="space-y-4">
+                {/* 1. Reset Season XP & Coins */}
+                <div className="bg-[#121215] border border-amber-500/30 rounded-2xl p-5 space-y-4">
+                  <div>
+                    <h2 className="text-sm font-black text-amber-400 flex items-center gap-2">
+                      <RefreshCw size={16} />
+                      <span>تصفير نقاط الخبرة والكوينز لموسم جديد</span>
+                    </h2>
+                    <p className="text-xs text-zinc-400 mt-1 leading-relaxed">
+                      يقوم هذا الإجراء بإعادة تعيين نقاط الخبرة (XP) والمستويات والكوينز وقوائم الأنمي لجميع الحسابات إلى الصفر مع الإبقاء على الحسابات المسجلة.
+                    </p>
+                  </div>
+
+                  {!confirmResetModal ? (
+                    <button
+                      onClick={() => setConfirmResetModal(true)}
+                      className="px-5 py-2.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/35 text-amber-300 text-xs font-bold cursor-pointer transition"
+                    >
+                      بدء إجراء تصفير إحصائيات الموسم...
+                    </button>
+                  ) : (
+                    <div className="bg-zinc-950 border border-amber-500/40 rounded-xl p-4 space-y-3">
+                      <p className="text-xs font-bold text-amber-300">
+                        هل أنت متأكد؟ سيتم تصفير الكوينز والمستويات لجميع الأعضاء الحاليين.
+                      </p>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => setConfirmResetModal(false)}
+                          className="px-4 py-2 rounded-xl bg-zinc-800 text-zinc-300 text-xs font-bold cursor-pointer"
+                        >
+                          إلغاء
+                        </button>
+                        <button
+                          onClick={handleResetAllAccounts}
+                          disabled={isResettingAll}
+                          className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-black text-xs font-black cursor-pointer"
+                        >
+                          {isResettingAll ? 'جاري التصفير...' : 'نعم، تأكيد تصفير الإحصائيات'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
-                {!confirmResetModal ? (
-                  <button
-                    onClick={() => setConfirmResetModal(true)}
-                    className="px-5 py-2.5 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/40 text-rose-300 text-xs font-bold cursor-pointer transition"
-                  >
-                    بدء إجراء تصفير الحسابات...
-                  </button>
-                ) : (
-                  <div className="bg-zinc-950 border border-rose-500/40 rounded-xl p-4 space-y-3">
-                    <p className="text-xs font-bold text-rose-300">
-                      هل أنت متأكد تماماً؟ لا يمكن التراجع عن تصفير الكوينز والمستويات بعد التنفيذ.
-                    </p>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => setConfirmResetModal(false)}
-                        className="px-4 py-2 rounded-xl bg-zinc-800 text-zinc-300 text-xs font-bold cursor-pointer"
-                      >
-                        إلغاء التصفير
-                      </button>
-                      <button
-                        onClick={handleResetAllAccounts}
-                        disabled={isResettingAll}
-                        className="px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-black cursor-pointer"
-                      >
-                        {isResettingAll ? 'جاري التصفير...' : 'نعم، تأكيد تصفير جميع الحسابات'}
-                      </button>
+                {/* 2. Full Factory Wipe for Official Launch / Post-Beta */}
+                <div className="bg-[#121215] border border-rose-500/40 rounded-2xl p-5 space-y-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h2 className="text-sm font-black text-rose-400 flex items-center gap-2">
+                        <AlertTriangle size={16} />
+                        <span>التنظيف الشامل للإطلاق الرسمي (حذف جميع الحسابات والبيانات والكاشات)</span>
+                      </h2>
+                      <p className="text-xs text-zinc-400 mt-1.5 leading-relaxed">
+                        يقوم هذا الإجراء بتنظيف المنصة بالكامل كأنها تثبيت جديد تماماً (Clean Slate) من أجل الإطلاق الرسمي أو بعد انتهاء المرحلة التجريبية، ويشمل:
+                      </p>
+                      <ul className="text-[11px] text-zinc-300 mt-2.5 space-y-1 list-disc list-inside">
+                        <li>حذف جميع حسابات الأعضاء وملفاتهم وقوائمهم وأسمائهم المحجوزة وإشعاراتهم من التخزين السحابي.</li>
+                        <li>حذف جميع التعليقات، التوصيات، التقييمات، البلاغات، التذاكر، الأكواد، وغرف ومنشورات الحلبة.</li>
+                        <li>مسح جميع ملفات النسخ الاحتياطي والكاش على الخادم (`.cache` + `node-cache` + `Redis` + `server_cache`).</li>
+                        <li>تفريغ التخزين المؤقت في المتصفح (`localStorage` + `sessionStorage` + `CacheStorage`).</li>
+                      </ul>
                     </div>
                   </div>
-                )}
+
+                  {!confirmFactoryWipeModal ? (
+                    <button
+                      onClick={() => setConfirmFactoryWipeModal(true)}
+                      className="px-5 py-2.5 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/50 text-rose-300 text-xs font-black cursor-pointer transition flex items-center gap-2"
+                    >
+                      <Trash2 size={14} />
+                      <span>تنظيف شامل للمنصة والخوادم (تهيئة الإطلاق الرسمي)...</span>
+                    </button>
+                  ) : (
+                    <div className="bg-zinc-950 border border-rose-500/50 rounded-xl p-4 space-y-3">
+                      <p className="text-xs font-black text-rose-400">
+                        تحذير نهائي: سيتم حذف كافة الحسابات، المنشورات، التعليقات، النسخ الاحتياطية، والتخزين السحابي والمؤقت بشكل كامل ولا يمكن التراجع عن ذلك!
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          onClick={() => setConfirmFactoryWipeModal(false)}
+                          disabled={isFactoryWiping}
+                          className="px-4 py-2 rounded-xl bg-zinc-800 text-zinc-300 text-xs font-bold cursor-pointer"
+                        >
+                          إلغاء العملية
+                        </button>
+                        <button
+                          onClick={handleFactoryWipeForLaunch}
+                          disabled={isFactoryWiping}
+                          className="px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-black cursor-pointer flex items-center gap-1.5"
+                        >
+                          <Trash2 size={14} />
+                          <span>
+                            {isFactoryWiping
+                              ? 'جاري تنظيف الخوادم وحذف الحسابات والكاشات...'
+                              : 'نعم، احذف كل شيء وابدأ صفحة بيضاء للإطلاق'}
+                          </span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </div>

@@ -373,6 +373,15 @@ export default function DiagnosticsView({ onBack }: DiagnosticsViewProps) {
     setCacheClearing(true);
     try {
       clientCache.clear();
+      try {
+        sessionStorage.clear();
+      } catch {}
+      try {
+        if ('caches' in window) {
+          const names = await caches.keys();
+          await Promise.all(names.map((name) => caches.delete(name)));
+        }
+      } catch {}
       const res = await fetch('/api/cache/clear', { method: 'POST' });
       if (res.ok) {
         setCacheStats((prev: any) => prev ? { ...prev, keysCount: 0, hits: 0, misses: 0 } : null);

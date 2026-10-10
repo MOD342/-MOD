@@ -407,6 +407,92 @@ export const moderationService = {
     }
   },
 
+  factoryWipeForLaunch: async (): Promise<{ deletedDocs: number; deletedUsers: number }> => {
+    if (!auth.currentUser) throw new Error('Not authenticated');
+    let deletedDocs = 0;
+    let deletedUsers = 0;
+
+    // 1. Delete all users and their nested subcollections (animeEntries, customLists, tierList, notifications)
+    try {
+      const usersSnap = await getDocs(collection(db, 'users'));
+      for (const userDoc of usersSnap.docs) {
+        const uid = userDoc.id;
+        const subCols = ['animeEntries', 'customLists', 'tierList', 'notifications'];
+        for (const sub of subCols) {
+          try {
+            const subSnap = await getDocs(collection(db, 'users', uid, sub));
+            if (!subSnap.empty) {
+              await Promise.all(
+                subSnap.docs.map(async (d) => {
+                  await deleteDoc(doc(db, 'users', uid, sub, d.id)).catch(() => {});
+                  deletedDocs++;
+                })
+              );
+            }
+          } catch {}
+        }
+        await deleteDoc(doc(db, 'users', uid)).catch(() => {});
+        deletedUsers++;
+        deletedDocs++;
+      }
+    } catch (err) {
+      console.warn('[factoryWipeForLaunch] Users cleanup warning:', err);
+    }
+
+    // 2. Delete all top-level collections (accounts, content, caches, settings, roles, logs, etc.)
+    const topCollections = [
+      'usernames',
+      'globalRoles',
+      'bannedUsers',
+      'reports',
+      'comments',
+      'recommendations',
+      'ratings',
+      'suggestions',
+      'globalNotifications',
+      'otakuLeaks',
+      'arenaFeed',
+      'battleRooms',
+      'arenaBelt',
+      'gameQuestions',
+      'animeTrivia',
+      'promoCodes',
+      'server_cache',
+      'globalSettings',
+      'auditLogs'
+    ];
+
+    for (const colName of topCollections) {
+      try {
+        const snap = await getDocs(collection(db, colName));
+        if (!snap.empty) {
+          await Promise.all(
+            snap.docs.map(async (d) => {
+              await deleteDoc(doc(db, colName, d.id)).catch(() => {});
+              deletedDocs++;
+            })
+          );
+        }
+      } catch (err) {
+        console.warn(`[factoryWipeForLaunch] Collection ${colName} cleanup warning:`, err);
+      }
+    }
+
+    // 3. Re-register current staff owner role so the admin doesn't lose access
+    if (auth.currentUser && isStaffEmail(auth.currentUser.email)) {
+      try {
+        await setDoc(doc(db, 'globalRoles', auth.currentUser.uid), {
+          role: 'owner',
+          email: (auth.currentUser.email || '').trim().toLowerCase(),
+          assignedAt: serverTimestamp(),
+          assignedBy: 'launch_clean_slate'
+        });
+      } catch {}
+    }
+
+    return { deletedDocs, deletedUsers };
+  },
+
   logAuditAction: async (params: {
     actionType: string;
     targetLabel: string;

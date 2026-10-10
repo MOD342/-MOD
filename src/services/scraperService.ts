@@ -49,8 +49,8 @@ function buildAnimedarServerUrls(
   downloadUrl: string;
   quality: '1080p' | '720p' | '480p' | 'auto';
 } | null {
-  const type = (rawType || '').trim().toLowerCase();
-  const id = (rawId || '').trim();
+  const type = (rawType || '').trim().toLowerCase().split(/\s+/)[0];
+  let id = (rawId || '').trim();
   const qLower = (rawQuality || '').trim().toLowerCase();
   if (!id) return null;
 
@@ -59,7 +59,7 @@ function buildAnimedarServerUrls(
     quality = '1080p';
   } else if (qLower === 'hd' || qLower === '720p' || qLower === '720') {
     quality = '720p';
-  } else if (qLower === 'sd' || qLower === '480p' || qLower === '480' || qLower === 'low') {
+  } else if (qLower === 'sd' || qLower === '480p' || qLower === '480' || qLower === 'ld' || qLower === '360p' || qLower === 'low') {
     quality = '480p';
   }
 
@@ -70,27 +70,60 @@ function buildAnimedarServerUrls(
   if (id.startsWith('http://') || id.startsWith('https://')) {
     watchUrl = id;
     downloadUrl = id;
-    if (id.includes('mega.nz')) serverName = 'Mega';
-    else if (id.includes('ok.ru')) serverName = 'Ok.ru';
-    else if (id.includes('videa.hu')) serverName = 'Videa';
-    else if (id.includes('mp4upload')) serverName = 'MP4Upload';
-    else if (id.includes('4shared')) serverName = '4Shared';
-    else if (id.includes('dailymotion')) serverName = 'Dailymotion';
-    else if (id.includes('drive.google')) serverName = 'Google Drive';
-    else if (id.includes('vidmoly')) serverName = 'Vidmoly';
-    else if (id.includes('uqload')) serverName = 'Uqload';
-    else if (id.includes('filemoon')) serverName = 'Filemoon';
-    else if (id.includes('dood') || id.includes('d000')) serverName = 'DoodStream';
-    else if (id.includes('wish') || id.includes('asnwish')) serverName = 'Streamwish';
+    if (id.includes('mega.nz')) {
+      serverName = 'Mega';
+      const cleanMega = id.replace(/\.html$/i, '');
+      watchUrl = cleanMega;
+      downloadUrl = cleanMega.replace('/embed/', '/file/');
+    } else if (id.includes('ok.ru')) {
+      serverName = 'Ok.ru';
+      downloadUrl = id.replace('/videoembed/', '/video/');
+    } else if (id.includes('videa.hu')) {
+      serverName = 'Videa';
+    } else if (id.includes('mp4upload')) {
+      serverName = 'MP4Upload';
+      downloadUrl = id.replace('/embed-', '/').replace(/\.html$/i, '');
+    } else if (id.includes('4shared')) {
+      serverName = '4Shared';
+      const fileMatch = id.match(/\/file\/([A-Za-z0-9_-]+)/);
+      if (fileMatch) {
+        downloadUrl = `https://www.4shared.com/get/${fileMatch[1].slice(0, 10)}`;
+      }
+    } else if (id.includes('dailymotion')) {
+      serverName = 'Dailymotion';
+    } else if (id.includes('drive.google')) {
+      serverName = 'Google Drive';
+      const dMatch = id.match(/\/d\/([A-Za-z0-9_-]+)/);
+      if (dMatch) {
+        downloadUrl = `https://drive.google.com/u/0/uc?id=${dMatch[1]}&export=download`;
+      }
+    } else if (id.includes('vidmoly')) {
+      serverName = 'Vidmoly';
+      downloadUrl = id.replace('/embed-', '/');
+    } else if (id.includes('uqload')) {
+      serverName = 'Uqload';
+      downloadUrl = id.replace('/embed-', '/').replace('/e/', '/');
+    } else if (id.includes('filemoon')) {
+      serverName = 'Filemoon';
+      downloadUrl = id.replace('/e/', '/d/');
+    } else if (id.includes('dood') || id.includes('d000')) {
+      serverName = 'DoodStream';
+      downloadUrl = id.replace('/e/', '/d/');
+    } else if (id.includes('wish') || id.includes('asnwish')) {
+      serverName = 'Streamwish';
+      downloadUrl = id.replace('/e/', '/f/');
+    }
     return { serverName, watchUrl, downloadUrl, quality };
   }
 
   switch (type) {
-    case 'mega':
+    case 'mega': {
       serverName = 'Mega';
-      watchUrl = `https://mega.nz/embed/${id}`;
-      downloadUrl = `https://mega.nz/file/${id}`;
+      const cleanId = id.replace(/^:?\/?mega\.nz\/embed#?!?/i, '').replace(/\.html$/i, '');
+      watchUrl = `https://mega.nz/embed/${cleanId}`;
+      downloadUrl = `https://mega.nz/file/${cleanId}`;
       break;
+    }
     case 'ok':
       serverName = 'Ok.ru';
       watchUrl = `https://www.ok.ru/videoembed/${id}`;
@@ -101,19 +134,25 @@ function buildAnimedarServerUrls(
       watchUrl = `https://videa.hu/player?v=${id}`;
       downloadUrl = `https://videa.hu/player?v=${id}`;
       break;
-    case 'mp4upload':
+    case 'mp4upload': {
       serverName = 'MP4Upload';
-      watchUrl = `https://www.mp4upload.com/embed-${id}.html`;
-      downloadUrl = `https://www.mp4upload.com/${id}`;
+      const cleanMp4Id = id.replace(/^embed-/i, '').replace(/\.html$/i, '');
+      watchUrl = `https://www.mp4upload.com/embed-${cleanMp4Id}.html`;
+      downloadUrl = `https://www.mp4upload.com/${cleanMp4Id}`;
       break;
-    case '4shared':
+    }
+    case '4shared': {
       serverName = '4Shared';
-      watchUrl = `https://www.4shared.com/web/embed/file/${id}`;
-      downloadUrl = `https://www.4shared.com/video/${id}`;
+      const sharedId = id.slice(0, 10);
+      watchUrl = `https://www.4shared.com/web/embed/file/${sharedId}`;
+      downloadUrl = `https://www.4shared.com/get/${sharedId}`;
       break;
+    }
     case 'asnwish':
     case 'streamwish':
     case 'wish':
+    case 'watchsb':
+    case 'sblanh':
       serverName = 'Streamwish';
       watchUrl = `https://asnwish.com/e/${id}`;
       downloadUrl = `https://asnwish.com/f/${id}`;
@@ -130,16 +169,20 @@ function buildAnimedarServerUrls(
       downloadUrl = `https://www.dailymotion.com/video/${id}`;
       break;
     case 'gdrive':
-    case 'drive':
+    case 'drive': {
       serverName = 'Google Drive';
-      watchUrl = `https://drive.google.com/file/d/${id}/preview`;
-      downloadUrl = `https://drive.google.com/uc?id=${id}&export=download`;
+      const cleanDriveId = id.split('/p')[0].split('%2F')[0].replace(/\/preview.*$/i, '');
+      watchUrl = `https://drive.google.com/file/d/${cleanDriveId}/preview`;
+      downloadUrl = `https://drive.google.com/u/0/uc?id=${cleanDriveId}&export=download`;
       break;
-    case 'uqload':
+    }
+    case 'uqload': {
       serverName = 'Uqload';
-      watchUrl = `https://uqload.io/embed-${id}.html`;
-      downloadUrl = `https://uqload.io/${id}.html`;
+      const cleanUqId = id.replace(/^embed-/i, '').replace(/\.html$/i, '');
+      watchUrl = `https://uqload.vc/embed-${cleanUqId}.html`;
+      downloadUrl = `https://uqload.vc/${cleanUqId}.html`;
       break;
+    }
     case 'filemoon':
       serverName = 'Filemoon';
       watchUrl = `https://filemoon.sx/e/${id}`;
@@ -171,11 +214,13 @@ function buildAnimedarServerUrls(
       watchUrl = `https://streamtape.com/e/${id}`;
       downloadUrl = `https://streamtape.com/v/${id}`;
       break;
-    case 'vidmoly':
+    case 'vidmoly': {
       serverName = 'Vidmoly';
-      watchUrl = `https://vidmoly.to/embed-${id}.html`;
-      downloadUrl = `https://vidmoly.to/${id}.html`;
+      const cleanMolyId = id.replace(/^embed-/i, '').replace(/\.html$/i, '');
+      watchUrl = `https://vidmoly.org/embed-${cleanMolyId}.html`;
+      downloadUrl = `https://vidmoly.org/${cleanMolyId}.html`;
       break;
+    }
     case 'sendvid':
       serverName = 'Sendvid';
       watchUrl = `https://sendvid.com/embed/${id}`;
@@ -185,6 +230,86 @@ function buildAnimedarServerUrls(
       serverName = 'YourUpload';
       watchUrl = `https://www.yourupload.com/embed/${id}`;
       downloadUrl = `https://www.yourupload.com/watch/${id}`;
+      break;
+    case 'mailru':
+      serverName = 'Mail.ru';
+      watchUrl = `https://my.mail.ru/video/embed/${id}`;
+      downloadUrl = `https://my.mail.ru/video/embed/${id}`;
+      break;
+    case 'vid4up':
+    case 'vid4upd0':
+      serverName = 'Vid4Up';
+      watchUrl = `https://cdn2.vid4up.xyz/embedvideo/${id}`;
+      downloadUrl = `https://cdn2.vid4up.xyz/video/${id}`;
+      break;
+    case 'mediafire':
+      serverName = 'MediaFire';
+      watchUrl = '';
+      downloadUrl = `https://www.mediafire.com/file/${id}`;
+      break;
+    case 'fembed':
+    case 'vanfem':
+    case 'femax':
+      serverName = 'Fembed';
+      watchUrl = `https://vanfem.com/v/${id}`;
+      downloadUrl = `https://vanfem.com/f/${id}`;
+      break;
+    case 'vidbem':
+    case 'vidbom':
+    case 'vedbom':
+    case 'vidbm':
+    case 'vidbam': {
+      serverName = 'VidBom';
+      const cleanVbId = id.replace(/^embed-/i, '').replace(/\.html$/i, '');
+      watchUrl = `https://vidbam.org/embed-${cleanVbId}.html`;
+      downloadUrl = `https://vidbam.org/${cleanVbId}.html`;
+      break;
+    }
+    case 'govid':
+    case 'goved': {
+      serverName = 'GoVid';
+      const cleanGvId = id.replace(/^embed-/i, '').replace(/\.html$/i, '');
+      watchUrl = `https://govid.me/embed-${cleanGvId}.html`;
+      downloadUrl = `https://govid.me/${cleanGvId}.html`;
+      break;
+    }
+    case 'samaup':
+    case 'sama-share': {
+      serverName = 'SamaUp';
+      const cleanSmId = id.replace(/^embed-/i, '').replace(/\.html$/i, '');
+      watchUrl = `https://samaup.cc/embed-${cleanSmId}.html`;
+      downloadUrl = `https://sama-share.com/${cleanSmId}`;
+      break;
+    }
+    case 'soraplay':
+      serverName = 'SoraPlay';
+      watchUrl = `https://soraplay.xyz/embed/${id}`;
+      downloadUrl = `https://soraplay.xyz/embed/${id}`;
+      break;
+    case 'mixdrop':
+      serverName = 'Mixdrop';
+      watchUrl = `https://mixdrop.to/e/${id}`;
+      downloadUrl = `https://mixdrop.to/f/${id}`;
+      break;
+    case 'upvideo':
+      serverName = 'UpVideo';
+      watchUrl = `https://upvideo.to/e/${id}`;
+      downloadUrl = `https://upvideo.to/v/${id}`;
+      break;
+    case 'highload':
+      serverName = 'HighLoad';
+      watchUrl = `https://highload.to/e/${id}`;
+      downloadUrl = `https://highload.to/v/${id}`;
+      break;
+    case 'streamhub':
+      serverName = 'StreamHub';
+      watchUrl = `https://streamhub.to/e/${id}`;
+      downloadUrl = `https://streamhub.to/d/${id}`;
+      break;
+    case 'yonaplay':
+      serverName = 'YonaPlay';
+      watchUrl = `https://yonaplay.org/embed.php?id=${id}`;
+      downloadUrl = `https://yonaplay.org/embed.php?id=${id}`;
       break;
     default:
       return null;
@@ -512,7 +637,7 @@ export class ScraperService {
 
         const built = buildAnimedarServerUrls(srvType, srvId, srvQuality);
         if (built) {
-          if (!watchServers.some(s => s.url === built.watchUrl)) {
+          if (built.watchUrl && !watchServers.some(s => s.url === built.watchUrl)) {
             watchServers.push({
               serverName: built.serverName,
               url: built.watchUrl,
@@ -521,7 +646,7 @@ export class ScraperService {
               category: 'watch'
             });
           }
-          if (!downloadServers.some(s => s.url === built.downloadUrl && s.quality === built.quality)) {
+          if (built.downloadUrl && !downloadServers.some(s => s.url === built.downloadUrl && s.quality === built.quality)) {
             downloadServers.push({
               serverName: built.serverName,
               url: built.downloadUrl,
@@ -595,20 +720,64 @@ export class ScraperService {
           serverUrl = serverUrl.split('?')[0];
           if (!serverUrl.endsWith('.html')) serverUrl += '.html';
         }
+        if (lowerUrl.includes('uqload.') && serverUrl.includes('/e/')) {
+          serverUrl = serverUrl.replace('/e/', '/embed-');
+        }
 
         let serverName = `Server ${idx + 1}`;
         let quality: '1080p' | '720p' | '480p' | 'auto' = '1080p';
+        let derivedDownloadUrl = '';
 
-        if (lowerUrl.includes('vidmoly')) { serverName = 'Vidmoly'; quality = '1080p'; }
-        else if (lowerUrl.includes('mega.nz')) { serverName = 'Mega'; quality = '1080p'; }
-        else if (lowerUrl.includes('upns.online') || lowerUrl.includes('risto')) { serverName = 'Risto'; quality = '1080p'; }
-        else if (lowerUrl.includes('sendvid')) { serverName = 'Sendvid'; quality = '720p'; }
-        else if (lowerUrl.includes('mp4upload')) { serverName = 'MP4Upload'; quality = '720p'; }
-        else if (lowerUrl.includes('uqload')) { serverName = 'Uqload'; quality = '720p'; }
-        else if (lowerUrl.includes('streamwish') || lowerUrl.includes('awish') || lowerUrl.includes('swish')) { serverName = 'Streamwish'; quality = '720p'; }
-        else if (lowerUrl.includes('filemoon')) { serverName = 'Filemoon'; quality = '1080p'; }
-        else if (lowerUrl.includes('ok.ru')) { serverName = 'Ok.ru'; quality = '720p'; }
-        else if (lowerUrl.includes('drive.google')) { serverName = 'Google Drive'; quality = '1080p'; }
+        if (lowerUrl.includes('vidmoly')) {
+          serverName = 'Vidmoly';
+          quality = '1080p';
+          derivedDownloadUrl = serverUrl.replace('/embed-', '/');
+        } else if (lowerUrl.includes('mega.nz')) {
+          serverName = 'Mega';
+          quality = '1080p';
+          derivedDownloadUrl = serverUrl.replace('/embed/', '/file/');
+        } else if (lowerUrl.includes('upns.online') || lowerUrl.includes('risto')) {
+          serverName = 'Risto';
+          quality = '1080p';
+        } else if (lowerUrl.includes('sendvid')) {
+          serverName = 'Sendvid';
+          quality = '720p';
+          derivedDownloadUrl = serverUrl.replace('/embed/', '/');
+        } else if (lowerUrl.includes('mp4upload')) {
+          serverName = 'MP4Upload';
+          quality = '720p';
+          derivedDownloadUrl = serverUrl.replace('/embed-', '/').replace(/\.html$/i, '');
+        } else if (lowerUrl.includes('uqload')) {
+          serverName = 'Uqload';
+          quality = '720p';
+          derivedDownloadUrl = serverUrl.replace('/embed-', '/');
+        } else if (lowerUrl.includes('streamwish') || lowerUrl.includes('asnwish') || lowerUrl.includes('awish') || lowerUrl.includes('swish')) {
+          serverName = 'Streamwish';
+          quality = '720p';
+          derivedDownloadUrl = serverUrl.replace('/e/', '/f/');
+        } else if (lowerUrl.includes('filemoon')) {
+          serverName = 'Filemoon';
+          quality = '1080p';
+          derivedDownloadUrl = serverUrl.replace('/e/', '/d/');
+        } else if (lowerUrl.includes('ok.ru')) {
+          serverName = 'Ok.ru';
+          quality = '720p';
+          derivedDownloadUrl = serverUrl.replace('/videoembed/', '/video/');
+        } else if (lowerUrl.includes('drive.google')) {
+          serverName = 'Google Drive';
+          quality = '1080p';
+          const dMatch = serverUrl.match(/\/d\/([A-Za-z0-9_-]+)/);
+          if (dMatch) {
+            derivedDownloadUrl = `https://drive.google.com/u/0/uc?id=${dMatch[1]}&export=download`;
+          }
+        } else if (lowerUrl.includes('hgcloud') || lowerUrl.includes('dhcplay')) {
+          serverName = 'CloudStream';
+          quality = '1080p';
+          derivedDownloadUrl = serverUrl.replace('/e/', '/').replace(/\.html$/i, '');
+        } else if (lowerUrl.includes('turbovid')) {
+          serverName = 'TurboVid';
+          quality = '1080p';
+        }
 
         if (!watch.some(s => s.url === serverUrl)) {
           watch.push({
@@ -617,6 +786,16 @@ export class ScraperService {
             type: 'iframe',
             quality,
             category: 'watch'
+          });
+        }
+
+        if (derivedDownloadUrl && !download.some(s => s.url === derivedDownloadUrl)) {
+          download.push({
+            serverName,
+            url: derivedDownloadUrl,
+            type: 'direct',
+            quality,
+            category: 'download'
           });
         }
       });
@@ -632,9 +811,14 @@ export class ScraperService {
           lowerHref.includes('ristoanime.') ||
           lowerHref.includes('facebook.') ||
           lowerHref.includes('twitter.') ||
+          lowerHref.includes('x.com') ||
+          lowerHref.includes('youtube.') ||
+          lowerHref.includes('youtu.be') ||
           lowerHref.includes('t.me') ||
           lowerHref.includes('discord') ||
-          lowerHref.includes('wordpress.')
+          lowerHref.includes('wordpress.') ||
+          lowerHref.includes('instagram.') ||
+          lowerHref.includes('tiktok.')
         ) {
           return;
         }
@@ -647,6 +831,9 @@ export class ScraperService {
         else if (lowerHref.includes('uqload')) { hostName = 'Uqload'; quality = '720p'; }
         else if (lowerHref.includes('mediafire')) { hostName = 'MediaFire'; quality = '720p'; }
         else if (lowerHref.includes('drive.google')) { hostName = 'Google Drive'; quality = '1080p'; }
+        else if (lowerHref.includes('hgcloud') || lowerHref.includes('dhcplay')) { hostName = 'CloudStream'; quality = '1080p'; }
+        else if (lowerHref.includes('4shared')) { hostName = '4Shared'; quality = '1080p'; }
+        else if (lowerHref.includes('asnwish') || lowerHref.includes('streamwish')) { hostName = 'Streamwish'; quality = '720p'; }
 
         if (!download.some(s => s.url === href)) {
           download.push({
@@ -1153,8 +1340,8 @@ export class ScraperService {
         for (const [epNum, epServers] of parsed.episodeServersByNum.entries()) {
           if (epServers.length > 0) {
             const epCompositeId = `${cleanSlug}__ep__${epNum}`;
-            await this.setCache(`animedar_ep_servers:${epCompositeId}`, epServers, 6 * 60 * 60 * 1000);
-            await this.setCache(`animedar_ep_servers:${cleanSlug}:${epNum}`, epServers, 6 * 60 * 60 * 1000);
+            await this.setCache(`animedar_ep_servers_v2:${epCompositeId}`, epServers, 6 * 60 * 60 * 1000);
+            await this.setCache(`animedar_ep_servers_v2:${cleanSlug}:${epNum}`, epServers, 6 * 60 * 60 * 1000);
           }
         }
 
@@ -1250,9 +1437,9 @@ export class ScraperService {
 
   /**
    * 5. استخراج سيرفرات المشاهدة والتحميل للحلقة:
-   * - أولاً: من الموقع الأساسي #1 (animedar.net - فك تشفير #ServerList1 المباشر)
-   * - ثانياً: من الموقع الثانوي #2 (ristoanime.me - سحب /watch و /download)
-   * - ثالثاً: سيرفرات عالمية احتياطية إضافية
+   * - أولاً: من الموقع الأساسي #1 (animedar.net - فك تشفير #ServerList1 المباشر لجميع السيرفرات والتحميل)
+   * - ثانياً: دمج تلقائي مع الموقع الثانوي #2 (ristoanime.me - سحب /watch و /download لضمان تعدد السيرفرات وروابط التحميل)
+   * - ثالثاً: سيرفر عالمي إضافي (VidLink)
    */
   public async getEpisodeServers(
     episodeId: string,
@@ -1279,7 +1466,7 @@ export class ScraperService {
       }
     }
 
-    const cacheKey = `servers_animedar_risto_v1:${episodeId}:${jikanId}:${explicitSeason || 1}:${epNum}`;
+    const cacheKey = `servers_animedar_risto_v3:${episodeId}:${jikanId}:${explicitSeason || 1}:${epNum}`;
     const cached = await this.getCached<EpisodeServer[]>(cacheKey);
     if (cached && cached.length > 0) return cached;
 
@@ -1340,14 +1527,19 @@ export class ScraperService {
         } catch {}
       }
 
+      if (candidateTitles.length === 0 && resolvedAnimedarSlug) {
+        const titleFromSlug = resolvedAnimedarSlug.replace(/-/g, ' ').trim();
+        if (titleFromSlug) candidateTitles.push(titleFromSlug);
+      }
+
       const watchServers: EpisodeServer[] = [];
       const downloadServers: EpisodeServer[] = [];
 
       // 1. الجلب من الموقع الأساسي #1: animedar.net
       if (resolvedAnimedarSlug) {
         let darServers =
-          await this.getCached<EpisodeServer[]>(`animedar_ep_servers:${resolvedAnimedarSlug}__ep__${epNum}`) ||
-          await this.getCached<EpisodeServer[]>(`animedar_ep_servers:${resolvedAnimedarSlug}:${epNum}`);
+          await this.getCached<EpisodeServer[]>(`animedar_ep_servers_v2:${resolvedAnimedarSlug}__ep__${epNum}`) ||
+          await this.getCached<EpisodeServer[]>(`animedar_ep_servers_v2:${resolvedAnimedarSlug}:${epNum}`);
 
         if (!darServers || darServers.length === 0) {
           try {
@@ -1355,10 +1547,14 @@ export class ScraperService {
             const $ = cheerio.load(html);
             const parsed = this.parseAnimedarDocument($, resolvedAnimedarSlug);
 
+            if (parsed.title && !candidateTitles.includes(parsed.title)) {
+              candidateTitles.unshift(parsed.title);
+            }
+
             for (const [eNum, eSrvs] of parsed.episodeServersByNum.entries()) {
               if (eSrvs.length > 0) {
-                await this.setCache(`animedar_ep_servers:${resolvedAnimedarSlug}__ep__${eNum}`, eSrvs, 6 * 60 * 60 * 1000);
-                await this.setCache(`animedar_ep_servers:${resolvedAnimedarSlug}:${eNum}`, eSrvs, 6 * 60 * 60 * 1000);
+                await this.setCache(`animedar_ep_servers_v2:${resolvedAnimedarSlug}__ep__${eNum}`, eSrvs, 6 * 60 * 60 * 1000);
+                await this.setCache(`animedar_ep_servers_v2:${resolvedAnimedarSlug}:${eNum}`, eSrvs, 6 * 60 * 60 * 1000);
               }
             }
 
@@ -1377,8 +1573,8 @@ export class ScraperService {
         }
       }
 
-      // 2. الجلب التكميلي أو الاحتياطي من الموقع الثانوي #2: RistoAnime
-      if (watchServers.length === 0 || resolvedRistoEpSlug) {
+      // 2. الدمج التكميلي من الموقع الثانوي #2: RistoAnime إذا كان عدد سيرفرات المشاهدة أو التحميل قليلاً (< 5)
+      if (watchServers.length < 5 || downloadServers.length < 3 || resolvedRistoEpSlug) {
         if (!resolvedRistoEpSlug && candidateTitles.length > 0) {
           for (const titleCand of candidateTitles) {
             const rSeriesSlug = await this.searchRistoAnime(titleCand);
@@ -1404,31 +1600,45 @@ export class ScraperService {
         }
       }
 
+      // 3. ضمان توليد رابط تحميل لكل سيرفر مشاهدة إذا لم يكن مضافاً بعد في قائمة التحميل
+      for (const w of watchServers) {
+        const lower = w.url.toLowerCase();
+        let dlUrl = '';
+        if (lower.includes('mega.nz/embed/')) dlUrl = w.url.replace('/embed/', '/file/');
+        else if (lower.includes('4shared.com/web/embed/file/')) dlUrl = w.url.replace('/web/embed/file/', '/get/');
+        else if (lower.includes('mp4upload.com/embed-')) dlUrl = w.url.replace('/embed-', '/').replace(/\.html$/i, '');
+        else if (lower.includes('asnwish.com/e/')) dlUrl = w.url.replace('/e/', '/f/');
+        else if (lower.includes('ok.ru/videoembed/')) dlUrl = w.url.replace('/videoembed/', '/video/');
+        else if (lower.includes('drive.google.com/file/d/')) {
+          const m = w.url.match(/\/d\/([A-Za-z0-9_-]+)/);
+          if (m) dlUrl = `https://drive.google.com/u/0/uc?id=${m[1]}&export=download`;
+        } else if (lower.includes('videa.hu/player')) dlUrl = w.url;
+        else if (lower.includes('vidmoly') && lower.includes('/embed-')) dlUrl = w.url.replace('/embed-', '/');
+        else if (lower.includes('uqload') && lower.includes('/embed-')) dlUrl = w.url.replace('/embed-', '/');
+        else if (lower.includes('yourupload.com/embed/')) dlUrl = w.url.replace('/embed/', '/watch/');
+
+        if (dlUrl && !downloadServers.some(d => d.url === dlUrl)) {
+          downloadServers.push({
+            serverName: w.serverName,
+            url: dlUrl,
+            type: 'direct',
+            quality: w.quality,
+            category: 'download'
+          });
+        }
+      }
+
       const activeJikanId = jikanId || '21';
       const activeAnilistId = resolvedAnilistId || activeJikanId;
       const activeEpNum = epNum || '1';
 
-      // 3. سيرفرات البث العالمية الإضافية
+      // 4. سيرفر البث العالمي الإضافي (VidLink) الفعال فقط (بدون السيرفرات المعطلة مثل VidSrc/2Embed)
       const globalBackupWatch: EpisodeServer[] = [
         {
           serverName: 'VidLink',
           url: `https://vidlink.pro/anime/${activeAnilistId}/${activeEpNum}/sub`,
           type: 'iframe',
           quality: '1080p',
-          category: 'watch'
-        },
-        {
-          serverName: 'VidSrc',
-          url: `https://vidsrc.icu/embed/anime/${activeAnilistId}/${activeEpNum}/0`,
-          type: 'iframe',
-          quality: '1080p',
-          category: 'watch'
-        },
-        {
-          serverName: '2Embed',
-          url: `https://www.2embed.cc/embedanime/${activeJikanId}&ep=${activeEpNum}`,
-          type: 'iframe',
-          quality: '720p',
           category: 'watch'
         }
       ];
@@ -1439,13 +1649,6 @@ export class ScraperService {
           url: `https://vidlink.pro/anime/${activeAnilistId}/${activeEpNum}/sub`,
           type: 'direct',
           quality: '1080p',
-          category: 'download'
-        },
-        {
-          serverName: 'VidSrc',
-          url: `https://vidsrc.icu/embed/anime/${activeAnilistId}/${activeEpNum}/0`,
-          type: 'direct',
-          quality: '720p',
           category: 'download'
         }
       ];
@@ -1468,20 +1671,6 @@ export class ScraperService {
           url: `https://vidlink.pro/anime/${activeJikanId}/${activeEpNum}/sub`,
           type: 'iframe',
           quality: '1080p',
-          category: 'watch'
-        },
-        {
-          serverName: 'VidSrc',
-          url: `https://vidsrc.icu/embed/anime/${activeJikanId}/${activeEpNum}/0`,
-          type: 'iframe',
-          quality: '1080p',
-          category: 'watch'
-        },
-        {
-          serverName: '2Embed',
-          url: `https://www.2embed.cc/embedanime/${activeJikanId}&ep=${activeEpNum}`,
-          type: 'iframe',
-          quality: '720p',
           category: 'watch'
         },
         {

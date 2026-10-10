@@ -30,7 +30,7 @@ export interface CacheStatsInfo {
  */
 class CacheService {
   // Bump schema version whenever data structures or episode/server logic changes to auto-evict stale .cache/*.json files
-  private readonly CACHE_SCHEMA_VERSION = 'v15_clean_real_data';
+  private readonly CACHE_SCHEMA_VERSION = 'v17_launch_clean_slate';
 
   // Layer 1: High-Speed In-Memory Cache powered by node-cache
   // Default TTL: 3600 seconds (1 hour) as per system specifications
@@ -340,8 +340,19 @@ class CacheService {
         const files = fs.readdirSync(this.cacheDir);
         for (const file of files) {
           if (file.endsWith('.json')) {
-            fs.unlinkSync(path.join(this.cacheDir, file));
+            try {
+              fs.unlinkSync(path.join(this.cacheDir, file));
+            } catch {}
           }
+        }
+      } catch (e: any) {}
+    }
+
+    if (db) {
+      try {
+        const snap = await getDocs(collection(db, 'server_cache'));
+        if (!snap.empty) {
+          await Promise.all(snap.docs.map(d => deleteDoc(doc(db, 'server_cache', d.id)).catch(() => {})));
         }
       } catch (e: any) {}
     }
