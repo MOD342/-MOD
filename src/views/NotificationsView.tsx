@@ -327,15 +327,16 @@ export default function NotificationsView({ onBack, onNavigate }: NotificationsV
         ) : (
           <div className="divide-y divide-white/5 border border-white/10 rounded-2xl bg-zinc-950/40 overflow-hidden">
             <AnimatePresence mode="popLayout" initial={false}>
-              {filteredNotifications.map((n) => {
+              {filteredNotifications.map((n, idx) => {
                 const isGlobal = (n as any).isGlobal;
                 const isUnread = !n.read && !isGlobal;
                 const expanded = !!expandedIds[n.id];
+                const notifKey = `${isGlobal ? 'global' : 'user'}-${n.id || idx}-${idx}`;
 
                 return (
                   <motion.div
-                    key={n.id}
-                    layoutId={`notif-${n.id}`}
+                    key={notifKey}
+                    layoutId={`notif-${notifKey}`}
                     initial={{ opacity: 0, y: 6 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, x: -20 }}

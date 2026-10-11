@@ -21,7 +21,9 @@ import {
   UserPlus,
   Layers,
   Target,
-  Gift
+  Gift,
+  Lock,
+  BookOpen
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -36,7 +38,8 @@ import {
   limit,
   serverTimestamp,
   increment,
-  getDocs
+  getDocs,
+  arrayUnion
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
@@ -61,7 +64,10 @@ import {
 import VisualAnimeGamesSpace, {
   VISUAL_ANIME_GAMES,
   VisualGameId,
-  ANIME_WORLD_BACKGROUNDS
+  ANIME_WORLD_BACKGROUNDS,
+  STORY_CAMPAIGN_CHAPTERS,
+  StoryChapterMeta,
+  computeAnimeLibrarySynergy
 } from '../components/VisualAnimeGamesSpace';
 import ThreeAnimeParallaxScene from '../components/ThreeAnimeParallaxScene';
 import ThreeHeaderTrophyEmblem from '../components/ThreeHeaderTrophyEmblem';
@@ -150,10 +156,12 @@ export default function OtakuArenaHubView({
   initialRoomCode,
   initialChallengeUser,
   onBack,
-  onUserClick
+  onUserClick,
+  onNavigate
 }: OtakuArenaHubViewProps) {
   const { user, userData, signIn } = useAuth();
   const [activeTab, setActiveTab] = useState<ArenaTab>(initialTab);
+  const librarySynergy = useMemo(() => computeAnimeLibrarySynergy(userData), [userData]);
 
   // محرك التقويم الذكي غير المتداخل + صندوق تتويج البطولة السابقة
   const activeEvent = useMemo(() => getActiveNonOverlappingEvent(), []);
@@ -167,8 +175,9 @@ export default function OtakuArenaHubView({
     setStamina(getDailyArenaStamina(user?.id));
   }, [user?.id]);
 
-  // تشغيل الفضاء البصري الكامل للعبة المختارة + التحدي المسجّل (Ghost Duel)
+  // تشغيل الفضاء البصري الكامل للعبة المختارة + طور القصة + التحدي المسجّل (Ghost Duel)
   const [activeVisualGame, setActiveVisualGame] = useState<VisualGameId | null>(null);
+  const [activeStoryChapter, setActiveStoryChapter] = useState<StoryChapterMeta | null>(null);
   const [ghostDuelTarget, setGhostDuelTarget] = useState<{
     id: string;
     name: string;
@@ -176,6 +185,40 @@ export default function OtakuArenaHubView({
     stake?: number;
     postId?: string;
   } | null>(null);
+
+  // حفظ تقدم طور القصة وأعلى النقاط المستقلة لكل لعبة
+  const [completedChapters, setCompletedChapters] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('otaku_story_chapters_done') || '[]');
+    } catch {
+      return [];
+    }
+  });
+
+  const [myGameHighScores, setMyGameHighScores] = useState<Record<string, number>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('otaku_game_high_scores') || '{}');
+    } catch {
+      return {};
+    }
+  });
+
+  useEffect(() => {
+    if (userData?.unlockedRewards && Array.isArray(userData.unlockedRewards)) {
+      const storyIds = userData.unlockedRewards.filter((r: string) => r.startsWith('ch_'));
+      if (storyIds.length > 0) {
+        setCompletedChapters((prev) => Array.from(new Set([...prev, ...storyIds])));
+      }
+    }
+    if (userData?.dailyStats?.gameHighScores) {
+      setMyGameHighScores((prev) => ({
+        ...prev,
+        ...userData.dailyStats.gameHighScores
+      }));
+    }
+  }, [userData?.unlockedRewards, userData?.dailyStats]);
+
+  const [selectedLeaderGameId, setSelectedLeaderGameId] = useState<'all' | VisualGameId>('all');
 
   // بيانات الحلبة والغرف الحية (2-4 لاعبين)
   const [openRooms, setOpenRooms] = useState<BattleRoomDoc[]>([]);
@@ -387,17 +430,78 @@ export default function OtakuArenaHubView({
   }, [currentRoom?.status, currentRoom?.round]);
 
   // ============================================================================
-  // تسليم مكافأة انتهاء أي لعبة بصرية أو تحدي شبح مسجّل (Ghost Duel)
+  // تسليم مكافأة انتهاء أي لعبة بصرية أو فصل قصة أو تحدي شبح مسجّل (Ghost Duel)
   // ============================================================================
   const handleVisualGameFinished = async (result: {
     gameId: VisualGameId;
     score: number;
     won: boolean;
+    storyChapterId?: string;
+    maxCombo?: number;
   }) => {
+    // حفظ أعلى نتيجة للعبة محلياً وفي الحساب ولوحة الصدارة المستقلة
+    const prevBest = myGameHighScores[result.gameId] || 0;
+    const isNewRecord = result.score > prevBest;
+    const updatedScores = {
+      ...myGameHighScores,
+      [result.gameId]: Math.max(prevBest, result.score)
+    };
+    setMyGameHighScores(updatedScores);
+    try {
+      localStorage.setItem('otaku_game_high_scores', JSON.stringify(updatedScores));
+    } catch {}
+
     if (!user) return;
 
     const { remaining, hadStamina } = consumeArenaStamina(user.id);
     setStamina(remaining);
+
+    // تحديث أعلى نتيجة للعبة في وثيقة المستخدم ليظهر في لوحة الصدارة المستقلة لكل لعبة
+    if (isNewRecord) {
+      try {
+        const mergedDailyStats = {
+          ...(userData?.dailyStats || {}),
+          gameHighScores: updatedScores
+        };
+        await updateDoc(doc(db, 'users', user.id), {
+          dailyStats: mergedDailyStats
+        });
+      } catch {}
+    }
+
+    // إذا كان اللاعب في طور القصة واجتاز الفصل بنجاح!
+    if (result.won && result.storyChapterId) {
+      const chMeta = STORY_CAMPAIGN_CHAPTERS.find((c) => c.id === result.storyChapterId);
+      const isFirstTimeChapter = !completedChapters.includes(result.storyChapterId);
+      const nextChapters = Array.from(new Set([...completedChapters, result.storyChapterId]));
+      setCompletedChapters(nextChapters);
+      try {
+        localStorage.setItem('otaku_story_chapters_done', JSON.stringify(nextChapters));
+      } catch {}
+
+      if (chMeta) {
+        const storyCoins = isFirstTimeChapter
+          ? Math.round(chMeta.rewardCoins * librarySynergy.coinMult)
+          : Math.round(chMeta.rewardCoins * 0.35);
+        const storyXp = isFirstTimeChapter ? chMeta.rewardXp : Math.round(chMeta.rewardXp * 0.4);
+
+        const extraUpdates: Record<string, any> = {
+          aiGamesPoints: increment(1),
+          unlockedRewards: arrayUnion(chMeta.id)
+        };
+        if (chMeta.unlockStoreItemId) {
+          extraUpdates.purchasedItems = arrayUnion(chMeta.unlockStoreItemId);
+        }
+
+        await awardXP(user.id, storyXp, storyCoins, extraUpdates);
+        showNotice(
+          `👑 اكتمل ${chMeta.titleAr}! ربحت +${storyCoins} كوينز و +${storyXp} XP ${
+            chMeta.unlockStoreItemNameAr ? `وتم فتح «${chMeta.unlockStoreItemNameAr}» في حسابك!` : ''
+          }`
+        );
+        return;
+      }
+    }
 
     // إذا كان اللاعب يتحدى عضواً آخر (Ghost Duel)، نسجل التحدي في الساحة ونرسل إشعاراً للخصم!
     if (ghostDuelTarget && !ghostDuelTarget.postId) {
@@ -434,9 +538,9 @@ export default function OtakuArenaHubView({
 
     if (result.won) {
       const coinsEarned = hadStamina
-        ? Math.min(180, Math.round((result.score / 8) * activeEvent.rewardMultiplier))
-        : 10;
-      const xpEarned = hadStamina ? 90 * activeEvent.rewardMultiplier : 15;
+        ? Math.min(220, Math.round((result.score / 7) * activeEvent.rewardMultiplier * librarySynergy.coinMult))
+        : 15;
+      const xpEarned = hadStamina ? Math.round(95 * activeEvent.rewardMultiplier) : 20;
 
       await awardXP(user.id, xpEarned, coinsEarned, {
         aiGamesPoints: increment(1)
@@ -444,12 +548,28 @@ export default function OtakuArenaHubView({
 
       showNotice(
         hadStamina
-          ? `🏆 انتصار بصري ساحق! ربحت +${coinsEarned} كوينز و +${xpEarned} XP (طاقتك المتبقية: ${remaining}/${MAX_DAILY_ARENA_STAMINA})`
-          : `🔥 فوز رائع! (انتهت طاقة المكافآت المضاعفة اليومية، حصلت على +10 كوينز)`
+          ? `🏆 انتصار بصري ساحق! ربحت +${coinsEarned} كوينز و +${xpEarned} XP (تآزر مكتبتك ${librarySynergy.coinMult}x)`
+          : `🔥 فوز رائع! (انتهت طاقة المكافآت المضاعفة اليومية، حصلت على +15 كوينز)`
       );
     } else {
-      await awardXP(user.id, 20, 5);
-      showNotice(`⚡ جمعت ${result.score} نقطة وحصلت على +20 XP للمشاركة!`);
+      await awardXP(user.id, 25, 8);
+      showNotice(`⚡ جمعت ${result.score} نقطة وحصلت على +25 XP و +8 كوينز للمشاركة!`);
+    }
+  };
+
+  const handleEquipStoryFrame = async (frameId: string, frameName: string) => {
+    if (!user) {
+      signIn();
+      return;
+    }
+    try {
+      await updateDoc(doc(db, 'users', user.id), {
+        purchasedItems: arrayUnion(frameId),
+        equippedFrame: frameId
+      });
+      showNotice(`✨ تم تجهيز «${frameName}» كإطار لحسابك الشخصي بنجاح!`);
+    } catch {
+      showNotice('تعذر تجهيز الإطار حالياً، حاول مجدداً.');
     }
   };
 
@@ -883,6 +1003,19 @@ export default function OtakuArenaHubView({
 
   const sortedLeaders = useMemo(() => {
     const copy = [...leaders];
+    if (selectedLeaderGameId !== 'all') {
+      return copy.sort((a, b) => {
+        const scoreA =
+          (a.id === user?.id ? myGameHighScores[selectedLeaderGameId] : 0) ||
+          a.dailyStats?.gameHighScores?.[selectedLeaderGameId] ||
+          Math.round((a.aiGamesPoints || 0) * 45 + (a.level || 1) * 18);
+        const scoreB =
+          (b.id === user?.id ? myGameHighScores[selectedLeaderGameId] : 0) ||
+          b.dailyStats?.gameHighScores?.[selectedLeaderGameId] ||
+          Math.round((b.aiGamesPoints || 0) * 45 + (b.level || 1) * 18);
+        return scoreB - scoreA;
+      });
+    }
     if (leaderFilter === 'coins') {
       return copy.sort((a, b) => (b.coins || 0) - (a.coins || 0));
     }
@@ -893,17 +1026,19 @@ export default function OtakuArenaHubView({
       (a, b) =>
         (b.aiGamesPoints || 0) * 300 + (b.xp || 0) - ((a.aiGamesPoints || 0) * 300 + (a.xp || 0))
     );
-  }, [leaders, leaderFilter]);
+  }, [leaders, leaderFilter, selectedLeaderGameId, myGameHighScores, user?.id]);
 
   return (
     <div className="min-h-screen bg-[#06060a] text-white pb-28 font-sans text-right select-none" dir="rtl">
-      {/* مشغل الفضاءات البصرية الكاملة للألعاب (Full-Screen Visual Anime Worlds) */}
+      {/* مشغل الفضاءات البصرية الكاملة للألعاب وطور القصة */}
       {activeVisualGame && (
         <VisualAnimeGamesSpace
           gameId={activeVisualGame}
+          storyChapter={activeStoryChapter}
           ghostTarget={ghostDuelTarget}
           onClose={() => {
             setActiveVisualGame(null);
+            setActiveStoryChapter(null);
             setGhostDuelTarget(null);
           }}
           onFinishMatch={handleVisualGameFinished}
@@ -1068,34 +1203,279 @@ export default function OtakuArenaHubView({
         </div>
 
         {/* =====================================================================
-            الفضاء الأول: الألعاب البصرية الكاملة + حلبة المصارعة الجماعية (2-4 لاعبين)
+            الفضاء الأول: الألعاب الرسومية والتحريكية + طور القصة + تآزر مكتبة الأنمي
            ===================================================================== */}
         {activeTab === 'games' && (
           <div className="space-y-5">
-            {/* 1. بوابات الألعاب البصرية الثمان الكاملة (Full-Screen Arcade Worlds) */}
+            {/* 0. شريط تآزر مكتبة الأنمي مع الألعاب والمتجر (Anime Library Synergy & Store Link) */}
+            <div className="bg-gradient-to-l from-emerald-950/50 via-[#10121d] to-purple-950/40 border border-emerald-500/35 rounded-3xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-lg">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="bg-emerald-500 text-black text-[10px] font-black px-2.5 py-0.5 rounded-full">
+                    ⚡ تآزر مكتبة الأنمي مفعل
+                  </span>
+                  <span className="text-xs font-black text-amber-300">{librarySynergy.rankTitleAr}</span>
+                </div>
+                <p className="text-xs text-neutral-200">
+                  مشاهداتك ({librarySynergy.totalWatchedEpisodes} حلقة • {librarySynergy.completedAnime} أنمي مكتمل) تمنح أبطالك{' '}
+                  <strong className="text-emerald-400">+{librarySynergy.atkBonusPct}% قوة هجومية</strong> و{' '}
+                  <strong className="text-amber-400">{librarySynergy.coinMult}x مضاعف كوينز</strong> في جميع الألعاب!
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                {onNavigate && (
+                  <button
+                    onClick={() => onNavigate('store')}
+                    className="bg-purple-600/30 hover:bg-purple-600/50 border border-purple-400/50 text-purple-200 text-xs font-black px-3.5 py-2 rounded-2xl transition cursor-pointer flex items-center gap-1.5"
+                  >
+                    <Crown size={14} className="text-amber-400" />
+                    <span>متجر الإطارات والألقاب</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* 1. الألعاب الرسومية والتحريكية الأربع الكبرى (4 Flagship Graphical & Physics Engines) */}
             <div className="space-y-2.5">
               <div className="flex items-center justify-between px-1">
                 <h3 className="text-xs sm:text-sm font-black text-white flex items-center gap-1.5">
-                  <Sparkles size={15} className="text-[#FF1744]" />
-                  <span>عوالم ألعاب الأنمي الحركية (ادخل الفضاء والعب بيدك)</span>
+                  <Sparkles size={16} className="text-[#FF1744]" />
+                  <span>الألعاب الرسومية والتحريكية الكبرى (فيزياء 2D، رسم أختام، بطاقات 3D، ودانجون)</span>
                 </h3>
-                <span className="text-[10px] text-amber-400 font-bold">8 عوالم بصرية 60FPS</span>
+                <span className="text-[10px] text-emerald-400 font-black">تحريك سينمائي 60FPS</span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                {VISUAL_ANIME_GAMES.filter((g) => g.isFlagship).map((g) => {
+                  const personalBest = myGameHighScores[g.id] || 0;
+                  return (
+                    <motion.div
+                      key={g.id}
+                      whileHover={{ y: -5, scale: 1.01 }}
+                      onClick={() => {
+                        setGhostDuelTarget(null);
+                        setActiveStoryChapter(null);
+                        setActiveVisualGame(g.id);
+                      }}
+                      style={{ borderColor: `${g.accentColor}66` }}
+                      className="relative min-h-[180px] rounded-3xl overflow-hidden border-2 hover:border-[#FF1744] text-right p-4 flex flex-col justify-between group cursor-pointer shadow-[0_14px_35px_rgba(0,0,0,0.75)]"
+                    >
+                      <img
+                        src={g.worldArt}
+                        alt=""
+                        className="absolute inset-0 w-full h-full object-cover opacity-70 group-hover:scale-105 transition duration-500"
+                      />
+                      <div className="absolute inset-0 bg-gradient-to-t from-black via-black/65 to-black/25" />
+
+                      <div className="relative z-10 flex items-center justify-between gap-2">
+                        <span
+                          style={{ backgroundColor: g.accentColor }}
+                          className="text-black text-[10px] font-black px-3 py-1 rounded-full shadow-md"
+                        >
+                          {g.tagAr}
+                        </span>
+                        <div className="flex items-center gap-2">
+                          {personalBest > 0 && (
+                            <span className="bg-black/80 border border-amber-400/50 text-amber-300 text-[10px] font-black font-mono px-2.5 py-0.5 rounded-full">
+                              🏆 رقمك: {personalBest} PT
+                            </span>
+                          )}
+                          <img
+                            src={g.fighterImg}
+                            onError={(e) => {
+                              e.currentTarget.src = getAnimeSvgFallback(g.titleAr, g.accentColor);
+                            }}
+                            alt=""
+                            referrerPolicy="no-referrer"
+                            className="w-11 h-11 rounded-2xl object-cover ring-2 ring-white/50 bg-black"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="relative z-10 space-y-1.5 mt-3">
+                        <div className="text-[10px] font-mono text-amber-300">{g.studioTag}</div>
+                        <h4 className="text-sm sm:text-base font-black text-white leading-snug">
+                          {g.titleAr}
+                        </h4>
+                        <p className="text-[11px] text-neutral-300 line-clamp-2">{g.descriptionAr}</p>
+                        <div className="pt-1 flex items-center justify-between">
+                          <span className="inline-flex items-center gap-1.5 bg-gradient-to-r from-[#FF1744] to-amber-500 text-black text-xs font-black px-4 py-1.5 rounded-xl shadow-lg">
+                            <Play size={12} className="fill-black" />
+                            <span>العب الآن</span>
+                          </span>
+                          <span className="text-[10px] font-mono text-neutral-300">
+                            الهدف: {g.targetScore} PT
+                          </span>
+                        </div>
+                      </div>
+                    </motion.div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* 2. طور القصة والمراحل المتدرجة (Story Campaign & Hero/Store Unlocks) */}
+            <div className="bg-[#101018] border-2 border-amber-500/30 rounded-3xl p-4 sm:p-5 space-y-3.5 shadow-2xl">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-xs sm:text-sm font-black text-white flex items-center gap-2">
+                    <BookOpen size={16} className="text-amber-400" />
+                    <span>طور القصة الملحمي (8 فصول متدرجة تفتح أبطالاً وإطارات متجر حصرية)</span>
+                  </h3>
+                  <p className="text-[11px] text-neutral-400 mt-0.5">
+                    اجتز زعماء الفصول لفتح المراحل التالية واستلام الإطارات الحصرية والكوينز الفورية!
+                  </p>
+                </div>
+                <span className="bg-amber-500/15 border border-amber-400/40 text-amber-300 text-xs font-black px-3 py-1 rounded-xl font-mono">
+                  تقدم القصة: {completedChapters.length}/{STORY_CAMPAIGN_CHAPTERS.length}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                {STORY_CAMPAIGN_CHAPTERS.map((ch, idx) => {
+                  const isCompleted = completedChapters.includes(ch.id);
+                  const prevCompleted =
+                    idx === 0 || completedChapters.includes(STORY_CAMPAIGN_CHAPTERS[idx - 1].id);
+                  const isUnlocked = idx === 0 || isCompleted || prevCompleted;
+                  const isFrameEquipped = userData?.equippedFrame === ch.unlockStoreItemId;
+
+                  return (
+                    <div
+                      key={ch.id}
+                      className={`rounded-2xl p-3.5 border-2 flex flex-col justify-between gap-2.5 transition ${
+                        isCompleted
+                          ? 'bg-gradient-to-b from-emerald-950/35 to-[#0c0d14] border-emerald-500/50'
+                          : isUnlocked
+                          ? 'bg-gradient-to-b from-[#1a1528] to-[#0d0d16] border-amber-400/60 shadow-[0_0_25px_rgba(245,158,11,0.15)]'
+                          : 'bg-[#0b0b12] border-white/5 opacity-55'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span
+                          style={{ backgroundColor: isUnlocked ? ch.accentColor : '#374151' }}
+                          className="text-black text-[10px] font-black px-2.5 py-0.5 rounded-full"
+                        >
+                          الفصل {ch.chapterNumber}
+                        </span>
+                        {isCompleted ? (
+                          <span className="text-[10px] font-black text-emerald-400 flex items-center gap-1">
+                            <CheckCircle2 size={13} /> مكتمل
+                          </span>
+                        ) : !isUnlocked ? (
+                          <span className="text-[10px] font-bold text-neutral-500 flex items-center gap-1">
+                            <Lock size={12} /> مغلق
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-black text-amber-400 animate-pulse">
+                            🔥 متاح للقتال
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-2.5">
+                        <img
+                          src={ch.bossAvatar}
+                          onError={(e) => {
+                            e.currentTarget.src = getAnimeSvgFallback(ch.bossNameAr, ch.accentColor);
+                          }}
+                          alt=""
+                          referrerPolicy="no-referrer"
+                          className="w-12 h-12 rounded-2xl object-cover bg-black ring-2 ring-white/20 shrink-0"
+                        />
+                        <div className="min-w-0">
+                          <div className="text-xs font-black text-white truncate">{ch.titleAr}</div>
+                          <div className="text-[10px] text-rose-400 font-bold truncate">
+                            الزعيم: {ch.bossNameAr}
+                          </div>
+                          <div className="text-[10px] text-amber-300 font-mono">
+                            +{ch.rewardCoins} 🪙 • +{ch.rewardXp} XP
+                          </div>
+                        </div>
+                      </div>
+
+                      <p className="text-[10px] text-neutral-300 line-clamp-2">{ch.subtitleAr}</p>
+
+                      <div className="bg-black/50 border border-white/5 rounded-xl p-2 text-[10px] space-y-0.5">
+                        {ch.unlockHeroNameAr && (
+                          <div className="text-emerald-300 font-bold truncate">
+                            🦸 يفتح: {ch.unlockHeroNameAr}
+                          </div>
+                        )}
+                        {ch.unlockStoreItemNameAr && (
+                          <div className="text-purple-300 font-bold truncate">
+                            🖼️ يفتح: {ch.unlockStoreItemNameAr}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-1.5 pt-1">
+                        <button
+                          disabled={!isUnlocked}
+                          onClick={() => {
+                            setGhostDuelTarget(null);
+                            setActiveStoryChapter(ch);
+                            setActiveVisualGame(ch.gameId);
+                          }}
+                          className={`flex-1 py-2 rounded-xl text-[11px] font-black flex items-center justify-center gap-1 transition ${
+                            isUnlocked
+                              ? 'bg-gradient-to-r from-[#FF1744] to-amber-500 text-black cursor-pointer shadow-md'
+                              : 'bg-white/5 text-neutral-500 cursor-not-allowed'
+                          }`}
+                        >
+                          <Play size={11} className="fill-current" />
+                          <span>{isCompleted ? 'إعادة الفصل' : 'خوض الفصل'}</span>
+                        </button>
+
+                        {isCompleted && ch.unlockStoreItemId && (
+                          <button
+                            onClick={() =>
+                              handleEquipStoryFrame(
+                                ch.unlockStoreItemId!,
+                                ch.unlockStoreItemNameAr || 'إطار القصة'
+                              )
+                            }
+                            className={`px-2.5 py-2 rounded-xl text-[10px] font-black border cursor-pointer ${
+                              isFrameEquipped
+                                ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300'
+                                : 'bg-purple-500/20 border-purple-400 text-purple-200 hover:bg-purple-500/35'
+                            }`}
+                          >
+                            {isFrameEquipped ? '✓ مجهز' : 'تجهيز الإطار'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* 3. عوالم الأركيد السريعة الإضافية (7 Classic Arcade Worlds) */}
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between px-1">
+                <h3 className="text-xs sm:text-sm font-black text-white flex items-center gap-1.5">
+                  <Zap size={15} className="text-amber-400" />
+                  <span>عوالم الأركيد السريعة وتحديات المهارة</span>
+                </h3>
+                <span className="text-[10px] text-amber-400 font-bold">مكافآت فورية ولوحة صدارة</span>
               </div>
 
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                {VISUAL_ANIME_GAMES.map((g) => {
+                {VISUAL_ANIME_GAMES.filter((g) => !g.isFlagship).map((g) => {
+                  const personalBest = myGameHighScores[g.id] || 0;
                   return (
                     <motion.button
                       key={g.id}
-                      whileHover={{ y: -6, scale: 1.03 }}
+                      whileHover={{ y: -5, scale: 1.02 }}
                       whileTap={{ scale: 0.96 }}
                       onClick={() => {
                         setGhostDuelTarget(null);
+                        setActiveStoryChapter(null);
                         setActiveVisualGame(g.id);
                       }}
-                      className={`relative h-48 rounded-3xl overflow-hidden border-2 border-white/15 hover:border-[#FF1744] text-right p-3.5 flex flex-col justify-between group cursor-pointer shadow-[0_12px_30px_rgba(0,0,0,0.65)]`}
+                      className="relative h-44 rounded-3xl overflow-hidden border-2 border-white/15 hover:border-[#FF1744] text-right p-3.5 flex flex-col justify-between group cursor-pointer shadow-[0_12px_30px_rgba(0,0,0,0.65)]"
                     >
-                      {/* خلفية الفضاء البصري للعبة */}
                       <img
                         src={g.worldArt}
                         alt=""
@@ -1103,7 +1483,6 @@ export default function OtakuArenaHubView({
                       />
                       <div className="absolute inset-0 bg-gradient-to-t from-black via-black/45 to-black/20" />
 
-                      {/* صورة البطل المقاتل عائم في زاوية البوابة */}
                       <img
                         src={g.fighterImg}
                         onError={(e) => {
@@ -1111,7 +1490,7 @@ export default function OtakuArenaHubView({
                         }}
                         alt=""
                         referrerPolicy="no-referrer"
-                        className="absolute top-2.5 left-2.5 w-11 h-11 rounded-2xl object-cover ring-2 ring-white/40 shadow-xl z-10 bg-black"
+                        className="absolute top-2.5 left-2.5 w-10 h-10 rounded-2xl object-cover ring-2 ring-white/40 shadow-xl z-10 bg-black"
                       />
 
                       <div className="relative z-10 flex items-center justify-between">
@@ -1123,13 +1502,20 @@ export default function OtakuArenaHubView({
                         </span>
                       </div>
 
-                      <div className="relative z-10 space-y-2">
+                      <div className="relative z-10 space-y-1.5">
                         <h4 className="text-xs sm:text-sm font-black text-white leading-tight drop-shadow">
                           {g.titleAr}
                         </h4>
-                        <div className="inline-flex items-center gap-1.5 bg-gradient-to-r from-[#FF1744] to-amber-500 text-black text-[10px] font-black px-3 py-1.5 rounded-xl shadow-lg">
-                          <Play size={10} className="fill-black" />
-                          <span>دخول الفضاء</span>
+                        <div className="flex items-center justify-between">
+                          <div className="inline-flex items-center gap-1 bg-gradient-to-r from-[#FF1744] to-amber-500 text-black text-[10px] font-black px-2.5 py-1 rounded-xl shadow-lg">
+                            <Play size={10} className="fill-black" />
+                            <span>العب</span>
+                          </div>
+                          {personalBest > 0 && (
+                            <span className="text-[10px] font-mono font-black text-amber-300">
+                              {personalBest} PT
+                            </span>
+                          )}
                         </div>
                       </div>
                     </motion.button>
@@ -1935,14 +2321,14 @@ export default function OtakuArenaHubView({
 
               {/* بطاقات الساحة الحية (بما فيها تحديات الشبح المسجّلة Ghost Duels!) */}
               <div className="space-y-3">
-                {arenaPosts.map((post) => {
+                {arenaPosts.map((post, pIdx) => {
                   const totalVotes = (post.votesA || 0) + (post.votesB || 0);
                   const pctA = totalVotes > 0 ? Math.round(((post.votesA || 0) / totalVotes) * 100) : 50;
                   const pctB = 100 - pctA;
 
                   return (
                     <div
-                      key={post.id}
+                      key={`arena-post-${post.id || pIdx}-${pIdx}`}
                       className="bg-[#101018] border border-white/10 rounded-3xl p-4 space-y-3"
                     >
                       <div className="flex items-center justify-between gap-2">
@@ -2046,29 +2432,69 @@ export default function OtakuArenaHubView({
         })()}
 
         {/* =====================================================================
-            الفضاء الرابع: منصة الأساطير والمتصدرين ثلاثية الأبعاد
+            الفضاء الرابع: منصة الأساطير ولوحة الصدارة المستقلة لكل لعبة
            ===================================================================== */}
         {activeTab === 'leaderboard' && (
           <div className="space-y-4">
-            <div className="flex items-center justify-between bg-[#101018] border border-white/10 rounded-2xl p-2.5">
-              <div className="flex gap-1.5">
-                {[
-                  { id: 'event', label: 'أبطال الحلبة 🔥' },
-                  { id: 'xp', label: 'المستوى XP ⭐' },
-                  { id: 'coins', label: 'الكوينز 🪙' }
-                ].map((f) => (
-                  <button
-                    key={f.id}
-                    onClick={() => setLeaderFilter(f.id as any)}
-                    className={`px-3 py-1.5 rounded-xl text-xs font-black transition cursor-pointer ${
-                      leaderFilter === f.id
-                        ? 'bg-[#FF1744] text-white'
-                        : 'bg-[#161622] text-neutral-400 hover:text-white'
-                    }`}
-                  >
-                    {f.label}
-                  </button>
-                ))}
+            <div className="bg-[#101018] border border-white/10 rounded-3xl p-3.5 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-xs font-black text-white flex items-center gap-1.5">
+                  <Crown size={15} className="text-amber-400" />
+                  <span>اختر التصنيف العام أو لوحة الصدارة المستقلة لكل لعبة:</span>
+                </div>
+
+                <div className="flex gap-1.5">
+                  {[
+                    { id: 'event', label: 'أبطال الحلبة 🔥' },
+                    { id: 'xp', label: 'المستوى XP ⭐' },
+                    { id: 'coins', label: 'الكوينز 🪙' }
+                  ].map((f) => (
+                    <button
+                      key={f.id}
+                      onClick={() => {
+                        setSelectedLeaderGameId('all');
+                        setLeaderFilter(f.id as any);
+                      }}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-black transition cursor-pointer ${
+                        selectedLeaderGameId === 'all' && leaderFilter === f.id
+                          ? 'bg-[#FF1744] text-white'
+                          : 'bg-[#161622] text-neutral-400 hover:text-white'
+                      }`}
+                    >
+                      {f.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* شريط اختيار لوحة الصدارة المستقلة لكل لعبة */}
+              <div className="flex gap-2 overflow-x-auto hide-scrollbar pb-1">
+                <button
+                  onClick={() => setSelectedLeaderGameId('all')}
+                  className={`px-3 py-1.5 rounded-xl text-[11px] font-black shrink-0 border transition cursor-pointer ${
+                    selectedLeaderGameId === 'all'
+                      ? 'bg-amber-500 text-black border-amber-400'
+                      : 'bg-[#161622] text-neutral-300 border-white/5'
+                  }`}
+                >
+                  🌐 جميع الألعاب
+                </button>
+                {VISUAL_ANIME_GAMES.map((gm) => {
+                  const isSel = selectedLeaderGameId === gm.id;
+                  return (
+                    <button
+                      key={gm.id}
+                      onClick={() => setSelectedLeaderGameId(gm.id)}
+                      className={`px-3 py-1.5 rounded-xl text-[11px] font-black shrink-0 border transition cursor-pointer flex items-center gap-1.5 ${
+                        isSel
+                          ? 'bg-[#FF1744] text-white border-[#FF1744] shadow-md'
+                          : 'bg-[#161622] text-neutral-300 border-white/5 hover:text-white'
+                      }`}
+                    >
+                      <span>{gm.titleAr}</span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
@@ -2079,9 +2505,16 @@ export default function OtakuArenaHubView({
                   const u = sortedLeaders[rankIdx];
                   if (!u) return null;
                   const isFirst = rankIdx === 0;
+                  const gameScoreVal =
+                    selectedLeaderGameId !== 'all'
+                      ? (u.id === user?.id ? myGameHighScores[selectedLeaderGameId] : 0) ||
+                        u.dailyStats?.gameHighScores?.[selectedLeaderGameId] ||
+                        Math.round((u.aiGamesPoints || 0) * 45 + (u.level || 1) * 18)
+                      : 0;
+
                   return (
                     <div
-                      key={u.id}
+                      key={`podium-${u.id || rankIdx}-${rankIdx}`}
                       className={`rounded-3xl p-3 flex flex-col items-center text-center gap-2 border-2 ${
                         isFirst
                           ? 'bg-gradient-to-b from-amber-500/25 via-[#161624] to-[#101018] border-yellow-400 pb-6 shadow-[0_0_30px_rgba(250,204,21,0.15)]'
@@ -2118,7 +2551,9 @@ export default function OtakuArenaHubView({
                           {u.displayName || u.username || 'مقاتل أوتاكو'}
                         </div>
                         <div className="text-[10px] text-amber-400 font-mono">
-                          {leaderFilter === 'coins'
+                          {selectedLeaderGameId !== 'all'
+                            ? `${gameScoreVal} PT 🏆`
+                            : leaderFilter === 'coins'
                             ? `${u.coins || 0} 🪙`
                             : leaderFilter === 'xp'
                             ? `LV.${u.level || 1}`
@@ -2127,7 +2562,20 @@ export default function OtakuArenaHubView({
                       </div>
                       {u.id !== user?.id && (
                         <button
-                          onClick={() => handleDirectChallengeUser(u, true)}
+                          onClick={() => {
+                            if (selectedLeaderGameId !== 'all') {
+                              setGhostDuelTarget({
+                                id: u.id,
+                                name: u.displayName || u.username || 'مقاتل',
+                                targetScoreToBeat: Math.max(200, gameScoreVal),
+                                stake: selectedStake
+                              });
+                              setActiveStoryChapter(null);
+                              setActiveVisualGame(selectedLeaderGameId);
+                            } else {
+                              handleDirectChallengeUser(u, true);
+                            }
+                          }}
                           className="w-full bg-[#FF1744] text-white rounded-xl py-1.5 text-[10px] font-black cursor-pointer"
                         >
                           انزله ⚔️
@@ -2141,50 +2589,73 @@ export default function OtakuArenaHubView({
 
             {/* بقية المتصدرين */}
             <div className="bg-[#101018] border border-white/10 rounded-3xl divide-y divide-white/5 overflow-hidden">
-              {sortedLeaders.slice(3, 25).map((u, idx) => (
-                <div key={u.id} className="p-3 flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <span className="w-6 text-center text-xs font-mono font-black text-neutral-500">
-                      #{idx + 4}
-                    </span>
-                    <img
-                      src={u.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${u.id}`}
-                      onError={(e) => {
-                        e.currentTarget.src = getAnimeSvgFallback(u.displayName, '#FF1744');
-                      }}
-                      alt=""
-                      referrerPolicy="no-referrer"
-                      onClick={() => onUserClick?.(u.id)}
-                      className="w-10 h-10 rounded-full object-cover bg-black cursor-pointer shrink-0"
-                    />
-                    <div className="min-w-0">
-                      <div className="text-xs font-black text-white truncate">
-                        {u.displayName || u.username || 'مقاتل أوتاكو'}
-                      </div>
-                      <div className="text-[10px] text-neutral-400 font-mono">
-                        LV.{u.level || 1} • {u.coins || 0} 🪙 • {u.aiGamesPoints || 0} فوز
+              {sortedLeaders.slice(3, 25).map((u, idx) => {
+                const gameScoreVal =
+                  selectedLeaderGameId !== 'all'
+                    ? (u.id === user?.id ? myGameHighScores[selectedLeaderGameId] : 0) ||
+                      u.dailyStats?.gameHighScores?.[selectedLeaderGameId] ||
+                      Math.round((u.aiGamesPoints || 0) * 45 + (u.level || 1) * 18)
+                    : 0;
+                return (
+                  <div key={`leader-${u.id || idx}-${idx}`} className="p-3 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span className="w-6 text-center text-xs font-mono font-black text-neutral-500">
+                        #{idx + 4}
+                      </span>
+                      <img
+                        src={u.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${u.id}`}
+                        onError={(e) => {
+                          e.currentTarget.src = getAnimeSvgFallback(u.displayName, '#FF1744');
+                        }}
+                        alt=""
+                        referrerPolicy="no-referrer"
+                        onClick={() => onUserClick?.(u.id)}
+                        className="w-10 h-10 rounded-full object-cover bg-black cursor-pointer shrink-0"
+                      />
+                      <div className="min-w-0">
+                        <div className="text-xs font-black text-white truncate">
+                          {u.displayName || u.username || 'مقاتل أوتاكو'}
+                        </div>
+                        <div className="text-[10px] text-neutral-400 font-mono">
+                          {selectedLeaderGameId !== 'all'
+                            ? `أعلى رقم في اللعبة: ${gameScoreVal} PT`
+                            : `LV.${u.level || 1} • ${u.coins || 0} 🪙 • ${u.aiGamesPoints || 0} فوز`}
+                        </div>
                       </div>
                     </div>
-                  </div>
 
-                  {u.id !== user?.id && (
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <button
-                        onClick={() => handleDirectChallengeUser(u, true)}
-                        className="bg-[#FF1744] text-white px-3 py-1.5 rounded-xl text-[11px] font-black cursor-pointer"
-                      >
-                        انزله 🗡️
-                      </button>
-                      <button
-                        onClick={() => handleDirectChallengeUser(u, false)}
-                        className="bg-white/10 hover:bg-white/20 text-white px-2.5 py-1.5 rounded-xl text-[11px] font-bold cursor-pointer"
-                      >
-                        غرفة 🥊
-                      </button>
-                    </div>
-                  )}
-                </div>
-              ))}
+                    {u.id !== user?.id && (
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          onClick={() => {
+                            if (selectedLeaderGameId !== 'all') {
+                              setGhostDuelTarget({
+                                id: u.id,
+                                name: u.displayName || u.username || 'مقاتل',
+                                targetScoreToBeat: Math.max(200, gameScoreVal),
+                                stake: selectedStake
+                              });
+                              setActiveStoryChapter(null);
+                              setActiveVisualGame(selectedLeaderGameId);
+                            } else {
+                              handleDirectChallengeUser(u, true);
+                            }
+                          }}
+                          className="bg-[#FF1744] text-white px-3 py-1.5 rounded-xl text-[11px] font-black cursor-pointer"
+                        >
+                          انزله 🗡️
+                        </button>
+                        <button
+                          onClick={() => handleDirectChallengeUser(u, false)}
+                          className="bg-white/10 hover:bg-white/20 text-white px-2.5 py-1.5 rounded-xl text-[11px] font-bold cursor-pointer"
+                        >
+                          غرفة 🥊
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}

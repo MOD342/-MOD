@@ -15,7 +15,7 @@ import {
   Trash2,
   Clock
 } from 'lucide-react';
-import { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence, useMotionValue, animate } from 'motion/react';
 import { clientCache } from '../utils/clientCache';
 import { db } from '../firebase';
@@ -912,7 +912,7 @@ export default function HomeView({
                     >
                       <span
                         className="w-2 h-2 rounded-full"
-                        style={{ backgroundColor: g.accent }}
+                        style={{ backgroundColor: g.accentColor }}
                       />
                       {g.titleAr}
                     </span>

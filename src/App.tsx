@@ -474,7 +474,14 @@ export default function App() {
       case 'watch': 
         return <ExploreView onAnimeClick={(id) => navigateTo('anime_details', { id })} initialQuery={currentView.props?.initialQuery} />;
       case 'community':
-        return <CommunityView focusCommentId={currentView.props?.focusCommentId} onUserClick={(userId) => navigateTo('other_profile', { userId })} />;
+        return (
+          <CommunityView
+            focusCommentId={currentView.props?.focusCommentId}
+            onUserClick={(userId) => navigateTo('other_profile', { userId })}
+            onAnimeClick={(id) => navigateTo('anime_details', { id })}
+            onNavigate={navigateTo}
+          />
+        );
       case 'lists':
         return <MyListsView onAnimeClick={(id) => navigateTo('anime_details', { id })} />;
       case 'more':
@@ -498,7 +505,25 @@ export default function App() {
       case 'anime_comments':
         return <AnimeCommentsView animeId={currentView.props?.animeId} focusCommentId={currentView.props?.focusCommentId} onBack={goBack} onAnimeClick={(id) => navigateTo('anime_details', { id })} onUserClick={(userId) => navigateTo('other_profile', { userId })} />;
       case 'watch_episode':
-        return <WatchView key={`${currentView.props?.anime?._id || ''}-${currentView.props?.episode?.id || currentView.props?.episode?.num || ''}`} onBack={goBack} episode={currentView.props?.episode} anime={currentView.props?.anime} />;
+        return (
+          <WatchView
+            key={`${currentView.props?.anime?._id || ''}-${currentView.props?.episode?.id || currentView.props?.episode?.num || ''}`}
+            onBack={goBack}
+            episode={currentView.props?.episode}
+            anime={currentView.props?.anime}
+            onAnimeClick={() => {
+              const targetAnimeId = currentView.props?.anime?._id || currentView.props?.anime?.malId;
+              const prevView = viewStack[viewStack.length - 2];
+              if (prevView && prevView.name === 'anime_details') {
+                goBack();
+              } else if (targetAnimeId) {
+                navigateTo('anime_details', { id: targetAnimeId });
+              } else {
+                goBack();
+              }
+            }}
+          />
+        );
       case 'admin':
         if (!isAdmin && userRole !== 'owner' && userRole !== 'admin' && userRole !== 'moderator') {
           return (
@@ -599,7 +624,7 @@ export default function App() {
       {/* Real-time Toast Notifications Overlay */}
       <div className="fixed top-4 right-4 left-4 sm:left-auto sm:right-6 sm:w-[380px] z-[99999] flex flex-col gap-2.5 pointer-events-none" dir="rtl">
         <AnimatePresence>
-          {activeToasts.map((toast) => {
+          {activeToasts.map((toast, idx) => {
             let badgeColor = "bg-[#FF1744]/10 border-[#FF1744]/30 text-[#FF1744]";
             let iconColor = "text-[#FF1744]";
             let borderColor = "border-[#FF1744]/20";
@@ -684,7 +709,7 @@ export default function App() {
 
             return (
               <motion.div
-                key={toast.id}
+                key={`toast-${toast.id || 'item'}-${idx}`}
                 initial={{ opacity: 0, y: -20, scale: 0.92 }}
                 animate={{ opacity: 1, y: 0, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.85, transition: { duration: 0.18 } }}
@@ -740,7 +765,7 @@ export default function App() {
       {isFullScreenView ? (
         <AnimatePresence mode="popLayout" initial={false}>
           <motion.div
-            key={currentView.name}
+            key={`${currentView.name}-${viewStack.length}-${currentView.props?.id || currentView.props?.animeId || currentView.props?.userId || currentView.props?.episode?.id || currentView.props?.episode?.num || currentView.props?.t || ''}`}
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -12 }}
@@ -756,7 +781,7 @@ export default function App() {
         <AppLayout activeTab={activeTab} setActiveTab={handleTabChange} onNavigateTo={navigateTo}>
           <AnimatePresence mode="popLayout" initial={false}>
             <motion.div
-              key={currentView.name}
+              key={`${currentView.name}-${viewStack.length}-${currentView.props?.initialQuery || currentView.props?.focusCommentId || ''}`}
               initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -12 }}

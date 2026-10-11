@@ -1,4 +1,4 @@
-import { Store, UserCircle, PlaySquare, Swords, Home, Bookmark, MoreHorizontal, Shuffle, Bell, Search, Bot } from 'lucide-react';
+import { Store, UserCircle, PlaySquare, Swords, Crown, Home, Bookmark, MoreHorizontal, Shuffle, Bell, Search, Bot } from 'lucide-react';
 import { ReactNode, useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { notificationsService } from '../services/notificationsService';
@@ -127,7 +127,7 @@ export function AppLayout({ children, activeTab, setActiveTab, onNavigateTo }: {
           {[
             { id: 'home', icon: Home, label: 'الرئيسية' },
             { id: 'watch', icon: PlaySquare, label: 'الأنمي' },
-            { id: 'community', icon: Swords, label: 'مجتمع' },
+            { id: 'community', icon: Crown, label: 'النخبة' },
             { id: 'lists', icon: Bookmark, label: 'قائمتي' },
             { id: 'more', icon: MoreHorizontal, label: 'المزيد' },
           ].map((tab) => {

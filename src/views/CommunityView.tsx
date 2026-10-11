@@ -1,1286 +1,1084 @@
-import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { 
-  Trophy, 
-  Gamepad2, 
-  Medal, 
-  Users, 
-  MessageSquare, 
-  Heart, 
-  Share2, 
-  Flame, 
-  Send, 
-  Sparkles, 
-  TrendingUp, 
-  Crown, 
-  Lock, 
-  Volume2, 
-  CornerDownLeft, 
-  Award,
+import {
+  Crown,
+  Sparkles,
+  Users,
+  Shuffle,
+  Star,
+  Flame,
+  Heart,
+  Play,
+  Gamepad2,
+  Trophy,
+  Search,
   Loader2,
   X,
+  Calendar,
+  Layers,
+  Mic,
+  Compass,
+  Award,
+  Zap,
   Brain,
-  Calculator,
-  Music,
-  Eye,
-  Ghost,
+  Smile,
   Clock,
-  Laugh,
-  ShieldAlert,
-  Swords,
-  Sword,
-  MoreVertical,
-  Flag,
-  Trash2
+  Ghost,
 } from 'lucide-react';
-import { collection, query, where, onSnapshot, addDoc, updateDoc, doc, serverTimestamp, getDocs, limit, orderBy } from 'firebase/firestore';
-import { db } from '../firebase';
-import { useAuth } from '../contexts/AuthContext';
-import { STORE_ITEMS_SORTED, getAvatarShapeClass } from '../data/storeItems';
-import { awardXP } from '../services/gamificationService';
-import { moderationService, isStaffEmail } from '../services/moderationService';
-
-const WhoSaidGame = lazy(() => import('../components/games/WhoSaidGame'));
-const AnimeMathGame = lazy(() => import('../components/games/AnimeMathGame'));
-const EmojiCharadesGame = lazy(() => import('../components/games/EmojiCharadesGame'));
-const ImposterGame = lazy(() => import('../components/games/ImposterGame'));
-const MemoryGame = lazy(() => import('../components/games/MemoryGame'));
-const OpeningLyricsGame = lazy(() => import('../components/games/OpeningLyricsGame'));
-const PixelGuessGame = lazy(() => import('../components/games/PixelGuessGame'));
-const PowerLevelGame = lazy(() => import('../components/games/PowerLevelGame'));
-const SilhouetteGame = lazy(() => import('../components/games/SilhouetteGame'));
-const SpeedTriviaGame = lazy(() => import('../components/games/SpeedTriviaGame'));
-const TierBattleGame = lazy(() => import('../components/games/TierBattleGame'));
-const TimelineGame = lazy(() => import('../components/games/TimelineGame'));
-const WeaponMatchGame = lazy(() => import('../components/games/WeaponMatchGame'));
-
-const GAME_COMPONENTS: { [key: string]: React.ComponentType<{ onScoreUpdate: (pts: number) => void }> } = {
-  quotes: WhoSaidGame,
-  math: AnimeMathGame,
-  emojis: EmojiCharadesGame,
-  imposter: ImposterGame,
-  memory: MemoryGame,
-  lyrics: OpeningLyricsGame,
-  pixel: PixelGuessGame,
-  power: PowerLevelGame,
-  silhouette: SilhouetteGame,
-  trivia: SpeedTriviaGame,
-  tier: TierBattleGame,
-  timeline: TimelineGame,
-  weapon: WeaponMatchGame,
-};
-
-const GAME_CATEGORIES = [
-  { id: 'all', label: 'الكل' },
-  { id: 'visual', label: 'بصريات وتخمين' },
-  { id: 'trivia', label: 'معلومات عامة' },
-  { id: 'observation', label: 'ذكاء وملاحظة' },
-  { id: 'battle', label: 'معارك وقوة' },
-];
-
-const ALL_GAMES = [
-  {
-    id: 'quotes',
-    title: 'من القائل؟',
-    description: 'خمن شخصيات الأنمي الشهيرة من اقتباساتها وحصل على نقاط خبرة حقيقية.',
-    icon: MessageSquare,
-    category: 'trivia',
-    colorClass: 'text-purple-400 bg-purple-500/10 hover:border-purple-500/30',
-    colorGlow: 'bg-purple-500/10'
-  },
-  {
-    id: 'emojis',
-    title: 'ألغاز الإيموجي',
-    description: 'تحدَّ فراستك في الربط بين الإيموجيات المبتكرة وعناوين الأنمي.',
-    icon: Laugh,
-    category: 'visual',
-    colorClass: 'text-orange-400 bg-orange-500/10 hover:border-orange-500/30',
-    colorGlow: 'bg-orange-500/10'
-  },
-  {
-    id: 'math',
-    title: 'رياضيات الأنمي',
-    description: 'لعبة تجمع العمليات الحسابية بأرقام وإحصائيات وبطولات عالم الأنمي.',
-    icon: Calculator,
-    category: 'trivia',
-    colorClass: 'text-green-400 bg-green-500/10 hover:border-green-500/30',
-    colorGlow: 'bg-green-500/10'
-  },
-  {
-    id: 'imposter',
-    title: 'تحديد الدخيل',
-    description: 'استخرج الشخصية أو الخيار الدخيل الذي لا ينتمي لنفس طاقم الأنمي.',
-    icon: Ghost,
-    category: 'observation',
-    colorClass: 'text-violet-400 bg-violet-500/10 hover:border-violet-500/30',
-    colorGlow: 'bg-violet-500/10'
-  },
-  {
-    id: 'memory',
-    title: 'لعبة الذاكرة',
-    description: 'اختبر قوة ذاكرتك بمطابقة الوجوه وبطاقات الأبطال التاريخية.',
-    icon: Brain,
-    category: 'observation',
-    colorClass: 'text-teal-400 bg-teal-500/10 hover:border-teal-500/30',
-    colorGlow: 'bg-teal-500/10'
-  },
-  {
-    id: 'lyrics',
-    title: 'كلمات الشارات',
-    description: 'اسمع اللحن بقلبك واحزر اسم الأنمي من الكلمات الغنائية للافتتاحيات.',
-    icon: Music,
-    category: 'trivia',
-    colorClass: 'text-rose-400 bg-rose-500/10 hover:border-rose-500/30',
-    colorGlow: 'bg-rose-500/10'
-  },
-  {
-    id: 'pixel',
-    title: 'تخمين الصورة البكسلية',
-    description: 'خمن شخصية الأنمي من ملامحها المشوشة بكسلياً قبل زوال الضباب.',
-    icon: Eye,
-    category: 'visual',
-    colorClass: 'text-yellow-400 bg-yellow-500/10 hover:border-yellow-500/30',
-    colorGlow: 'bg-yellow-500/10'
-  },
-  {
-    id: 'power',
-    title: 'مستويات القوة',
-    description: 'مقارنة قتالية مباشرة لأرقام ومستويات القوة بين شينوبي وصيادين وسحرة.',
-    icon: ShieldAlert,
-    category: 'battle',
-    colorClass: 'text-red-400 bg-red-500/10 hover:border-red-500/30',
-    colorGlow: 'bg-red-500/10'
-  },
-  {
-    id: 'silhouette',
-    title: 'ظلال الأبطال',
-    description: 'هل تحفظ ملامح وتفاصيل أبطالك؟ حدد الشخصية بناءً على ظلها فقط.',
-    icon: Sparkles,
-    category: 'visual',
-    colorClass: 'text-pink-400 bg-pink-500/10 hover:border-pink-500/30',
-    colorGlow: 'bg-pink-500/10'
-  },
-  {
-    id: 'trivia',
-    title: 'تحدي السرعة الخاطف',
-    description: 'أسئلة عامة سريعة في كافة تصانيف الأنمي، تحتاج سرعة بديهة خيالية.',
-    icon: Clock,
-    category: 'trivia',
-    colorClass: 'text-blue-400 bg-blue-500/10 hover:border-blue-500/30',
-    colorGlow: 'bg-blue-500/10'
-  },
-  {
-    id: 'tier',
-    title: 'معارك الفئات (Tiers)',
-    description: 'صنف وقارن قوة أبطال الأنمي وحدد فئاتهم الأسطورية بناءً على البيانات.',
-    icon: Swords,
-    category: 'battle',
-    colorClass: 'text-amber-500 bg-amber-500/10 hover:border-amber-500/30',
-    colorGlow: 'bg-amber-500/10'
-  },
-  {
-    id: 'timeline',
-    title: 'الجدول الزمني الأبدي',
-    description: 'رتب تواريخ إنتاج وإصدارات الأنميات الشهيرة تسلسلياً.',
-    icon: Trophy,
-    category: 'observation',
-    colorClass: 'text-cyan-400 bg-cyan-500/10 hover:border-cyan-500/30',
-    colorGlow: 'bg-cyan-500/10'
-  },
-  {
-    id: 'weapon',
-    title: 'سلاح ومقاتل',
-    description: 'أقرن السيف أو التقنية أو السلاح السحري بصاحبه الحقيقي لتفوز.',
-    icon: Sword,
-    category: 'battle',
-    colorClass: 'text-emerald-400 bg-emerald-500/10 hover:border-emerald-500/30',
-    colorGlow: 'bg-emerald-500/10'
-  }
-];
+import { clientCache } from '../utils/clientCache';
+import { cleanAnimeTitle } from '../utils/animeTitleCleaner';
+import {
+  useGlobalLayoutMode,
+  LayoutModeToggleButton,
+  getLayoutGridClasses,
+  getShortTypeCode,
+  getArabicSeasonLabel,
+  normalizeAnimeStatusAr,
+} from '../utils/useViewLayoutMode';
 
 interface CommunityViewProps {
+  onAnimeClick?: (id: string) => void;
+  onNavigate?: (viewName: string, props?: any) => void;
   onUserClick?: (userId: string) => void;
   focusCommentId?: string;
 }
 
-export default function CommunityView({ onUserClick, focusCommentId }: CommunityViewProps) {
-  const { user, userData, userRole } = useAuth();
-  const [activeTab, setActiveTab] = useState<'feed' | 'challenges' | 'leaderboard'>('feed');
+const GENRE_TRANSLATIONS: Record<string, string> = {
+  Action: 'أكشن',
+  Adventure: 'مغامرات',
+  Comedy: 'كوميديا',
+  Drama: 'دراما',
+  Fantasy: 'فانتازيا',
+  Horror: 'رعب',
+  Mystery: 'غموض',
+  Romance: 'رومانسية',
+  'Sci-Fi': 'خيال علمي',
+  'Slice of Life': 'شريحة من الحياة',
+  Sports: 'رياضة',
+  Supernatural: 'خارق للطبيعة',
+  Suspense: 'إثارة',
+  Psychological: 'نفسي',
+  Thriller: 'تشويق',
+  Historical: 'تاريخي',
+  Mecha: 'ميكا',
+  School: 'مدرسي',
+};
 
-  // Feed Tab States
-  const [posts, setPosts] = useState<any[]>([]);
-  const [replies, setReplies] = useState<any[]>([]);
-  const [newPostText, setNewPostText] = useState('');
-  const [posting, setPosting] = useState(false);
-  const [expandedCommentsPostId, setExpandedCommentsPostId] = useState<string | null>(null);
-  const [newReplyText, setNewReplyText] = useState<{ [postId: string]: string }>({});
-  const [loadingPosts, setLoadingPosts] = useState(true);
+const MOOD_PRESETS = [
+  {
+    id: 'adrenaline',
+    title: 'أكشن وحماس مشتعل',
+    subtitle: 'معارك ملحمية وقدرات خارقة ترفع الأدرينالين',
+    icon: Flame,
+    genreId: '1',
+    minScore: '8',
+    accent: 'from-rose-500/20 to-orange-500/10 border-rose-500/30 text-rose-400',
+    badgeBg: 'bg-rose-500/15 text-rose-400 border-rose-500/30',
+  },
+  {
+    id: 'mindgames',
+    title: 'غموض وتلاعب نفسي',
+    subtitle: 'حبكات معقدة وألغاز ذكية تحبس الأنفاس',
+    icon: Brain,
+    genreId: '7',
+    minScore: '8',
+    accent: 'from-purple-500/20 to-indigo-500/10 border-purple-500/30 text-purple-400',
+    badgeBg: 'bg-purple-500/15 text-purple-400 border-purple-500/30',
+  },
+  {
+    id: 'fantasy_worlds',
+    title: 'عوالم خيالية وسحر',
+    subtitle: 'رحلات أسطورية في عوالم موازية وممالك غامضة',
+    icon: Sparkles,
+    genreId: '10',
+    minScore: '7.5',
+    accent: 'from-cyan-500/20 to-blue-500/10 border-cyan-500/30 text-cyan-400',
+    badgeBg: 'bg-cyan-500/15 text-cyan-400 border-cyan-500/30',
+  },
+  {
+    id: 'emotional',
+    title: 'دراما ومشاعر عميقة',
+    subtitle: 'قصص إنسانية مؤثرة تترك أثراً لا يُنسى',
+    icon: Heart,
+    genreId: '8',
+    minScore: '8',
+    accent: 'from-pink-500/20 to-rose-500/10 border-pink-500/30 text-pink-400',
+    badgeBg: 'bg-pink-500/15 text-pink-400 border-pink-500/30',
+  },
+  {
+    id: 'laughter',
+    title: 'كوميديا تبهج القلب',
+    subtitle: 'مواقف طريفة وشخصيات مرحة لتغيير المزاج',
+    icon: Smile,
+    genreId: '4',
+    minScore: '7.5',
+    accent: 'from-amber-500/20 to-yellow-500/10 border-amber-500/30 text-amber-400',
+    badgeBg: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
+  },
+  {
+    id: 'supernatural',
+    title: 'خوارق وأسرار مظلمة',
+    subtitle: 'أرواح ولعنات وقوى تتجاوز حدود الطبيعة',
+    icon: Ghost,
+    genreId: '37',
+    minScore: '7.5',
+    accent: 'from-emerald-500/20 to-teal-500/10 border-emerald-500/30 text-emerald-400',
+    badgeBg: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
+  },
+];
 
-  // Community Flag and Delete States
-  const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
-  const [reportingItemId, setReportingItemId] = useState<string | null>(null);
-  const [reportReason, setReportReason] = useState('');
-  const [submittingReport, setSubmittingReport] = useState(false);
+export default function CommunityView({ onAnimeClick, onNavigate }: CommunityViewProps) {
+  const [layoutMode, cycleLayoutMode] = useGlobalLayoutMode();
+  const isListMode = layoutMode === 'list';
 
-  const [deletingItemId, setDeletingItemId] = useState<string | null>(null);
-  const [deleteReason, setDeleteReason] = useState('');
-  const [submittingDelete, setSubmittingDelete] = useState(false);
+  const [activeTab, setActiveTab] = useState<'discover' | 'hall_of_fame' | 'characters'>('discover');
 
-  // Challenges Tab States
-  const [activeChallengeGame, setActiveChallengeGame] = useState<string | null>(null);
-  const [gameCategory, setGameCategory] = useState<string>('all');
+  // --- Tab 1: Smart Discovery & Mood Randomizer ---
+  const [selectedMood, setSelectedMood] = useState<string>('adrenaline');
+  const [moodAnimeList, setMoodAnimeList] = useState<any[]>([]);
+  const [loadingMood, setLoadingMood] = useState<boolean>(true);
+  const [spotlightAnime, setSpotlightAnime] = useState<any | null>(null);
+  const [spinningRoulette, setSpinningRoulette] = useState<boolean>(false);
 
-  // Leaderboard Tab States
-  const [leaders, setLeaders] = useState<any[]>([]);
-  const [loadingLeaderboard, setLoadingLeaderboard] = useState(true);
+  // --- Tab 2: Hall of Fame (Top All-Time / Most Popular / Top Airing) ---
+  const [fameFilter, setFameFilter] = useState<'score' | 'popularity' | 'airing'>('score');
+  const [fameAnimeList, setFameAnimeList] = useState<any[]>([]);
+  const [loadingFame, setLoadingFame] = useState<boolean>(false);
 
-  // 1. Listen to community posts & global community replies in real-time
+  // --- Tab 3: Legendary Characters ---
+  const [charactersList, setCharactersList] = useState<any[]>([]);
+  const [loadingCharacters, setLoadingCharacters] = useState<boolean>(false);
+  const [characterSearch, setCharacterSearch] = useState<string>('');
+  const [debouncedCharSearch, setDebouncedCharSearch] = useState<string>('');
+  const [selectedCharacter, setSelectedCharacter] = useState<any | null>(null);
+
+  // Debounce character search
   useEffect(() => {
-    setLoadingPosts(true);
-    // Listen to main posts where animeId is "community"
-    const qPosts = query(
-      collection(db, 'comments'),
-      where('animeId', '==', 'community')
-    );
+    const timer = setTimeout(() => {
+      setDebouncedCharSearch(characterSearch.trim());
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [characterSearch]);
 
-    const unsubscribePosts = onSnapshot(qPosts, (snapshot) => {
-      const list = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
-      // Sort client-side to prevent composite index requirement
-      list.sort((a: any, b: any) => {
-        const timeA = a.createdAt?.seconds || 0;
-        const timeB = b.createdAt?.seconds || 0;
-        return timeB - timeA; // post desc
-      });
-      setPosts(list);
-      setLoadingPosts(false);
-    }, (error) => {
-      console.error("Error loading community posts:", error);
-      setLoadingPosts(false);
-    });
-
-    // Listen to sub-replies where animeId is "community_reply"
-    const qReplies = query(
-      collection(db, 'comments'),
-      where('animeId', '==', 'community_reply')
-    );
-
-    const unsubscribeReplies = onSnapshot(qReplies, (snapshot) => {
-      const list = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
-      // Sort replies ascending by date
-      list.sort((a: any, b: any) => {
-        const timeA = a.createdAt?.seconds || 0;
-        const timeB = b.createdAt?.seconds || 0;
-        return timeA - timeB;
-      });
-      setReplies(list);
-    }, (error) => {
-      console.error("Error loading community replies:", error);
-    });
-
-    return () => {
-      unsubscribePosts();
-      unsubscribeReplies();
-    };
-  }, []);
-
-  // Highlight and focus reported comment dynamically
+  // Fetch Mood Anime
   useEffect(() => {
-    if (posts.length > 0 && focusCommentId) {
-      const timer = setTimeout(() => {
-        const el = document.getElementById(`comment-${focusCommentId}`);
-        if (el) {
-          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          el.classList.add('bg-[#FF1744]/15', 'rounded-xl', 'p-3', 'border', 'border-[#FF1744]/30', 'transition-all', 'duration-500');
-          setTimeout(() => {
-            el.classList.remove('bg-[#FF1744]/15', 'border-[#FF1744]/30');
-          }, 3000);
-        }
-      }, 800);
-      return () => clearTimeout(timer);
-    }
-  }, [posts, focusCommentId]);
+    if (activeTab !== 'discover') return;
+    const preset = MOOD_PRESETS.find((m) => m.id === selectedMood) || MOOD_PRESETS[0];
+    const cacheKey = `elite_mood_v2_${preset.id}`;
 
-  // 2. Fetch Leaderboard in real-time (XP ranking)
-  useEffect(() => {
-    if (activeTab === 'leaderboard') {
-      setLoadingLeaderboard(true);
-      const q = query(collection(db, 'users'), orderBy('xp', 'desc'), limit(25));
-      
-      const unsubscribeLeaderboard = onSnapshot(q, (snapshot) => {
-        const list = snapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        })) as any[];
-        // Filter out users with zero points to maintain competitive leaderboard
-        setLeaders(list.filter(u => (u.xp || 0) > 0));
-        setLoadingLeaderboard(false);
-      }, (error) => {
-        console.error("Leaderboard fetch failed", error);
-        setLoadingLeaderboard(false);
-      });
-
-      return () => unsubscribeLeaderboard();
-    }
-  }, [activeTab]);
-
-  // Handle report submission
-  const handleSendReport = async () => {
-    if (!reportingItemId || !reportReason.trim()) return;
-    setSubmittingReport(true);
-    try {
-      const targetItem =
-        posts.find((p: any) => p.id === reportingItemId) ||
-        replies.find((r: any) => r.id === reportingItemId);
-      await moderationService.reportContent(reportingItemId, 'comment', reportReason.trim(), {
-        contentText: targetItem?.text || '',
-        authorId: targetItem?.userId || '',
-        authorName: targetItem?.userDisplayName || 'عضو',
-        animeId: targetItem?.animeId || 'community'
-      });
-      alert('تم تقديم الإبلاغ بنجاح للإدارة وسيقوم المشرفون بمراجعته. 🛡️');
-      setReportingItemId(null);
-      setReportReason('');
-    } catch (e) {
-      console.error(e);
-      alert('حدث خطأ أثناء تقديم الإبلاغ.');
-    } finally {
-      setSubmittingReport(false);
-    }
-  };
-
-  // Handle deletion of post/reply
-  const handleDeleteItem = async (itemId: string, itemUserId: string) => {
-    const isPostOwner = user?.uid === itemUserId;
-    const isMod = userRole === 'owner' || userRole === 'admin' || userRole === 'moderator' || isStaffEmail(user?.email);
-    
-    if (isPostOwner && !isMod) {
-      if (window.confirm('هل أنت متأكد من رغبتك في حذف هذا المنشور؟ 🗑️')) {
-        try {
-          await moderationService.deleteComment(itemId);
-          alert('تم حذف المنشور بنجاح.');
-        } catch (err) {
-          console.error(err);
-          alert('حدث خطأ أثناء محاولة الحذف.');
-        }
+    const cached = clientCache.get<any[]>(cacheKey);
+    if (cached && cached.length > 0) {
+      setMoodAnimeList(cached);
+      if (!spotlightAnime) {
+        setSpotlightAnime(cached[Math.floor(Math.random() * cached.length)]);
       }
-    } else if (isMod) {
-      setDeletingItemId(itemId);
-      setDeleteReason('');
-    }
-  };
-
-  // Moderator Delete Confirmation
-  const handleModDeleteConfirm = async () => {
-    if (!deletingItemId || !deleteReason.trim()) return;
-    setSubmittingDelete(true);
-    try {
-      await moderationService.deleteComment(deletingItemId);
-      alert('تم حذف المحتوى كـمستند مشرف وإغلاق المخالفة بنجاح. 🛡️');
-      setDeletingItemId(null);
-      setDeleteReason('');
-    } catch (err) {
-      console.error(err);
-      alert('حدث خطأ أثناء حذف المحتوى.');
-    } finally {
-      setSubmittingDelete(false);
-    }
-  };
-
-  // Form Submission for creating a main post
-  const handleCreatePost = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!user) return;
-    if (userData?.isMuted) {
-      alert('تم تقييد حسابك من الكتابة والمشاركة بواسطة الإدارة! 🔇');
+      setLoadingMood(false);
       return;
     }
-    if ((userData?.level || 1) < 2) {
-      alert('تحتاج للوصول إلى المستوى 2 على الأقل للتمكن من النشر ومشاركة المنشورات! 🚀');
-      return;
-    }
-    if (!newPostText.trim()) return;
 
-    setPosting(true);
-    try {
-      const postPayload: any = {
-        animeId: 'community',
-        userId: user.id,
-        userDisplayName: userData?.displayName || user.displayName || 'لاعب مجهول',
-        text: newPostText.trim(),
-        likes: 0,
-        dislikes: 0,
-        createdAt: serverTimestamp()
-      };
+    setLoadingMood(true);
+    fetch(
+      `/api/anime/search?genres=${preset.genreId}&min_score=${preset.minScore}&order_by=score&sort=desc&page=1`
+    )
+      .then((res) => res.json())
+      .then((res) => {
+        if (res.success && Array.isArray(res.data) && res.data.length > 0) {
+          clientCache.set(cacheKey, res.data, 10 * 60 * 1000);
+          setMoodAnimeList(res.data);
+          setSpotlightAnime(res.data[Math.floor(Math.random() * res.data.length)]);
+        }
+      })
+      .catch((err) => console.error('Mood fetch error:', err))
+      .finally(() => setLoadingMood(false));
+  }, [selectedMood, activeTab]);
 
-      // Add user cosmetic properties if equipped
-      if (user.photoURL) postPayload.userPhotoUrl = user.photoURL;
-      if (userData?.equippedAvatar) postPayload.equippedAvatar = userData.equippedAvatar;
-      if (userData?.equippedFrame) postPayload.equippedFrame = userData.equippedFrame;
-      if (userData?.equippedTitle) postPayload.equippedTitle = userData.equippedTitle;
-      if (userData?.equippedBadge) postPayload.equippedBadge = userData.equippedBadge;
-
-      await addDoc(collection(db, 'comments'), postPayload);
-      setNewPostText('');
-
-      // Award XP for contributing a post (+10 XP)
-      await awardXP(user.id, 10);
-    } catch (err) {
-      console.error("Failed to publish community post", err);
-    } finally {
-      setPosting(false);
-    }
+  // Spin Roulette Pick
+  const handleSpinRandomPick = () => {
+    if (moodAnimeList.length === 0) return;
+    setSpinningRoulette(true);
+    setTimeout(() => {
+      const candidates = moodAnimeList.filter((a) => a._id !== spotlightAnime?._id);
+      const pool = candidates.length > 0 ? candidates : moodAnimeList;
+      const randomItem = pool[Math.floor(Math.random() * pool.length)];
+      setSpotlightAnime(randomItem);
+      setSpinningRoulette(false);
+    }, 350);
   };
 
-  // Form Submission for submitting a nested reply
-  const handleCreateReply = async (postId: string) => {
-    if (!user) return;
-    if (userData?.isMuted) {
-      alert('تم تقييد حسابك من الكتابة والتعليق بواسطة الإدارة! 🔇');
+  // Fetch Hall of Fame Anime
+  useEffect(() => {
+    if (activeTab !== 'hall_of_fame') return;
+    const cacheKey = `elite_fame_v2_${fameFilter}`;
+
+    const cached = clientCache.get<any[]>(cacheKey);
+    if (cached && cached.length > 0) {
+      setFameAnimeList(cached);
+      setLoadingFame(false);
       return;
     }
-    if ((userData?.level || 1) < 2) {
-      alert('تحتاج للوصول إلى المستوى 2 على الأقل للتمكن من التعليق والردود! 🚀');
+
+    setLoadingFame(true);
+    let url = `/api/anime/search?order_by=score&sort=desc&page=1`;
+    if (fameFilter === 'popularity') {
+      url = `/api/anime/search?order_by=popularity&sort=asc&page=1`;
+    } else if (fameFilter === 'airing') {
+      url = `/api/anime/search?status=airing&order_by=score&sort=desc&page=1`;
+    }
+
+    fetch(url)
+      .then((res) => res.json())
+      .then((res) => {
+        if (res.success && Array.isArray(res.data)) {
+          clientCache.set(cacheKey, res.data, 15 * 60 * 1000);
+          setFameAnimeList(res.data);
+        }
+      })
+      .catch((err) => console.error('Hall of fame error:', err))
+      .finally(() => setLoadingFame(false));
+  }, [activeTab, fameFilter]);
+
+  // Fetch Legendary Characters
+  useEffect(() => {
+    if (activeTab !== 'characters') return;
+    const cacheKey = `elite_chars_v2_${debouncedCharSearch || 'all'}`;
+
+    const cached = clientCache.get<any[]>(cacheKey);
+    if (cached && cached.length > 0) {
+      setCharactersList(cached);
+      setLoadingCharacters(false);
       return;
     }
-    const text = newReplyText[postId]?.trim();
-    if (!text) return;
 
-    try {
-      const replyPayload: any = {
-        animeId: 'community_reply',
-        parentCommentId: postId,
-        userId: user.id,
-        userDisplayName: userData?.displayName || user.displayName || 'لاعب مجهول',
-        text: text,
-        likes: 0,
-        dislikes: 0,
-        createdAt: serverTimestamp()
-      };
+    setLoadingCharacters(true);
+    const url = debouncedCharSearch
+      ? `/api/anime/characters?q=${encodeURIComponent(debouncedCharSearch)}&page=1`
+      : `/api/anime/characters?page=1`;
 
-      if (user.photoURL) replyPayload.userPhotoUrl = user.photoURL;
-      if (userData?.equippedAvatar) replyPayload.equippedAvatar = userData.equippedAvatar;
-      if (userData?.equippedFrame) replyPayload.equippedFrame = userData.equippedFrame;
-      if (userData?.equippedTitle) replyPayload.equippedTitle = userData.equippedTitle;
-      if (userData?.equippedBadge) replyPayload.equippedBadge = userData.equippedBadge;
+    fetch(url)
+      .then((res) => res.json())
+      .then((res) => {
+        if (res.success && Array.isArray(res.data)) {
+          clientCache.set(cacheKey, res.data, 15 * 60 * 1000);
+          setCharactersList(res.data);
+        }
+      })
+      .catch((err) => console.error('Characters fetch error:', err))
+      .finally(() => setLoadingCharacters(false));
+  }, [activeTab, debouncedCharSearch]);
 
-      await addDoc(collection(db, 'comments'), replyPayload);
-      setNewReplyText(prev => ({ ...prev, [postId]: '' }));
+  const activeMoodPreset = useMemo(
+    () => MOOD_PRESETS.find((m) => m.id === selectedMood) || MOOD_PRESETS[0],
+    [selectedMood]
+  );
 
-      // Award XP for reply (+5 XP)
-      await awardXP(user.id, 5);
-    } catch (err) {
-      console.error("Failed to publish reply", err);
+  // Unified Anime Card Renderer (supports List Mode & Zero-Gap Grid Modes + optional Rank Badge)
+  const renderAnimeCard = (anime: any, idx: number, showRankBadge: boolean = false) => {
+    const cleanTitle = cleanAnimeTitle(anime.title);
+    const typeCode = getShortTypeCode(anime.type);
+    const ratingVal =
+      anime.rating && Number(anime.rating) > 0 ? Number(anime.rating).toFixed(1) : '';
+    const seasonLabel = getArabicSeasonLabel(anime.season, anime.releaseYear || anime.year);
+    const statusInfo = normalizeAnimeStatusAr(anime.status);
+    const rankNum = idx + 1;
+
+    const getRankBadgeStyle = (rank: number) => {
+      if (rank === 1)
+        return 'bg-gradient-to-br from-amber-300 via-yellow-500 to-amber-600 text-black border-amber-200 shadow-[0_0_12px_rgba(245,158,11,0.5)]';
+      if (rank === 2)
+        return 'bg-gradient-to-br from-slate-200 via-slate-300 to-slate-400 text-black border-white shadow-[0_0_10px_rgba(203,213,225,0.4)]';
+      if (rank === 3)
+        return 'bg-gradient-to-br from-amber-600 via-orange-700 to-amber-800 text-white border-amber-400/50 shadow-[0_0_10px_rgba(180,83,9,0.4)]';
+      return 'bg-black/80 text-neutral-200 border-white/15';
+    };
+
+    if (isListMode) {
+      return (
+        <div
+          key={`${anime._id}-${idx}`}
+          onClick={() => onAnimeClick && onAnimeClick(String(anime._id))}
+          className="cursor-pointer group flex items-stretch bg-[#111216] hover:bg-[#171920] border border-white/5 hover:border-purple-500/30 rounded-2xl overflow-hidden transition-all shadow-md"
+        >
+          <div className="w-28 sm:w-32 shrink-0 relative overflow-hidden bg-neutral-900 self-stretch">
+            <img
+              src={anime.posterUrl}
+              alt={cleanTitle}
+              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+              loading="lazy"
+              referrerPolicy="no-referrer"
+            />
+            {showRankBadge && (
+              <span
+                className={`absolute top-1.5 right-1.5 min-w-[24px] h-6 px-1.5 rounded-lg text-[10px] font-black flex items-center justify-center border ${getRankBadgeStyle(
+                  rankNum
+                )}`}
+              >
+                #{rankNum}
+              </span>
+            )}
+          </div>
+          <div className="flex-1 min-w-0 p-3 flex flex-col justify-between text-right">
+            <h3
+              className="text-sm sm:text-base font-black text-white group-hover:text-purple-400 transition-colors line-clamp-2 leading-snug text-right"
+              dir="auto"
+            >
+              {cleanTitle}
+            </h3>
+
+            <div className="flex flex-wrap items-center justify-start gap-1.5 mt-2">
+              <span className="bg-purple-600/20 text-purple-400 border border-purple-500/30 text-[10px] font-black px-2 py-0.5 rounded-md flex items-center gap-1">
+                {typeCode}
+              </span>
+              {ratingVal && (
+                <span className="bg-yellow-500/15 text-yellow-400 border border-yellow-500/25 text-[10px] font-black px-2 py-0.5 rounded-md flex items-center gap-1">
+                  <Star size={10} className="fill-yellow-400" />
+                  {ratingVal}
+                </span>
+              )}
+              {seasonLabel && (
+                <span className="bg-white/5 text-neutral-300 border border-white/10 text-[10px] font-bold px-2 py-0.5 rounded-md flex items-center gap-1">
+                  <Calendar size={10} className="text-blue-400" />
+                  {seasonLabel}
+                </span>
+              )}
+              {anime.episodesCount ? (
+                <span className="bg-blue-500/10 text-blue-400 border border-blue-500/20 text-[10px] font-bold px-2 py-0.5 rounded-md flex items-center gap-1">
+                  <Layers size={10} />
+                  {anime.episodesCount} حلقة
+                </span>
+              ) : null}
+              {statusInfo && (
+                <span
+                  className={`text-[10px] font-bold px-2 py-0.5 rounded-md border ${statusInfo.colorClass}`}
+                >
+                  {statusInfo.label}
+                </span>
+              )}
+            </div>
+
+            {anime.genres && anime.genres.length > 0 && (
+              <div className="flex flex-wrap items-center justify-start gap-1 mt-2">
+                {anime.genres.slice(0, 3).map((g: string, gi: number) => (
+                  <span
+                    key={gi}
+                    className="text-[10px] font-bold text-neutral-400 bg-black/40 px-2 py-0.5 rounded border border-white/5"
+                  >
+                    {GENRE_TRANSLATIONS[g] || g}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      );
     }
-  };
 
-  // Upvote/Like feature
-  const handleLikeItem = async (itemId: string, currentLikes: number) => {
-    if (!user) return;
-    try {
-      await updateDoc(doc(db, 'comments', itemId), {
-        likes: currentLikes + 1
-      });
-    } catch (err) {
-      console.error("Failed to like item", err);
-    }
-  };
+    return (
+      <div
+        key={`${anime._id}-${idx}`}
+        onClick={() => onAnimeClick && onAnimeClick(String(anime._id))}
+        className="cursor-pointer group relative aspect-[2/3] w-full overflow-hidden bg-neutral-900 border-[0.5px] border-black/40"
+      >
+        <img
+          src={anime.posterUrl}
+          alt={cleanTitle}
+          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+          loading="lazy"
+          referrerPolicy="no-referrer"
+        />
+        <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/30 to-transparent" />
 
-  // Scoring in quiz awards actual user XP + Coins in db
-  const handleQuizScoreUpdated = async (pointsGained: number) => {
-    if (user) {
-      await awardXP(user.id, pointsGained, true);
-    }
+        <div
+          className="absolute top-1.5 inset-x-1.5 flex items-center justify-between pointer-events-none"
+          dir="ltr"
+        >
+          <div className="flex items-center gap-1">
+            {showRankBadge && (
+              <span
+                className={`px-1.5 py-0.5 rounded text-[9px] font-black border leading-none ${getRankBadgeStyle(
+                  rankNum
+                )}`}
+              >
+                #{rankNum}
+              </span>
+            )}
+            <span className="bg-black/80 backdrop-blur-md text-white text-[9px] font-black px-1.5 py-0.5 rounded border border-white/15 uppercase tracking-wider leading-none">
+              {typeCode}
+            </span>
+          </div>
+          {ratingVal && (
+            <span className="bg-black/80 backdrop-blur-md text-yellow-400 text-[9px] font-black px-1.5 py-0.5 rounded border border-yellow-500/30 flex items-center gap-0.5 leading-none">
+              ★ {ratingVal}
+            </span>
+          )}
+        </div>
+
+        <div className="absolute bottom-0 inset-x-0 p-2 text-right pointer-events-none">
+          <h3
+            className="text-[11px] sm:text-xs font-black text-white line-clamp-2 leading-tight drop-shadow-[0_2px_4px_rgba(0,0,0,0.95)] group-hover:text-purple-300 transition-colors"
+            dir="ltr"
+          >
+            {cleanTitle}
+          </h3>
+        </div>
+      </div>
+    );
   };
 
   return (
-    <motion.div 
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="p-4 space-y-6 pt-8 pb-32 min-h-screen bg-[#050505] font-sans selection:bg-purple-500/30 text-right"
+    <div
+      className="min-h-screen bg-[#0b0c10] text-white font-sans pb-28 select-none"
       dir="rtl"
     >
-      {/* Dynamic Game Overlay Portal */}
-      <AnimatePresence>
-        {activeChallengeGame && GAME_COMPONENTS[activeChallengeGame] && (
-          <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/95 z-[100] flex flex-col justify-center items-center p-4 overflow-y-auto"
-          >
-            <div className="w-full max-w-md relative my-8">
-              <button 
-                onClick={() => setActiveChallengeGame(null)}
-                className="absolute -top-12 left-0 w-10 h-10 bg-neutral-900 hover:bg-neutral-800 text-white rounded-full flex items-center justify-center transition border border-white/10 z-[110]"
-              >
-                <X size={20} />
-              </button>
-              <div className="w-full h-full">
-                <Suspense fallback={
-                  <div className="flex flex-col items-center justify-center p-12 text-neutral-400 gap-3 min-h-[300px]">
-                    <Loader2 className="animate-spin text-purple-500" size={32} />
-                    <span className="text-xs font-bold font-mono">جاري تحميل ساحة اللعب...</span>
-                  </div>
-                }>
-                  {React.createElement(GAME_COMPONENTS[activeChallengeGame], { onScoreUpdate: handleQuizScoreUpdated })}
-                </Suspense>
+      {/* 1. الشريط العلوي المدمج (بنفس نمط الصفحات الأربع) */}
+      <div className="bg-[#0b0c10] border-b border-white/5 px-4 pt-4 pb-3">
+        <div className="max-w-7xl mx-auto space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-purple-600/25 to-amber-500/20 border border-purple-500/30 flex items-center justify-center text-amber-400 shadow-md">
+                <Crown size={18} />
+              </div>
+              <div>
+                <h1 className="text-base md:text-lg font-black tracking-tight text-white">
+                  نخبة وعالم الأنمي
+                </h1>
               </div>
             </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
 
-      {/* Header Banner */}
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-3 relative z-10">
-          <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-purple-600/20 to-blue-600/20 flex items-center justify-center text-purple-400 border border-purple-500/20 shadow-[0_0_20px_rgba(168,85,247,0.15)]">
-            <Users size={24} />
+            <div className="flex items-center gap-1.5">
+              {/* أزرار سريعة لساحة الألعاب ولوحة المتصدرين حتى لا يفقد المستخدم أي ميزة */}
+              {onNavigate && (
+                <>
+                  <button
+                    onClick={() => onNavigate('games')}
+                    title="ساحة الألعاب والتحديات"
+                    className="h-9 px-2.5 rounded-xl bg-purple-500/10 hover:bg-purple-500/20 text-purple-300 border border-purple-500/25 flex items-center gap-1.5 text-[11px] font-black transition cursor-pointer active:scale-95"
+                  >
+                    <Gamepad2 size={15} />
+                    <span className="hidden sm:inline">الألعاب</span>
+                  </button>
+                  <button
+                    onClick={() => onNavigate('leaderboard')}
+                    title="لوحة المتصدرين"
+                    className="h-9 px-2.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/25 flex items-center gap-1.5 text-[11px] font-black transition cursor-pointer active:scale-95"
+                  >
+                    <Trophy size={15} />
+                    <span className="hidden sm:inline">المتصدرين</span>
+                  </button>
+                </>
+              )}
+
+              {/* زر تبديل العرض الموحد */}
+              <LayoutModeToggleButton
+                mode={layoutMode}
+                onToggle={cycleLayoutMode}
+              />
+            </div>
           </div>
-          <div className="text-right">
-            <h2 className="text-2xl md:text-3xl font-black text-white tracking-tight">المجتمع</h2>
-            <p className="text-xs md:text-sm text-neutral-400 font-medium">تواصل وناقش وتحدّ الأوتاكو في ساحة الأبطال الدافئة</p>
+
+          {/* التبويبات الثلاثة الرئيسية */}
+          <div className="grid grid-cols-3 gap-1.5 bg-[#12141c] p-1 rounded-2xl border border-white/5">
+            {[
+              { id: 'discover', label: 'بوصلة المزاج', icon: Compass },
+              { id: 'hall_of_fame', label: 'قاعة الأساطير', icon: Crown },
+              { id: 'characters', label: 'نجوم الأنمي', icon: Users },
+            ].map((tab) => {
+              const Icon = tab.icon;
+              const isActive = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id as any)}
+                  className={`py-2 px-2 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                    isActive
+                      ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-md'
+                      : 'text-neutral-400 hover:text-white hover:bg-white/5'
+                  }`}
+                >
+                  <Icon size={14} />
+                  <span className="truncate">{tab.label}</span>
+                </button>
+              );
+            })}
           </div>
         </div>
       </div>
 
-      {/* Category Selection Tabs */}
-      <div className="flex bg-[#0d0d0d] border border-white/5 rounded-2xl p-1.5 mb-6 shadow-xl relative z-10">
-        {[
-          { id: 'feed', label: 'المنشورات', icon: MessageSquare },
-          { id: 'challenges', label: 'التحديات التفاعلية', icon: Flame },
-          { id: 'leaderboard', label: 'لوحة التصنيف', icon: Crown },
-        ].map(tab => (
-          <button
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id as any)}
-            className={`flex-1 py-2.5 text-xs md:text-sm font-bold rounded-xl transition-all duration-300 flex justify-center items-center gap-2 ${
-              activeTab === tab.id 
-                ? 'bg-[#151515] text-white shadow-lg border border-white/5 ring-1 ring-white/10' 
-                : 'text-neutral-500 hover:text-neutral-300'
-            }`}
-          >
-            <tab.icon size={15} className={`transition-colors ${activeTab === tab.id ? 'text-purple-400' : ''}`} />
-            <span>{tab.label}</span>
-          </button>
-        ))}
-      </div>
-
-      {/* 1. Feed / Stream Tab */}
-      {activeTab === 'feed' && (
-        <motion.div 
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="space-y-4"
-        >
-          {/* Post publishing input */}
-          {user ? (
-            <form onSubmit={handleCreatePost} className="flex gap-3 mb-6 bg-gradient-to-br from-[#0c0c0e] to-[#060608] p-4 rounded-3xl border border-white/5 shadow-2xl relative overflow-hidden group">
-               <div className="absolute top-0 right-0 w-32 h-32 bg-purple-500/10 rounded-full blur-3xl opacity-50 group-focus-within:opacity-100 transition-opacity pointer-events-none"></div>
-               
-               {/* Current User avatar frame cosmetically formatted */}
-               <div className="relative p-0.5 shrink-0 h-12 w-12">
-                   <div className={`w-full h-full ${getAvatarShapeClass(STORE_ITEMS_SORTED.find(i => i.id === userData?.equippedFrame)?.avatarShape)} overflow-hidden border border-neutral-800 bg-neutral-900 flex items-center justify-center shadow-lg`}>
-                      <img 
-                        src={STORE_ITEMS_SORTED.find(i => i.id === userData?.equippedAvatar)?.img || user.photoURL || "https://api.dicebear.com/7.x/avataaars/svg?seed=" + user.id} 
-                        className="w-full h-full object-cover" 
-                        alt="my-avatar"
-                        referrerPolicy="no-referrer"
-                      />
-                   </div>
-                   {userData?.equippedFrame && (
-                      <div className={`absolute inset-0 ${getAvatarShapeClass(STORE_ITEMS_SORTED.find(i => i.id === userData.equippedFrame)?.avatarShape)} pointer-events-none ${STORE_ITEMS_SORTED.find(i => i.id === userData.equippedFrame)?.frameStyle}`} />
-                   )}
-               </div>
-
-               <div className="flex-1 relative">
-                 <input 
-                   type="text" 
-                   value={newPostText}
-                   onChange={e => setNewPostText(e.target.value)}
-                   disabled={posting || userData?.isMuted || (userData?.level || 1) < 2}
-                   placeholder={
-                     userData?.isMuted 
-                       ? "تم كتم حسابك من كتابة المنشورات بواسطة الإدارة 🔇" 
-                       : (userData?.level || 1) < 2 
-                         ? "مغلق 🔒 المستوى 2 مطلوب للتمكن من النشر وكتابة الآراء" 
-                         : "ما الذي يدور في ذهنك اليوم من نظريات أنمي؟ شاركنا منشورك..."
-                   } 
-                   className="w-full bg-black/40 border border-white/5 rounded-2xl py-3 pl-12 pr-4 text-xs md:text-sm text-white focus:outline-none focus:border-purple-500/50 focus:bg-black/60 transition-all font-medium placeholder:text-neutral-600 block text-right disabled:opacity-50"
-                 />
-                 <button 
-                   type="submit"
-                   disabled={posting || !newPostText.trim() || userData?.isMuted || (userData?.level || 1) < 2}
-                   className="absolute left-2 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center bg-purple-500/10 text-purple-400 hover:bg-purple-500/20 disabled:opacity-40 rounded-xl transition-colors cursor-pointer"
-                 >
-                   {posting ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} className="translate-x-0.5" />}
-                 </button>
-               </div>
-            </form>
-          ) : (
-            <div className="bg-neutral-900/20 border border-neutral-800 p-4 rounded-2xl text-center text-xs text-neutral-400 font-bold mb-4">
-              يرجى تسجيل الدخول لتتمكن من كتابة المنشورات والتفاعل مع الآخرين.
-            </div>
-          )}
-
-          {/* Posts list container */}
-          {loadingPosts ? (
-            <div className="flex flex-col items-center py-16 gap-3 text-neutral-500">
-              <Loader2 className="animate-spin text-purple-500" size={32} />
-              <span className="text-xs font-bold font-mono">جاري تحميل منشورات الساحة...</span>
-            </div>
-          ) : posts.length === 0 ? (
-            <div className="text-center p-12 border border-dashed border-neutral-800 rounded-3xl bg-neutral-900/5">
-              <MessageSquare size={44} className="mx-auto text-neutral-700 mb-3 animate-pulse" />
-              <h3 className="font-bold text-neutral-400 mb-1">الساحة هادئة للغاية</h3>
-              <p className="text-[11px] text-neutral-500 max-w-sm mx-auto leading-relaxed">تجرأ وكن البطل الأول الذي يشعل الساحة بكتابة تدوينة جديدة ومشاركة النظريات الأسطورية!</p>
-            </div>
-          ) : (
-            posts.map((post) => {
-              const postAvatar = STORE_ITEMS_SORTED.find(i => i.id === post.equippedAvatar);
-              const postFrame = STORE_ITEMS_SORTED.find(i => i.id === post.equippedFrame);
-              const postTitle = STORE_ITEMS_SORTED.find(i => i.id === post.equippedTitle);
-              const postBadge = STORE_ITEMS_SORTED.find(i => i.id === post.equippedBadge);
-              
-              const isExpanded = expandedCommentsPostId === post.id;
-              const postReplies = replies.filter(r => r.parentCommentId === post.id);
-
-              return (
-                <motion.div 
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  key={post.id} 
-                  className="bg-[#0b0b0d] border border-white/5 rounded-3xl p-5 shadow-xl relative overflow-hidden group hover:border-purple-500/20 transition-all duration-300"
-                >
-                  {/* Decorative faint glow */}
-                  <div className="absolute top-0 left-0 w-32 h-32 bg-purple-500/[0.02] rounded-full blur-3xl pointer-events-none group-hover:bg-purple-500/[0.05] transition-colors" />
-
-                  {/* Post Author Row */}
-                  <div className="flex justify-between items-start mb-4 relative z-10">
-                    <div className="flex items-center gap-3 cursor-pointer" onClick={() => onUserClick && onUserClick(post.userId)}>
-                      {/* Interactive Custom Avatar Frame styling */}
-                      <div className="relative p-0.5 shrink-0">
-                        <div className={`w-11 h-11 ${getAvatarShapeClass(postFrame?.avatarShape)} overflow-hidden bg-neutral-900 border border-neutral-800 flex items-center justify-center transform group-hover:scale-105 transition-transform`}>
-                          <img 
-                            src={postAvatar?.img || post.userPhotoUrl || `https://api.dicebear.com/7.x/avataaars/svg?seed=${post.userId}`} 
-                            className="w-full h-full object-cover" 
-                            alt="author-avatar"
-                            referrerPolicy="no-referrer"
-                          />
+      {/* محتوى التبويبات */}
+      <div className="max-w-7xl mx-auto">
+        {/* ================= التبويب الأول: بوصلة المزاج والاكتشاف الذكي ================= */}
+        {activeTab === 'discover' && (
+          <div className="space-y-4">
+            {/* شبكة اختيار المزاج */}
+            <div className="px-3 pt-3 md:px-4">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+                {MOOD_PRESETS.map((mood) => {
+                  const Icon = mood.icon;
+                  const isSelected = selectedMood === mood.id;
+                  return (
+                    <button
+                      key={mood.id}
+                      onClick={() => setSelectedMood(mood.id)}
+                      className={`p-3 rounded-2xl border text-right transition-all cursor-pointer flex flex-col justify-between gap-2 relative overflow-hidden ${
+                        isSelected
+                          ? `bg-gradient-to-br ${mood.accent} shadow-lg scale-[1.01]`
+                          : 'bg-[#12141c] border-white/5 text-neutral-400 hover:border-white/15 hover:text-white'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between w-full">
+                        <div
+                          className={`w-8 h-8 rounded-xl flex items-center justify-center border ${
+                            isSelected ? mood.badgeBg : 'bg-white/5 border-white/10 text-neutral-400'
+                          }`}
+                        >
+                          <Icon size={16} />
                         </div>
-                        {postFrame && (
-                          <div className={`absolute inset-0 ${getAvatarShapeClass(postFrame.avatarShape)} pointer-events-none ${postFrame.frameStyle}`} />
+                        {isSelected && (
+                          <span className="text-[9px] font-black px-2 py-0.5 rounded-full bg-white/10 text-white">
+                            نشط
+                          </span>
                         )}
                       </div>
-
-                      <div className="text-right">
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <h4 className={`font-black text-sm tracking-wide ${postTitle ? postTitle.color : 'text-white'}`}>
-                            {post.userDisplayName}
-                          </h4>
-                          {postBadge && (
-                             <span className="p-0.5 bg-yellow-500/10 border border-yellow-500/20 rounded-full inline-flex items-center justify-center" title={postBadge.name}>
-                                {React.createElement(postBadge.icon, { size: 8, className: postBadge.color })}
-                             </span>
-                          )}
-                          {postTitle && (
-                             <span className={`text-[8px] font-black tracking-wide bg-purple-950/20 border border-purple-500/10 px-1.5 py-0.5 rounded-md ${postTitle.color}`}>
-                                {postTitle.name}
-                             </span>
-                          )}
-                        </div>
-                        <p className="text-[10px] text-neutral-500 mt-0.5 font-bold">
-                          {post.createdAt ? new Date(post.createdAt.seconds * 1000).toLocaleDateString('ar-EG', { hour: '2-digit', minute: '2-digit' }) : 'معلّق'}
+                      <div>
+                        <h3 className="text-xs font-black text-white line-clamp-1">{mood.title}</h3>
+                        <p className="text-[10px] text-neutral-400 line-clamp-1 mt-0.5">
+                          {mood.subtitle}
                         </p>
                       </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* بطاقة الاقتراح الفوري (روليت المزاج) */}
+            {spotlightAnime && (
+              <div className="px-3 md:px-4">
+                <motion.div
+                  key={spotlightAnime._id}
+                  initial={{ opacity: 0, scale: 0.98 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  className="relative rounded-2xl overflow-hidden border border-purple-500/25 bg-[#12141c] shadow-xl"
+                >
+                  {/* خلفية ضبابية من البوستر */}
+                  <div className="absolute inset-0 opacity-20 pointer-events-none">
+                    <img
+                      src={spotlightAnime.posterUrl}
+                      alt=""
+                      className="w-full h-full object-cover blur-2xl scale-110"
+                      referrerPolicy="no-referrer"
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-l from-[#12141c] via-[#12141c]/90 to-transparent" />
+                  </div>
+
+                  <div className="relative z-10 flex items-stretch gap-3 p-3 sm:p-4">
+                    <div
+                      onClick={() => onAnimeClick && onAnimeClick(String(spotlightAnime._id))}
+                      className="w-24 sm:w-28 aspect-[2/3] rounded-xl overflow-hidden shrink-0 border border-white/15 shadow-lg cursor-pointer group"
+                    >
+                      <img
+                        src={spotlightAnime.posterUrl}
+                        alt={spotlightAnime.title}
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                        referrerPolicy="no-referrer"
+                      />
                     </div>
 
-                    {/* Ellipsis Actions Menu */}
-                    {user && (
-                      <div className="relative">
-                        <button 
-                          onClick={() => setActiveMenuId(activeMenuId === post.id ? null : post.id)}
-                          className="text-neutral-500 hover:text-white p-1 rounded-full transition hover:bg-white/5 cursor-pointer flex items-center justify-center"
-                        >
-                          <MoreVertical size={18} />
-                        </button>
+                    <div className="flex-1 min-w-0 flex flex-col justify-between text-right">
+                      <div>
+                        <div className="flex items-center justify-between gap-2 mb-1">
+                          <span className="inline-flex items-center gap-1 text-[10px] font-black px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                            <Zap size={11} className="fill-purple-400 text-purple-400" />
+                            اختيار الذكاء لمزاجك
+                          </span>
 
-                        {activeMenuId === post.id && (
-                          <>
-                            <div className="fixed inset-0 z-30" onClick={() => setActiveMenuId(null)} />
-                            <div className="absolute left-0 top-full mt-1 bg-[#15151b] border border-neutral-800 rounded-xl shadow-2xl py-1.5 w-36 z-40 text-xs text-right overflow-hidden">
-                              {(userRole === 'owner' || userRole === 'admin' || userRole === 'moderator' || isStaffEmail(user?.email) || user?.uid === post.userId) && (
-                                <button 
-                                  onClick={() => {
-                                    setActiveMenuId(null);
-                                    handleDeleteItem(post.id, post.userId);
-                                  }}
-                                  className="w-full text-right px-3 py-2 hover:bg-neutral-800 text-red-500 transition flex items-center gap-2 justify-start cursor-pointer border-b border-white/5"
-                                >
-                                  <Trash2 size={13} />
-                                  <span>حذف المنشور</span>
-                                </button>
+                          <button
+                            onClick={handleSpinRandomPick}
+                            disabled={spinningRoulette}
+                            className="inline-flex items-center gap-1 text-[11px] font-black px-2.5 py-1 rounded-xl bg-white/10 hover:bg-white/15 text-white border border-white/10 transition cursor-pointer active:scale-95"
+                          >
+                            <Shuffle
+                              size={12}
+                              className={spinningRoulette ? 'animate-spin text-purple-400' : 'text-purple-400'}
+                            />
+                            <span>اقترح غيره</span>
+                          </button>
+                        </div>
+
+                        <h2
+                          onClick={() => onAnimeClick && onAnimeClick(String(spotlightAnime._id))}
+                          className="text-sm sm:text-base font-black text-white hover:text-purple-400 transition cursor-pointer line-clamp-1"
+                          dir="auto"
+                        >
+                          {cleanAnimeTitle(spotlightAnime.title)}
+                        </h2>
+
+                        <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                          <span className="bg-purple-600/20 text-purple-300 border border-purple-500/30 text-[10px] font-black px-2 py-0.5 rounded">
+                            {getShortTypeCode(spotlightAnime.type)}
+                          </span>
+                          {spotlightAnime.rating > 0 && (
+                            <span className="bg-yellow-500/15 text-yellow-400 border border-yellow-500/30 text-[10px] font-black px-2 py-0.5 rounded flex items-center gap-1">
+                              <Star size={10} className="fill-yellow-400" />
+                              {Number(spotlightAnime.rating).toFixed(1)}
+                            </span>
+                          )}
+                          {getArabicSeasonLabel(
+                            spotlightAnime.season,
+                            spotlightAnime.releaseYear || spotlightAnime.year
+                          ) && (
+                            <span className="bg-white/5 text-neutral-300 border border-white/10 text-[10px] font-bold px-2 py-0.5 rounded">
+                              {getArabicSeasonLabel(
+                                spotlightAnime.season,
+                                spotlightAnime.releaseYear || spotlightAnime.year
                               )}
-                              <button 
-                                onClick={() => {
-                                  setActiveMenuId(null);
-                                  setReportingItemId(post.id);
-                                }}
-                                className="w-full text-right px-3 py-2 hover:bg-neutral-800 text-neutral-300 transition flex items-center gap-2 justify-start cursor-pointer"
-                              >
-                                <Flag size={13} className="text-orange-500" />
-                                <span>إبلغ عن المنشور</span>
-                              </button>
-                            </div>
-                          </>
-                        )}
+                            </span>
+                          )}
+                          {spotlightAnime.episodesCount && (
+                            <span className="bg-blue-500/10 text-blue-400 border border-blue-500/20 text-[10px] font-bold px-2 py-0.5 rounded">
+                              {spotlightAnime.episodesCount} حلقة
+                            </span>
+                          )}
+                        </div>
                       </div>
+
+                      <div className="flex items-center justify-between gap-2 mt-3">
+                        <div className="flex flex-wrap gap-1">
+                          {(spotlightAnime.genres || []).slice(0, 3).map((g: string, i: number) => (
+                            <span
+                              key={i}
+                              className="text-[10px] font-bold text-neutral-300 bg-black/50 px-2 py-0.5 rounded border border-white/5"
+                            >
+                              {GENRE_TRANSLATIONS[g] || g}
+                            </span>
+                          ))}
+                        </div>
+
+                        <button
+                          onClick={() => onAnimeClick && onAnimeClick(String(spotlightAnime._id))}
+                          className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-black flex items-center gap-1.5 shadow-lg cursor-pointer shrink-0 active:scale-95 transition"
+                        >
+                          <Play size={12} className="fill-current" />
+                          <span>استعراض ومشاهدة</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </motion.div>
+              </div>
+            )}
+
+            {/* قائمة أنميات المزاج المختار */}
+            <div className={isListMode ? 'p-2 md:p-4' : 'p-0 md:p-4'}>
+              <div className="flex items-center justify-between px-3 mb-2">
+                <div className="flex items-center gap-2">
+                  <Sparkles size={15} className="text-purple-400" />
+                  <h3 className="text-xs sm:text-sm font-black text-white">
+                    أفضل اختيارات: {activeMoodPreset.title}
+                  </h3>
+                </div>
+                <span className="text-[11px] font-bold text-neutral-500">
+                  {moodAnimeList.length} عمل مختار
+                </span>
+              </div>
+
+              {loadingMood ? (
+                <div className={getLayoutGridClasses(layoutMode)}>
+                  {[...Array(12)].map((_, i) => (
+                    <div
+                      key={i}
+                      className={
+                        isListMode
+                          ? 'h-32 bg-[#12141c] rounded-2xl animate-pulse'
+                          : 'aspect-[2/3] bg-[#12141c] animate-pulse border-[0.5px] border-black/40'
+                      }
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div className={getLayoutGridClasses(layoutMode)}>
+                  {moodAnimeList.map((anime, idx) => renderAnimeCard(anime, idx, false))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ================= التبويب الثاني: قاعة الأساطير (Hall of Fame) ================= */}
+        {activeTab === 'hall_of_fame' && (
+          <div className="space-y-3">
+            {/* فلاتر قاعة الأساطير */}
+            <div className="px-3 pt-3 md:px-4 flex items-center justify-between gap-2 flex-wrap">
+              <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+                {[
+                  { id: 'score', label: 'الأعلى تقييماً بالتاريخ', icon: Crown },
+                  { id: 'popularity', label: 'الأكثر شعبية عالمياً', icon: Flame },
+                  { id: 'airing', label: 'أفضل المستمر حالياً', icon: Zap },
+                ].map((f) => {
+                  const Icon = f.icon;
+                  const active = fameFilter === f.id;
+                  return (
+                    <button
+                      key={f.id}
+                      onClick={() => setFameFilter(f.id as any)}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-black flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap border ${
+                        active
+                          ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 shadow-sm'
+                          : 'bg-[#12141c] text-neutral-400 border-white/5 hover:text-white'
+                      }`}
+                    >
+                      <Icon size={13} />
+                      <span>{f.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className={isListMode ? 'p-2 md:p-4' : 'p-0 md:p-4'}>
+              {loadingFame ? (
+                <div className={getLayoutGridClasses(layoutMode)}>
+                  {[...Array(15)].map((_, i) => (
+                    <div
+                      key={i}
+                      className={
+                        isListMode
+                          ? 'h-32 bg-[#12141c] rounded-2xl animate-pulse'
+                          : 'aspect-[2/3] bg-[#12141c] animate-pulse border-[0.5px] border-black/40'
+                      }
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div className={getLayoutGridClasses(layoutMode)}>
+                  {fameAnimeList.map((anime, idx) => renderAnimeCard(anime, idx, true))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ================= التبويب الثالث: نجوم وشخصيات الأنمي ================= */}
+        {activeTab === 'characters' && (
+          <div className="space-y-3">
+            {/* شريط البحث عن شخصية */}
+            <div className="px-3 pt-3 md:px-4">
+              <div className="relative">
+                <input
+                  type="text"
+                  value={characterSearch}
+                  onChange={(e) => setCharacterSearch(e.target.value)}
+                  placeholder="ابحث عن شخصيتك المفضلة بالإنجليزية (مثال: Levi, Luffy, Gojo, Killua)..."
+                  className="w-full bg-[#12141c] border border-white/10 focus:border-purple-500/50 rounded-xl py-2.5 pr-10 pl-9 text-xs sm:text-sm text-white placeholder:text-neutral-500 focus:outline-none transition"
+                />
+                <Search
+                  size={16}
+                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-neutral-500 pointer-events-none"
+                />
+                {characterSearch && (
+                  <button
+                    onClick={() => setCharacterSearch('')}
+                    className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-white"
+                  >
+                    <X size={15} />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* عرض الشخصيات */}
+            <div className={isListMode ? 'p-2 md:p-4' : 'p-0 md:p-4'}>
+              {loadingCharacters ? (
+                <div className={getLayoutGridClasses(layoutMode)}>
+                  {[...Array(15)].map((_, i) => (
+                    <div
+                      key={i}
+                      className={
+                        isListMode
+                          ? 'h-32 bg-[#12141c] rounded-2xl animate-pulse'
+                          : 'aspect-[2/3] bg-[#12141c] animate-pulse border-[0.5px] border-black/40'
+                      }
+                    />
+                  ))}
+                </div>
+              ) : charactersList.length === 0 ? (
+                <div className="text-center py-16 text-neutral-500">
+                  <Users size={40} className="mx-auto mb-2 opacity-40" />
+                  <p className="text-xs font-bold">لم يتم العثور على شخصيات مطابقة</p>
+                </div>
+              ) : (
+                <div className={getLayoutGridClasses(layoutMode)}>
+                  {charactersList.map((char, idx) => {
+                    const favCount =
+                      char.favorites >= 1000
+                        ? `${(char.favorites / 1000).toFixed(1)}K`
+                        : String(char.favorites || 0);
+
+                    if (isListMode) {
+                      return (
+                        <div
+                          key={`${char.id}-${idx}`}
+                          onClick={() => setSelectedCharacter(char)}
+                          className="cursor-pointer group flex items-stretch bg-[#111216] hover:bg-[#171920] border border-white/5 hover:border-purple-500/30 rounded-2xl overflow-hidden transition-all shadow-md"
+                        >
+                          <div className="w-28 sm:w-32 shrink-0 relative overflow-hidden bg-neutral-900 self-stretch">
+                            <img
+                              src={char.imageUrl}
+                              alt={char.name}
+                              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                              loading="lazy"
+                              referrerPolicy="no-referrer"
+                            />
+                            <span className="absolute top-1.5 right-1.5 bg-black/85 text-amber-400 border border-amber-500/30 text-[10px] font-black px-1.5 py-0.5 rounded-md">
+                              #{char.rank || idx + 1}
+                            </span>
+                          </div>
+
+                          <div className="flex-1 min-w-0 p-3 flex flex-col justify-between text-right">
+                            <div>
+                              <h3
+                                className="text-sm sm:text-base font-black text-white group-hover:text-purple-400 transition-colors line-clamp-1"
+                                dir="auto"
+                              >
+                                {char.name}
+                              </h3>
+                              {char.nativeName && (
+                                <p className="text-[11px] text-neutral-400 font-bold line-clamp-1 mt-0.5">
+                                  {char.nativeName}
+                                </p>
+                              )}
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                              <span className="bg-rose-500/15 text-rose-400 border border-rose-500/30 text-[10px] font-black px-2 py-0.5 rounded-md flex items-center gap-1">
+                                <Heart size={10} className="fill-rose-400" />
+                                {favCount} معجب
+                              </span>
+                              {char.role && (
+                                <span className="bg-purple-500/15 text-purple-300 border border-purple-500/30 text-[10px] font-bold px-2 py-0.5 rounded-md">
+                                  {char.role}
+                                </span>
+                              )}
+                              {char.voiceActor?.name && (
+                                <span className="bg-white/5 text-neutral-300 border border-white/10 text-[10px] font-bold px-2 py-0.5 rounded-md flex items-center gap-1">
+                                  <Mic size={10} className="text-cyan-400" />
+                                  {char.voiceActor.name}
+                                </span>
+                              )}
+                            </div>
+
+                            {char.anime?.title && (
+                              <div className="mt-2 pt-1.5 border-t border-white/5 flex items-center justify-between gap-2">
+                                <span className="text-[10px] font-bold text-neutral-400 truncate">
+                                  العمل: <strong className="text-neutral-200">{cleanAnimeTitle(char.anime.title)}</strong>
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div
+                        key={`${char.id}-${idx}`}
+                        onClick={() => setSelectedCharacter(char)}
+                        className="cursor-pointer group relative aspect-[2/3] w-full overflow-hidden bg-neutral-900 border-[0.5px] border-black/40"
+                      >
+                        <img
+                          src={char.imageUrl}
+                          alt={char.name}
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                          loading="lazy"
+                          referrerPolicy="no-referrer"
+                        />
+                        <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/25 to-transparent" />
+
+                        <div
+                          className="absolute top-1.5 inset-x-1.5 flex items-center justify-between pointer-events-none"
+                          dir="ltr"
+                        >
+                          <span className="bg-black/80 backdrop-blur-md text-amber-400 text-[9px] font-black px-1.5 py-0.5 rounded border border-amber-500/30 leading-none">
+                            #{char.rank || idx + 1}
+                          </span>
+                          <span className="bg-black/80 backdrop-blur-md text-rose-400 text-[9px] font-black px-1.5 py-0.5 rounded border border-rose-500/30 flex items-center gap-0.5 leading-none">
+                            ♥ {favCount}
+                          </span>
+                        </div>
+
+                        <div className="absolute bottom-0 inset-x-0 p-2 text-right pointer-events-none">
+                          <h3
+                            className="text-[11px] sm:text-xs font-black text-white line-clamp-1 leading-tight drop-shadow-[0_2px_4px_rgba(0,0,0,0.95)] group-hover:text-purple-300 transition-colors"
+                            dir="ltr"
+                          >
+                            {char.name}
+                          </h3>
+                          {char.anime?.title && (
+                            <p
+                              className="text-[9px] font-bold text-neutral-400 line-clamp-1 mt-0.5"
+                              dir="ltr"
+                            >
+                              {cleanAnimeTitle(char.anime.title)}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* نافذة تفاصيل الشخصية ومؤدي الصوت والعمل المرتبط */}
+      <AnimatePresence>
+        {selectedCharacter && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setSelectedCharacter(null)}
+            className="fixed inset-0 z-[120] bg-black/85 backdrop-blur-md flex items-center justify-center p-4"
+          >
+            <motion.div
+              initial={{ scale: 0.92, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.92, y: 20 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-md bg-[#12141d] border border-white/10 rounded-3xl overflow-hidden shadow-2xl relative"
+              dir="rtl"
+            >
+              <button
+                onClick={() => setSelectedCharacter(null)}
+                className="absolute top-3 left-3 z-20 w-8 h-8 rounded-full bg-black/70 text-white flex items-center justify-center border border-white/10 hover:bg-black cursor-pointer"
+              >
+                <X size={16} />
+              </button>
+
+              <div className="flex items-stretch gap-3.5 p-4 bg-gradient-to-b from-purple-950/30 to-transparent">
+                <div className="w-28 sm:w-32 aspect-[2/3] rounded-2xl overflow-hidden shrink-0 border border-white/15 shadow-xl bg-neutral-900">
+                  <img
+                    src={selectedCharacter.imageUrl}
+                    alt={selectedCharacter.name}
+                    className="w-full h-full object-cover"
+                    referrerPolicy="no-referrer"
+                  />
+                </div>
+
+                <div className="flex-1 min-w-0 flex flex-col justify-between text-right py-1">
+                  <div>
+                    <div className="inline-flex items-center gap-1 text-[10px] font-black px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-400 border border-amber-500/30 mb-1.5">
+                      <Award size={11} />
+                      المركز العالمي #{selectedCharacter.rank}
+                    </div>
+                    <h2 className="text-base sm:text-lg font-black text-white leading-snug" dir="auto">
+                      {selectedCharacter.name}
+                    </h2>
+                    {selectedCharacter.nativeName && (
+                      <p className="text-xs text-neutral-400 font-bold mt-0.5">
+                        {selectedCharacter.nativeName}
+                      </p>
                     )}
                   </div>
 
-                  {/* Main content body */}
-                  <p className="text-sm text-neutral-200 mb-4 leading-relaxed font-medium whitespace-pre-wrap text-right">{post.text}</p>
-
-                  {/* Primary interactive row */}
-                  <div className="flex gap-2 border-t border-white/5 pt-4 relative z-10">
-                    <button 
-                      onClick={() => handleLikeItem(post.id, post.likes || 0)}
-                      className="flex-1 py-2 rounded-xl flex items-center justify-center gap-2 text-xs font-extrabold text-neutral-400 hover:bg-rose-500/10 hover:text-rose-400 transition group border border-transparent hover:border-rose-500/20 select-none cursor-pointer"
-                    >
-                      <Heart size={16} className="group-hover:fill-rose-500/50 transition-colors" /> 
-                      <span className="mt-0.5">{post.likes || 0}</span>
-                    </button>
-
-                    <button 
-                      onClick={() => setExpandedCommentsPostId(isExpanded ? null : post.id)}
-                      className={`flex-1 py-2 rounded-xl flex items-center justify-center gap-2 text-xs font-extrabold transition select-none cursor-pointer border ${
-                        isExpanded 
-                          ? 'bg-purple-500/10 border-purple-500/20 text-purple-400' 
-                          : 'text-neutral-400 hover:bg-purple-500/10 hover:text-purple-400 border-transparent hover:border-purple-500/20'
-                      }`}
-                    >
-                      <MessageSquare size={16} /> 
-                      <span className="mt-0.5">{postReplies.length} تعليق</span>
-                    </button>
-                  </div>
-
-                  {/* Nested live reply sub-stream accordion */}
-                  <AnimatePresence>
-                     {isExpanded && (
-                       <motion.div 
-                         initial={{ height: 0, opacity: 0 }}
-                         animate={{ height: 'auto', opacity: 1 }}
-                         exit={{ height: 0, opacity: 0 }}
-                         className="overflow-hidden mt-4 pt-4 border-t border-white/5 space-y-3.5"
-                       >
-                         {/* Replies Container */}
-                         <div className="space-y-3 pr-2 border-r border-[#151515]">
-                           {postReplies.length === 0 ? (
-                             <p className="text-[11px] text-neutral-600 font-bold p-3 text-center">أنت حالياً تنظر لصفحة فارغة.. لا ردود هنا حتى الآن.</p>
-                           ) : (
-                             postReplies.map((reply) => {
-                               const repAvatar = STORE_ITEMS_SORTED.find(i => i.id === reply.equippedAvatar);
-                               const repFrame = STORE_ITEMS_SORTED.find(i => i.id === reply.equippedFrame);
-                               const repTitle = STORE_ITEMS_SORTED.find(i => i.id === reply.equippedTitle);
-                               const repBadge = STORE_ITEMS_SORTED.find(i => i.id === reply.equippedBadge);
-
-                               return (
-                                 <div key={reply.id} className="flex gap-2.5 items-start bg-[#0e0e11]/45 p-3 rounded-2xl border border-neutral-900 text-right relative group/reply">
-                                  {/* Reply Ellipsis Actions Menu */}
-                                  {user && (
-                                    <div className="absolute left-2 top-2 z-10 md:opacity-0 group-hover/reply:opacity-100 transition-opacity">
-                                      <button 
-                                        onClick={() => setActiveMenuId(activeMenuId === reply.id ? null : reply.id)}
-                                        className="text-neutral-500 hover:text-white p-0.5 rounded transition cursor-pointer flex items-center justify-center bg-black/40 hover:bg-black/60"
-                                      >
-                                        <MoreVertical size={13} />
-                                      </button>
-
-                                      {activeMenuId === reply.id && (
-                                        <>
-                                          <div className="fixed inset-0 z-30" onClick={() => setActiveMenuId(null)} />
-                                          <div className="absolute left-0 top-full mt-0.5 bg-[#15151b] border border-neutral-800 rounded-lg shadow-2xl py-1 w-28 z-40 text-[10px] text-right overflow-hidden font-sans">
-                                            {(userRole === 'owner' || userRole === 'admin' || userRole === 'moderator' || isStaffEmail(user?.email) || user?.uid === reply.userId) && (
-                                              <button 
-                                                onClick={() => {
-                                                  setActiveMenuId(null);
-                                                  handleDeleteItem(reply.id, reply.userId);
-                                                }}
-                                                className="w-full text-right px-2.5 py-1.5 hover:bg-neutral-800 text-red-500 transition flex items-center gap-1.5 justify-start cursor-pointer border-b border-white/5"
-                                              >
-                                                <Trash2 size={10} />
-                                                <span>حذف الرد</span>
-                                              </button>
-                                            )}
-                                            <button 
-                                              onClick={() => {
-                                                setActiveMenuId(null);
-                                                setReportingItemId(reply.id);
-                                              }}
-                                              className="w-full text-right px-2.5 py-1.5 hover:bg-neutral-800 text-neutral-300 transition flex items-center gap-1.5 justify-start cursor-pointer"
-                                            >
-                                              <Flag size={10} className="text-orange-500" />
-                                              <span>إبلاغ</span>
-                                            </button>
-                                          </div>
-                                        </>
-                                      )}
-                                    </div>
-                                  )}
-                                   {/* Comment frame cosmetics */}
-                                   <div className="relative p-0.5 shrink-0">
-                                     <div className={`w-8 h-8 ${getAvatarShapeClass(repFrame?.avatarShape)} overflow-hidden bg-neutral-900 border border-neutral-800 flex items-center justify-center`}>
-                                       <img 
-                                         src={repAvatar?.img || reply.userPhotoUrl || `https://api.dicebear.com/7.x/avataaars/svg?seed=${reply.userId}`} 
-                                         className="w-full h-full object-cover" 
-                                         alt="reply-avatar"
-                                         referrerPolicy="no-referrer"
-                                       />
-                                     </div>
-                                     {repFrame && (
-                                       <div className={`absolute inset-0 ${getAvatarShapeClass(repFrame.avatarShape)} pointer-events-none ${repFrame.frameStyle}`} />
-                                     )}
-                                   </div>
-
-                                   <div className="flex-1">
-                                      <div className="flex items-center gap-1 flex-wrap">
-                                        <span className={`text-[11px] font-black ${repTitle ? repTitle.color : 'text-neutral-300'}`}>
-                                          {reply.userDisplayName}
-                                        </span>
-                                        {repBadge && (
-                                           <span className="p-0.5 bg-yellow-500/5 rounded-full inline-flex items-center justify-center" title={repBadge.name}>
-                                              {React.createElement(repBadge.icon, { size: 6, className: repBadge.color })}
-                                           </span>
-                                        )}
-                                      </div>
-                                      <p className="text-xs text-neutral-400 mt-1 break-words">{reply.text}</p>
-                                      
-                                      {/* Like nested reply */}
-                                      <div className="flex items-center gap-2 mt-2">
-                                        <button 
-                                          onClick={() => handleLikeItem(reply.id, reply.likes || 0)}
-                                          className="text-[10px] font-extrabold text-neutral-500 hover:text-rose-400 transition flex items-center gap-1 select-none cursor-pointer"
-                                        >
-                                          <Heart size={10} /> 
-                                          <span>{reply.likes || 0}</span>
-                                        </button>
-                                      </div>
-                                   </div>
-                                 </div>
-                               );
-                             })
-                           )}
-                         </div>
-
-                         {/* Add a reply form interface */}
-                         {user && (
-                           <div className="flex gap-2 pt-2 bg-gradient-to-l from-[#0e0e11] to-transparent rounded-xl p-2">
-                             <input 
-                               type="text" 
-                               value={newReplyText[post.id] || ''}
-                               onChange={e => setNewReplyText(prev => ({ ...prev, [post.id]: e.target.value }))}
-                               placeholder={
-                                 userData?.isMuted 
-                                   ? "مكتوم عن النشر والردود 🔇" 
-                                   : (userData?.level || 1) < 2 
-                                     ? "المستوى 2 مطلوب للرد 🔒" 
-                                     : "اكتب ردك على هذا المنشور..."
-                               } 
-                               className="flex-1 bg-black/60 border border-neutral-800 text-xs text-neutral-300 rounded-xl px-3 py-2.5 focus:outline-none focus:border-purple-600 transition text-right disabled:opacity-40"
-                               disabled={userData?.isMuted || (userData?.level || 1) < 2}
-                             />
-                             <button
-                               onClick={() => handleCreateReply(post.id)}
-                               disabled={!(newReplyText[post.id]?.trim()) || userData?.isMuted || (userData?.level || 1) < 2}
-                               className="bg-purple-600 hover:bg-purple-700 disabled:opacity-40 text-white p-2.5 rounded-xl transition flex items-center justify-center shrink-0"
-                             >
-                               <CornerDownLeft size={14} />
-                             </button>
-                           </div>
-                         )}
-                       </motion.div>
-                     )}
-                  </AnimatePresence>
-                </motion.div>
-              );
-            })
-          )}
-        </motion.div>
-      )}
-
-      {/* 2. Challenges & Games Tab */}
-      {activeTab === 'challenges' && (
-        <motion.div 
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="space-y-5"
-        >
-          {/* Main Tournament Banner */}
-          <div className="bg-gradient-to-br from-[#1a0f05] to-[#0a0604] border border-orange-500/20 rounded-3xl p-6 text-center relative overflow-hidden shadow-2xl group">
-            <div className="absolute top-0 right-0 w-64 h-64 bg-orange-500/10 rounded-full blur-3xl opacity-50 group-hover:opacity-80 transition-opacity"></div>
-            <div className="absolute -bottom-10 -left-10 opacity-[0.03] text-orange-500 transform -rotate-12 pointer-events-none">
-              <Trophy size={200} />
-            </div>
-            
-            <div className="relative z-10 flex flex-col items-center">
-              <div className="w-16 h-16 bg-gradient-to-b from-orange-400 to-red-500 rounded-2xl flex items-center justify-center text-white mb-4 shadow-[0_0_30px_rgba(249,115,22,0.4)]">
-                 <Trophy size={32} />
-              </div>
-              <h2 className="text-3xl font-black text-white drop-shadow-xl mb-2 tracking-tight">بطولة الأوتاكو الأسبوعية</h2>
-              <p className="text-orange-200/80 text-xs md:text-sm mb-6 max-w-sm font-medium">أجب على قنابل الأسئلة واربح جوائز قيّمة، نقاط خبرة وترتيب فوري على لوحة الصدارة العامة!</p>
-              
-              <button 
-                onClick={() => setActiveChallengeGame('quotes')}
-                className="bg-gradient-to-r from-orange-500 to-red-500 text-white font-black text-base md:text-lg w-full py-4 rounded-2xl shadow-[0_0_20px_rgba(249,115,22,0.3)] hover:shadow-[0_0_30px_rgba(249,115,22,0.5)] transition-all transform hover:-translate-y-0.5 cursor-pointer select-none"
-              >
-                انضم لغزوة الأسئلة الآن
-              </button>
-              
-              <div className="flex justify-center items-center gap-6 mt-6 text-[10px] md:text-xs font-bold bg-black/40 px-6 py-2.5 rounded-xl border border-orange-500/10">
-                <span className="flex items-center gap-1.5 text-orange-200">
-                  <Users size={14} className="text-orange-400" /> 
-                  <span className="mt-0.5">38,124 أوتاكو مشارك</span>
-                </span>
-                <span className="w-1 h-1 rounded-full bg-orange-500/50"></span>
-                <span className="flex items-center gap-1.5 text-yellow-400">
-                  <Sparkles size={14} /> 
-                  <span className="mt-0.5">الجوائز: هدايا + XP مضاعف</span>
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {/* Categories Filtering tabs */}
-          <div className="flex gap-2 border-b border-white/5 pb-3 overflow-x-auto no-scrollbar scroll-smooth">
-            {GAME_CATEGORIES.map(cat => (
-              <button
-                key={cat.id}
-                onClick={() => setGameCategory(cat.id)}
-                className={`py-1.5 px-4 rounded-full text-xs font-bold transition-all relative shrink-0 select-none cursor-pointer border ${
-                  gameCategory === cat.id
-                    ? 'border-purple-500/20 bg-purple-500/10 text-purple-400 font-extrabold shadow-[0_0_15px_rgba(168,85,247,0.1)]'
-                    : 'border-white/5 bg-[#0d0d0f]/50 text-neutral-400 hover:text-neutral-200'
-                }`}
-              >
-                {cat.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Individual Mini-Game selection items */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {ALL_GAMES.filter(g => gameCategory === 'all' || g.category === gameCategory).map(game => {
-              const GameIcon = game.icon;
-              return (
-                <div 
-                  key={game.id}
-                  onClick={() => setActiveChallengeGame(game.id)}
-                  className="bg-[#0b0b0d] border border-white/5 p-5 rounded-3xl flex items-start gap-4 hover:border-purple-500/20 hover:bg-[#0c0c11] transition-all duration-300 shadow-xl group cursor-pointer relative overflow-hidden active:scale-[0.98]"
-                >
-                  <div className={`absolute top-0 right-0 w-24 h-24 ${game.colorGlow} rounded-full blur-2xl opacity-0 group-hover:opacity-100 transition-opacity`}></div>
-                  
-                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 border border-white/5 ${game.colorClass} group-hover:scale-105 transition-transform duration-300`}>
-                    <GameIcon size={22} />
-                  </div>
-                  
-                  <div className="flex-1 text-right">
-                    <h3 className="font-extrabold text-white text-sm md:text-base group-hover:text-purple-400 transition-colors">
-                      {game.title}
-                    </h3>
-                    <p className="text-[11px] text-neutral-500 font-bold mt-1 leading-relaxed">
-                      {game.description}
-                    </p>
-                    
-                    {/* Tiny badge indicating the category */}
-                    <div className="mt-2 flex items-center gap-1">
-                      <span className="text-[9px] font-black tracking-wide uppercase bg-white/5 border border-white/10 px-2 py-0.5 rounded-md text-neutral-400">
-                        {game.category === 'visual' ? 'تخمين بصري' : game.category === 'trivia' ? 'معلومات عامة' : game.category === 'observation' ? 'ذكاء وملاحظة' : 'مقارنة وقوة'}
+                  <div className="flex flex-wrap gap-1.5 mt-3">
+                    <span className="bg-rose-500/15 text-rose-400 border border-rose-500/30 text-[10px] font-black px-2.5 py-1 rounded-lg flex items-center gap-1">
+                      <Heart size={11} className="fill-rose-400" />
+                      {(selectedCharacter.favorites || 0).toLocaleString()} محب
+                    </span>
+                    {selectedCharacter.role && (
+                      <span className="bg-purple-500/15 text-purple-300 border border-purple-500/30 text-[10px] font-bold px-2.5 py-1 rounded-lg">
+                        {selectedCharacter.role}
                       </span>
-                    </div>
+                    )}
+                    {selectedCharacter.age && (
+                      <span className="bg-white/5 text-neutral-300 border border-white/10 text-[10px] font-bold px-2.5 py-1 rounded-lg">
+                        العمر: {selectedCharacter.age}
+                      </span>
+                    )}
                   </div>
                 </div>
-              );
-            })}
-          </div>
-        </motion.div>
-      )}
-
-      {/* 3. Leaderboard Tab */}
-      {activeTab === 'leaderboard' && (
-        <motion.div 
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-        >
-          <div className="flex items-center justify-between mb-5">
-            <h3 className="text-white font-black text-xl flex items-center gap-2">
-               <TrendingUp size={24} className="text-purple-400 animate-pulse" /> 
-               <span>لوحة تصنيف الأبطال المباشرة</span>
-            </h3>
-          </div>
-
-          <div className="space-y-3 relative z-10">
-            {loadingLeaderboard ? (
-              <div className="flex flex-col items-center justify-center py-20 text-neutral-500 gap-3">
-                 <Loader2 className="animate-spin text-purple-500" size={32} />
-                 <span className="text-xs font-bold tracking-widest font-mono">جاري رصد مستويات الأبطال...</span>
               </div>
-            ) : leaders.length === 0 ? (
-              <div className="text-center text-neutral-500 py-10 font-black">لا توجد سجلات مستخدمين بالخادم حتى الآن!</div>
-            ) : (
-              leaders.map((leader, index) => {
-                const level = leader.level || 1;
-                const isCurrentUser = user?.uid === leader.id;
-                
-                // Fetch dynamic equipped assets from the shop database list
-                const equippedAvatarId = leader.equippedAvatar || null;
-                const equippedFrameId = leader.equippedFrame || null;
-                const equippedTitleId = leader.equippedTitle || null;
-                const equippedBadgeId = leader.equippedBadge || null;
 
-                const activeAvatar = STORE_ITEMS_SORTED.find(i => i.id === equippedAvatarId);
-                const activeFrame = STORE_ITEMS_SORTED.find(i => i.id === equippedFrameId);
-                const activeTitle = STORE_ITEMS_SORTED.find(i => i.id === equippedTitleId);
-                const activeBadge = STORE_ITEMS_SORTED.find(i => i.id === equippedBadgeId);
-
-                let rankIcon = null;
-                if (index === 0) rankIcon = <Medal className="text-yellow-500" size={26} fill="currentColor" />;
-                else if (index === 1) rankIcon = <Medal className="text-neutral-400" size={24} fill="currentColor" />;
-                else if (index === 2) rankIcon = <Medal className="text-amber-600" size={24} fill="currentColor" />;
-                else rankIcon = <span className="font-mono text-sm font-black text-neutral-500 w-6 text-center">{index + 1}</span>;
-
-                const rowBg = isCurrentUser 
-                  ? 'bg-purple-900/10 border-purple-500/50 shadow-[0_0_15px_rgba(168,85,247,0.15)] ring-1 ring-purple-500/20' 
-                  : 'bg-[#0b0b0d] border-white/5';
-
-                return (
-                  <motion.div 
-                    initial={{ opacity: 0, x: 20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ delay: index * 0.04 }}
-                    key={leader.id} 
-                    onClick={() => onUserClick && onUserClick(leader.id)}
-                    className={`flex border rounded-2xl p-4 items-center gap-4 relative overflow-hidden group shadow-lg cursor-pointer hover:border-purple-500/10 transition-colors ${rowBg}`}
-                  >
-                    {/* Rank Position */}
-                    <div className="w-8 flex justify-center shrink-0">
-                      {rankIcon}
-                    </div>
-
-                    {/* Custom Avatar with correct equipped shape & Frame */}
-                    <div className="relative shrink-0 p-1">
-                      <div className={`w-11 h-11 ${getAvatarShapeClass(activeFrame?.avatarShape)} overflow-hidden bg-neutral-900 border border-neutral-800 flex items-center justify-center`}>
-                        <img 
-                          src={activeAvatar?.img || leader.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${leader.id}`} 
-                          alt="leader-avatar" 
+              <div className="px-4 pb-4 space-y-3">
+                {/* مؤدي الصوت الياباني */}
+                {selectedCharacter.voiceActor && (
+                  <div className="flex items-center justify-between bg-black/40 border border-white/5 rounded-2xl p-2.5">
+                    <div className="flex items-center gap-2.5">
+                      {selectedCharacter.voiceActor.imageUrl && (
+                        <img
+                          src={selectedCharacter.voiceActor.imageUrl}
+                          alt={selectedCharacter.voiceActor.name}
+                          className="w-10 h-10 rounded-xl object-cover border border-white/10"
                           referrerPolicy="no-referrer"
-                          className="w-full h-full object-cover" 
                         />
-                      </div>
-                      
-                      {activeFrame && (
-                        <div className={`absolute inset-0 ${getAvatarShapeClass(activeFrame.avatarShape)} pointer-events-none ${activeFrame.frameStyle}`} />
                       )}
-                    </div>
-
-                    {/* Author Profile Details */}
-                    <div className="flex-1 min-w-0 text-right">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <h3 className={`font-extrabold text-[13px] md:text-sm truncate max-w-[150px] ${activeTitle ? activeTitle.color : 'text-white'}`}>
-                          {leader.displayName || 'لاعب مجهول'} 
-                        </h3>
-
-                        {activeBadge && (
-                          <span className="p-0.5 border border-yellow-500/20 bg-yellow-500/10 rounded-full inline-flex items-center justify-center">
-                            {React.createElement(activeBadge.icon, { size: 8, className: activeBadge.color })}
-                          </span>
-                        )}
-
-                        {isCurrentUser && (
-                          <span className="text-[8px] font-black bg-purple-600/30 border border-purple-500/40 text-purple-300 px-1.5 py-0.5 rounded">أنت</span>
-                        )}
+                      <div className="text-right">
+                        <span className="text-[10px] font-bold text-cyan-400 flex items-center gap-1">
+                          <Mic size={10} /> مؤدي الصوت الياباني (Seiyuu)
+                        </span>
+                        <p className="text-xs font-black text-white">
+                          {selectedCharacter.voiceActor.name}
+                        </p>
                       </div>
-                      
-                      <p className="text-[10px] text-neutral-400 font-bold mt-1 flex items-center gap-2">
-                        <span>مستوى {level}</span>
-                        {activeTitle && (
-                          <span className="text-[8px] font-black text-neutral-500">• {activeTitle.name}</span>
-                        )}
-                      </p>
                     </div>
+                  </div>
+                )}
 
-                    {/* Gained XP */}
-                    <div className="text-left shrink-0">
-                      <div className="text-white font-mono font-black text-sm md:text-base">{leader.xp || 0}</div>
-                      <div className="text-[9px] text-neutral-500 font-bold">XP نقطة</div>
-                    </div>
-                  </motion.div>
-                );
-              })
-            )}
-          </div>
-        </motion.div>
-      )}
+                {/* نبذة مختصرة */}
+                {selectedCharacter.about && (
+                  <div className="bg-black/30 border border-white/5 rounded-2xl p-3 max-h-32 overflow-y-auto">
+                    <p
+                      className="text-xs text-neutral-300 leading-relaxed font-medium"
+                      dir="auto"
+                    >
+                      {selectedCharacter.about}
+                    </p>
+                  </div>
+                )}
 
-      {/* 🛡️ Modals for Community Moderation */}
-      <AnimatePresence>
-        {/* 1. Report Modal */}
-        {reportingItemId && (
-          <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setReportingItemId(null)}
-              className="absolute inset-0 bg-black/80 backdrop-blur-sm"
-            />
-            
-            <motion.div 
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-[#121217] border border-neutral-800 rounded-3xl p-6 w-full max-w-md relative z-10 text-right font-sans"
-              dir="rtl"
-            >
-              <h3 className="text-base font-black text-white mb-2 flex items-center gap-2">
-                <Flag className="text-orange-500 shrink-0" size={18} />
-                <span>تقديم إبلاغ عن محتوى مخالف</span>
-              </h3>
-              <p className="text-xs text-neutral-400 mb-4 font-medium leading-relaxed font-sans">
-                هل لاحظت وجود انتهاك للقوانين أو سلوك غير لائق؟ يرجى إبلاغ الإدارة من خلال إرسال موضوع المخالفة لتتمكن من مراجعتها.
-              </p>
-
-              <div className="space-y-3 mb-5">
-                {[
-                  'سب شتائم أو سلوك غير محترم 🤬',
-                  'حرق للأحداث بدون غطاء أو تحديد حرق 🍿',
-                  'محتوى إعلاني أو روابط سبام خارجية غير مرغوبة 🚫',
-                  'حديث سياسي أو غير متعلق بالأنمي 🕌',
-                  'آخر (يرجى التوضيح في الأسفل)'
-                ].map((reason) => (
-                  <button
-                    key={reason}
+                {/* الأنمي المرتبط لفتحه مباشرة */}
+                {selectedCharacter.anime && (
+                  <div
                     onClick={() => {
-                      if (reason.startsWith('آخر')) {
-                        setReportReason('آخر: ');
-                      } else {
-                        setReportReason(reason);
-                      }
+                      const targetId = selectedCharacter.anime.id;
+                      setSelectedCharacter(null);
+                      if (onAnimeClick && targetId) onAnimeClick(String(targetId));
                     }}
-                    className={`w-full text-right p-3 rounded-xl text-xs font-bold transition border cursor-pointer ${
-                      reportReason === reason || (reason.startsWith('آخر') && reportReason.startsWith('آخر:'))
-                        ? 'bg-purple-600/10 border-purple-500/30 text-purple-400'
-                        : 'bg-[#181822] hover:bg-[#1f1f2e] border-transparent text-neutral-300'
-                    }`}
+                    className="flex items-center justify-between gap-3 bg-gradient-to-r from-purple-600/20 to-indigo-600/15 hover:from-purple-600/30 hover:to-indigo-600/25 border border-purple-500/30 rounded-2xl p-2.5 cursor-pointer transition group"
                   >
-                    {reason}
-                  </button>
-                ))}
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <img
+                        src={selectedCharacter.anime.posterUrl}
+                        alt={selectedCharacter.anime.title}
+                        className="w-11 h-14 rounded-xl object-cover shrink-0 border border-white/10"
+                        referrerPolicy="no-referrer"
+                      />
+                      <div className="min-w-0 text-right">
+                        <span className="text-[10px] font-black text-purple-300 block">
+                          الظهور الأبرز في أنمي:
+                        </span>
+                        <h4
+                          className="text-xs sm:text-sm font-black text-white truncate group-hover:text-purple-300 transition"
+                          dir="auto"
+                        >
+                          {cleanAnimeTitle(selectedCharacter.anime.title)}
+                        </h4>
+                      </div>
+                    </div>
 
-                <textarea
-                  placeholder="اكتب تفاصيل المخالفة بوضوح هنا..."
-                  value={reportReason}
-                  onChange={(e) => setReportReason(e.target.value)}
-                  className="w-full bg-[#0d0d12] border border-neutral-800 text-xs text-neutral-300 rounded-xl p-3 focus:outline-none focus:border-purple-600 focus:bg-black transition text-right min-h-[70px] resize-none font-sans"
-                />
-              </div>
-
-              <div className="flex gap-2">
-                <button
-                  disabled={submittingReport || !reportReason.trim()}
-                  onClick={handleSendReport}
-                  className="flex-1 py-3 hover:bg-opacity-95 bg-purple-600 text-white font-black text-xs rounded-xl shadow-lg shadow-purple-900/20 disabled:opacity-40 transition cursor-pointer flex items-center justify-center font-sans"
-                >
-                  {submittingReport ? <Loader2 size={14} className="animate-spin" /> : 'إرسال الإبلاغ 🛡️'}
-                </button>
-                <button
-                  onClick={() => setReportingItemId(null)}
-                  className="px-4 py-3 bg-[#181822] hover:bg-neutral-800 text-neutral-400 font-bold text-xs rounded-xl transition cursor-pointer font-sans"
-                >
-                  إلغاء
-                </button>
+                    <div className="px-3 py-1.5 rounded-xl bg-purple-600 text-white text-xs font-black flex items-center gap-1 shrink-0 shadow">
+                      <Play size={12} className="fill-current" />
+                      <span>شاهد</span>
+                    </div>
+                  </div>
+                )}
               </div>
             </motion.div>
-          </div>
-        )}
-
-        {/* 2. Mod Delete Reason Modal */}
-        {deletingItemId && (
-          <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setDeletingItemId(null)}
-              className="absolute inset-0 bg-black/80 backdrop-blur-sm"
-            />
-            
-            <motion.div 
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-[#121217] border border-neutral-800 rounded-3xl p-6 w-full max-w-md relative z-10 text-right font-sans"
-              dir="rtl"
-            >
-              <h3 className="text-base font-black text-red-500 mb-2 flex items-center gap-2">
-                <Trash2 size={18} />
-                <span>طلب حظر وحذف محتوى كمشرف</span>
-              </h3>
-              <p className="text-xs text-neutral-400 mb-4 font-medium leading-relaxed font-sans">
-                بصفتك مشرفاً أو إدارياً، يمكنك إزالة المحتوى المخالف فوراً. يرجى توضيح سبب الإزالة لتسجيل الإجراء الإداري:
-              </p>
-
-              <div className="space-y-3 mb-5">
-                {[
-                  'سلوك عدائي وشتائم مكررة 🚫',
-                  'حرق قصة أنمي مستمر دون تنبيه 🍿',
-                  'إعلانات وروابط سبام غير مرخص بها ⛓️',
-                  'محتوى مخالف للآداب السلوكية والذوق العام 💥'
-                ].map((reason) => (
-                  <button
-                    key={reason}
-                    onClick={() => setDeleteReason(reason)}
-                    className={`w-full text-right p-3 rounded-xl text-xs font-bold transition border cursor-pointer ${
-                      deleteReason === reason
-                        ? 'bg-red-500/10 border-red-500/30 text-red-400'
-                        : 'bg-[#181822] hover:bg-[#1f1f2e] border-transparent text-neutral-300'
-                    }`}
-                  >
-                    {reason}
-                  </button>
-                ))}
-
-                <textarea
-                  placeholder="توضيح سبب الحذف التفصيلي..."
-                  value={deleteReason}
-                  onChange={(e) => setDeleteReason(e.target.value)}
-                  className="w-full bg-[#0d0d12] border border-neutral-800 text-xs text-neutral-300 rounded-xl p-3 focus:outline-none focus:border-red-600 focus:bg-black transition text-right min-h-[70px] resize-none font-sans"
-                />
-              </div>
-
-              <div className="flex gap-2">
-                <button
-                  disabled={submittingDelete || !deleteReason.trim()}
-                  onClick={handleModDeleteConfirm}
-                  className="flex-1 py-3 bg-red-600 hover:bg-red-700 text-white font-black text-xs rounded-xl shadow-lg shadow-red-900/20 disabled:opacity-40 transition cursor-pointer flex items-center justify-center font-sans"
-                >
-                  {submittingDelete ? <Loader2 size={14} className="animate-spin" /> : 'تأكيد الحذف والإزالة 🛡️'}
-                </button>
-                <button
-                  onClick={() => setDeletingItemId(null)}
-                  className="px-4 py-3 bg-[#181822] hover:bg-neutral-800 text-neutral-400 font-bold text-xs rounded-xl transition cursor-pointer font-sans"
-                >
-                  إلغاء
-                </button>
-              </div>
-            </motion.div>
-          </div>
+          </motion.div>
         )}
       </AnimatePresence>
-    </motion.div>
+    </div>
   );
 }

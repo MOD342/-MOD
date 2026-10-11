@@ -226,22 +226,16 @@ export const recordEpisodeWatch = async (
         currentStatus = entryData.status || 'none';
       }
       
-      isAlreadyWatched = watchedEpisodes.includes(episodeNum);
+      isAlreadyWatched = watchedEpisodes.some((w: any) => Number(w) === Number(episodeNum));
       
       if (!isAlreadyWatched) {
         playedNewEpisode = true;
-        watchedEpisodes.push(episodeNum);
-        watchedEpisodes.sort((a, b) => a - b);
+        watchedEpisodes.push(Number(episodeNum));
+        watchedEpisodes = Array.from(new Set(watchedEpisodes.map((w: any) => Number(w)).filter((w: number) => !isNaN(w) && w > 0))).sort((a, b) => a - b);
         
         let statusToSave = currentStatus;
         if (statusToSave === 'none' || !statusToSave) {
           statusToSave = 'watching';
-        }
-        
-        const totalEps = anime.episodesCount || (anime.episodes ? anime.episodes.length : 0);
-        if (totalEps > 0 && watchedEpisodes.length >= totalEps && currentStatus !== 'completed') {
-          statusToSave = 'completed';
-          newlyCompleted = true;
         }
         
         const payload: any = {
@@ -251,12 +245,9 @@ export const recordEpisodeWatch = async (
           releaseYear: anime.releaseYear || '',
           updatedAt: serverTimestamp(),
           watchedEpisodes,
+          progress: watchedEpisodes.length,
           status: statusToSave
         };
-        
-        if (newlyCompleted) {
-          payload.completedXpClaimed = true;
-        }
         
         if (!exists) {
           payload.addedAt = serverTimestamp();

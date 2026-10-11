@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Bot, ChevronRight, Send, Sparkles, Smile, MessageCircle, AlertCircle, Award, Volume2, ShieldAlert } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAuth } from '../contexts/AuthContext';
+import { isStaffEmail } from '../services/moderationService';
 
 const MOODS = [
   { value: 'سعيد ومبتهج 😆', label: '😆 سعيد', color: 'hover:border-yellow-500 hover:text-yellow-400 bg-yellow-500/10 border-yellow-500/30' },
@@ -20,11 +21,12 @@ const STATUSES = [
 ];
 
 export default function AiChatView({ onBack }: { onBack: () => void }) {
-  const { user, userData } = useAuth();
+  const { user, userData, userRole } = useAuth();
   const [selectedMood, setSelectedMood] = useState('سعيد ومبتهج 😆');
   const [selectedStatus, setSelectedStatus] = useState('أتابع أنمي حالياً ومستمر 📺');
   const [msg, setMsg] = useState('');
   const [loading, setLoading] = useState(false);
+  const [cooldownSec, setCooldownSec] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const [chat, setChat] = useState<any[]>(() => {
@@ -41,13 +43,26 @@ export default function AiChatView({ onBack }: { onBack: () => void }) {
     ];
   });
 
-  const MIN_LEVEL = 7; // Lowered to 7 for better premium accessibility, retaining the lock motivation
+  const MIN_LEVEL = 7;
   const userLevel = userData?.level || 1;
-  const isUnlocked = userLevel >= MIN_LEVEL;
+  const isStaff =
+    userRole === 'owner' ||
+    userRole === 'admin' ||
+    userRole === 'moderator' ||
+    isStaffEmail(user?.email);
+  const isUnlocked = userLevel >= MIN_LEVEL || isStaff;
+
+  useEffect(() => {
+    if (cooldownSec <= 0) return;
+    const timer = setInterval(() => {
+      setCooldownSec((prev) => Math.max(0, prev - 1));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [cooldownSec]);
 
   useEffect(() => {
     try {
-      localStorage.setItem('otaku_chat_history', JSON.stringify(chat));
+      localStorage.setItem('otaku_chat_history', JSON.stringify(chat.slice(-20)));
     } catch (_) {}
     scrollToBottom();
   }, [chat]);
@@ -57,28 +72,33 @@ export default function AiChatView({ onBack }: { onBack: () => void }) {
   };
 
   const send = async () => {
-    if (!msg.trim() || loading) return;
-    const userMsg = msg;
+    if (!msg.trim() || loading || cooldownSec > 0 || !isUnlocked) return;
+    const userMsg = msg.trim().slice(0, 500);
     const updatedChat = [...chat, { sender: 'user', text: userMsg }];
     setChat(updatedChat);
     setMsg('');
     setLoading(true);
+    setCooldownSec(3);
 
     try {
       const res = await fetch('/api/ai/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
-          messages: updatedChat,
+          userId: user?.id,
+          messages: updatedChat.slice(-6),
           mood: selectedMood,
           status: selectedStatus
         })
       });
       const data = await res.json();
-      if (data.success) {
+      if (res.status === 429 || data.rateLimited) {
+        if (data.retryAfterSec) setCooldownSec(data.retryAfterSec);
+        setChat(prev => [...prev, { sender: 'bot', text: data.message || 'مهلاً يا ناكاما! انتظر ثوانٍ معدودة قبل إرسال الرسالة التالية.' }]);
+      } else if (data.success) {
         setChat(prev => [...prev, { sender: 'bot', text: data.text }]);
       } else {
-        setChat(prev => [...prev, { sender: 'bot', text: 'أوه باكا! حدث خطأ غريب بالخادم. حاول مراسلتي ثانية!' }]);
+        setChat(prev => [...prev, { sender: 'bot', text: 'أوه باكا! حدث ضغط مؤقت بالخادم. حاول مراسلتي ثانية!' }]);
       }
     } catch (e) {
       setChat(prev => [...prev, { sender: 'bot', text: 'الشبكة تلاشت كأنه جتسو انتقال سريع! تحقق من اتصالك بالإنترنت.' }]);
@@ -88,12 +108,10 @@ export default function AiChatView({ onBack }: { onBack: () => void }) {
   };
 
   const clearChatHistory = () => {
-    if (window.confirm('هل تريد مسح سجل المحادثة بالكامل؟')) {
-      const reset = [
-        { sender: 'bot', text: 'تم مسح ذكرياتنا السابقة كأننا فككنا شفرة المذكرة! كيف تود بدء الحوار مجدداً يا ناكاما؟' }
-      ];
-      setChat(reset);
-    }
+    const reset = [
+      { sender: 'bot', text: 'تم مسح ذكرياتنا السابقة كأننا فككنا شفرة المذكرة! كيف تود بدء الحوار مجدداً يا ناكاما؟' }
+    ];
+    setChat(reset);
   };
 
   return (
@@ -230,18 +248,23 @@ export default function AiChatView({ onBack }: { onBack: () => void }) {
               <input 
                 type="text"
                 value={msg}
+                maxLength={500}
                 onChange={(e) => setMsg(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && send()}
-                placeholder="اكتب رسالة إلى السينباي المخضرم..."
-                disabled={loading}
+                placeholder={cooldownSec > 0 ? `انتظر ${cooldownSec} ثوانٍ لإرسال الرسالة التالية...` : "اكتب رسالة إلى السينباي المخضرم..."}
+                disabled={loading || cooldownSec > 0}
                 className="flex-1 bg-transparent text-sm text-white focus:outline-none disabled:opacity-50"
               />
               <button 
                 onClick={send}
-                disabled={loading || !msg.trim()}
+                disabled={loading || cooldownSec > 0 || !msg.trim()}
                 className="w-10 h-10 rounded-xl bg-gradient-to-r from-purple-600 to-pink-500 flex items-center justify-center text-white shrink-0 shadow-lg hover:brightness-110 active:scale-95 transition disabled:opacity-40 cursor-pointer"
               >
-                <Send size={16} />
+                {cooldownSec > 0 ? (
+                  <span className="text-xs font-black">{cooldownSec}s</span>
+                ) : (
+                  <Send size={16} />
+                )}
               </button>
             </div>
           </div>

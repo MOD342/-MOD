@@ -45,9 +45,9 @@ export default function FavoritesView({ onBack, onAnimeClick }: { onBack: () => 
            <div className="flex justify-center p-10"><div className="w-8 h-8 rounded-full border-2 border-[#FF1744] border-t-transparent animate-spin"/></div>
         ) : favorites.length > 0 ? (
            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3">
-             {favorites.map(anime => (
+             {favorites.map((anime, idx) => (
                <div 
-                 key={anime.id} 
+                 key={`${anime.id || idx}-${idx}`} 
                  onClick={() => onAnimeClick(anime.id)} 
                  onMouseEnter={() => clientCache.prefetchDetails(anime.id)}
                  className="cursor-pointer group relative"

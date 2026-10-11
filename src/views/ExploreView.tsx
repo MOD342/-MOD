@@ -1,8 +1,16 @@
 import { useState, useEffect, useRef } from 'react';
-import { Search, Filter, Star, Loader2, ChevronDown } from 'lucide-react';
+import { Search, Filter, Star, Loader2, ChevronDown, Calendar, Tv, Layers } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { LongPressCopy } from '../components/LongPressCopy';
 import { clientCache } from '../utils/clientCache';
+import { cleanAnimeTitle } from '../utils/animeTitleCleaner';
+import {
+  useGlobalLayoutMode,
+  LayoutModeToggleButton,
+  getLayoutGridClasses,
+  getShortTypeCode,
+  getArabicSeasonLabel,
+  normalizeAnimeStatusAr,
+} from '../utils/useViewLayoutMode';
 
 const GENRE_ARABIC_MAP: Record<string, string> = {
   'Action': 'أكشن ⚔️',
@@ -26,7 +34,20 @@ const GENRE_ARABIC_MAP: Record<string, string> = {
   'Avant Garde': 'طليعي / غريب 🎨',
   'Erotica': 'عمل للبالغين 🔞',
   'Hentai': 'محتوى للبالغين 🔞',
-  'Workplace': 'بيئة عمل 💼'
+  'Workplace': 'بيئة عمل 💼',
+  'Psychological': 'نفسي 🧠',
+  'Thriller': 'إثارة وتشويق 🔥',
+  'Mecha': 'آليات 🤖',
+  'Music': 'موسيقى 🎵',
+  'Mahou Shoujo': 'فتيات سحريات ✨',
+  'Historical': 'تاريخي 📜',
+  'Military': 'عسكري 🎖️',
+  'School': 'مدرسي 🏫',
+  'Shounen': 'شونين 🔥',
+  'Seinen': 'سينين 🗡️',
+  'Shoujo': 'شوجو 🌸',
+  'Josei': 'جوسي 💫',
+  'Isekai': 'إيسيكاي 🌌',
 };
 
 interface ExploreViewProps {
@@ -51,10 +72,10 @@ const CustomSelect = ({ label, value, options, onChange }: any) => {
 
   return (
     <div className="relative" ref={dropdownRef}>
-      <h3 className="text-xs font-bold text-neutral-400 mb-2">{label}</h3>
+      <h3 className="text-xs font-bold text-neutral-400 mb-1.5">{label}</h3>
       <button 
         onClick={() => setIsOpen(!isOpen)}
-        className="w-full bg-neutral-900 border border-neutral-800 hover:border-neutral-700 text-white rounded-lg py-2.5 px-3 flex items-center justify-between text-sm font-bold transition-colors"
+        className="w-full bg-neutral-900 border border-neutral-800 hover:border-neutral-700 text-white rounded-lg py-2 px-3 flex items-center justify-between text-xs font-bold transition-colors"
       >
         <span className="truncate">{selectedOption ? selectedOption.label : 'الكل'}</span>
         <ChevronDown size={14} className={`text-neutral-500 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
@@ -70,7 +91,7 @@ const CustomSelect = ({ label, value, options, onChange }: any) => {
               <button
                 key={`${opt.value || ''}-${idx}`}
                 onClick={() => { onChange(opt.value); setIsOpen(false); }}
-                className={`w-full text-right px-3 py-2.5 text-sm font-bold transition-colors ${value === opt.value ? 'bg-purple-600 text-white' : 'text-neutral-300 hover:bg-neutral-800 hover:text-white'}`}
+                className={`w-full text-right px-3 py-2 text-xs font-bold transition-colors ${value === opt.value ? 'bg-purple-600 text-white' : 'text-neutral-300 hover:bg-neutral-800 hover:text-white'}`}
               >
                 {opt.label}
               </button>
@@ -107,15 +128,14 @@ export default function ExploreView({ onAnimeClick, initialQuery }: ExploreViewP
     { mal_id: 41, name: "Suspense" }
   ]);
   
-  // Direct in-memory filter state (Zero-Storage Mode)
   const [selectedGenres, setSelectedGenres] = useState<number[]>([]);
   const [minScore, setMinScore] = useState('');
   const [status, setStatus] = useState('');
   const [year, setYear] = useState('');
   const [orderBy, setOrderBy] = useState('');
   const [sortOrder, setSortOrder] = useState('desc');
+  const [layoutMode, cycleLayoutMode] = useGlobalLayoutMode();
 
-  // Fetch genres with clientCache (7 days TTL)
   useEffect(() => {
     clientCache.fetchWithRevalidate<{ mal_id: number; name: string }[]>(
       'client_genres_cache_v2',
@@ -129,7 +149,6 @@ export default function ExploreView({ onAnimeClick, initialQuery }: ExploreViewP
     );
   }, []);
 
-  // Debounce search query
   useEffect(() => {
     const timer = setTimeout(() => {
       setDebouncedQuery(query);
@@ -137,7 +156,6 @@ export default function ExploreView({ onAnimeClick, initialQuery }: ExploreViewP
     return () => clearTimeout(timer);
   }, [query]);
 
-  // Fetch results based on filters & query
   useEffect(() => {
     fetchResults(true);
   }, [debouncedQuery, selectedGenres, minScore, status, year, orderBy, sortOrder]);
@@ -153,8 +171,10 @@ export default function ExploreView({ onAnimeClick, initialQuery }: ExploreViewP
     if (orderBy) url += `&order_by=${orderBy}`;
     if (sortOrder) url += `&sort=${sortOrder}`;
 
+    const cacheKey = `client_explore_results_v3_${url}`;
+
     if (reset) {
-      const cached = clientCache.get<any>(`client_explore_results_${url}`);
+      const cached = clientCache.get<any>(cacheKey);
       if (cached && Array.isArray(cached.data)) {
         setResults(cached.data || []);
         setHasNextPage(cached.hasNextPage ?? false);
@@ -173,10 +193,10 @@ export default function ExploreView({ onAnimeClick, initialQuery }: ExploreViewP
       if (data.success) {
         if (reset) {
           setResults(data.data);
-          clientCache.set(`client_explore_results_${url}`, {
+          clientCache.set(cacheKey, {
             data: data.data,
             hasNextPage: data.pagination?.has_next_page || false
-          }, 30 * 60 * 1000); // 30 mins TTL
+          }, 30 * 60 * 1000);
         } else {
           setResults(prev => [...prev, ...data.data]);
         }
@@ -197,36 +217,41 @@ export default function ExploreView({ onAnimeClick, initialQuery }: ExploreViewP
     );
   };
 
+  const isListMode = layoutMode === 'list';
+  const isLargeGrid = layoutMode === 'grid2';
+
   return (
-    <div className="pt-8 pb-32 px-4 md:px-8 space-y-6">
+    <div className="min-h-screen bg-black text-white pb-24" dir="rtl">
       <div className="max-w-7xl mx-auto">
-        {/* Header & Search Bar */}
-        <div className="sticky top-0 z-30 pt-4 pb-4 bg-black/98 backdrop-blur-3xl border-b border-white/5 space-y-3">
-          <div className="flex items-center justify-between mb-1">
-            <h1 className="text-xl font-black text-white">استكشف الأنمي</h1>
+        {/* شريط العنوان والبحث العلوي - غير ثابت ومدمج */}
+        <div className="bg-black border-b border-white/5 px-3.5 md:px-5 py-3 space-y-2.5">
+          <div className="flex items-center justify-between">
+            <h1 className="font-black text-base md:text-lg text-white">استكشف الأنمي</h1>
+            <LayoutModeToggleButton mode={layoutMode} onToggle={cycleLayoutMode} />
           </div>
 
           <div className="flex gap-2 items-center">
             <div className="relative flex-1">
-              <Search className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-500" size={18} />
+              <Search className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-500" size={16} />
               <input 
                 type="text" 
                 placeholder="ابحث عن أنمي..." 
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                className="w-full bg-neutral-900 border border-neutral-800 text-white rounded-xl py-2.5 pr-10 pl-3 focus:outline-none focus:border-purple-500/50 text-sm transition shadow-inner"
+                className="w-full bg-neutral-900 border border-neutral-800 text-white rounded-xl py-2 pr-9 pl-3 focus:outline-none focus:border-purple-500/50 text-xs sm:text-sm transition"
               />
             </div>
             <button 
               onClick={() => setShowFilters(!showFilters)}
-              className={`p-2.5 rounded-xl transition-all border ${showFilters ? 'bg-purple-600 border-purple-500 text-white shadow-lg' : 'bg-neutral-900 border-neutral-800 text-neutral-400 hover:text-white'}`}
+              className={`p-2 rounded-xl transition-all border cursor-pointer ${showFilters ? 'bg-purple-600 border-purple-500 text-white shadow-lg' : 'bg-neutral-900 border-neutral-800 text-neutral-400 hover:text-white'}`}
+              title="فلاتر البحث"
             >
-              <Filter size={18} />
+              <Filter size={16} />
             </button>
           </div>
 
-          {/* Quick Filter Chips */}
-          <div className="flex items-center gap-1.5 overflow-x-auto hide-scrollbar pb-1 pt-1 -mx-2 px-2">
+          {/* شرائح الفلترة السريعة */}
+          <div className="flex items-center gap-1.5 overflow-x-auto hide-scrollbar pb-0.5 pt-0.5">
             <button
               onClick={() => {
                 setQuery('');
@@ -236,9 +261,9 @@ export default function ExploreView({ onAnimeClick, initialQuery }: ExploreViewP
                 setOrderBy('');
                 setSortOrder('desc');
               }}
-              className={`px-3 py-1.5 rounded-full text-[11px] font-bold transition whitespace-nowrap ${
+              className={`px-3 py-1 rounded-lg text-[11px] font-bold transition whitespace-nowrap cursor-pointer ${
                 !query && selectedGenres.length === 0 && !minScore && !status && !orderBy
-                  ? 'bg-purple-600 text-white shadow-lg'
+                  ? 'bg-purple-600 text-white shadow'
                   : 'bg-neutral-900 border border-neutral-800 text-neutral-400 hover:text-white'
               }`}
             >
@@ -249,9 +274,9 @@ export default function ExploreView({ onAnimeClick, initialQuery }: ExploreViewP
                 setOrderBy(orderBy === 'score' ? '' : 'score');
                 setSortOrder('desc');
               }}
-              className={`px-3 py-1.5 rounded-full text-[11px] font-bold transition whitespace-nowrap ${
+              className={`px-3 py-1 rounded-lg text-[11px] font-bold transition whitespace-nowrap cursor-pointer ${
                 orderBy === 'score'
-                  ? 'bg-purple-600 text-white shadow-lg'
+                  ? 'bg-purple-600 text-white shadow'
                   : 'bg-neutral-900 border border-neutral-800 text-neutral-400 hover:text-white'
               }`}
             >
@@ -261,57 +286,49 @@ export default function ExploreView({ onAnimeClick, initialQuery }: ExploreViewP
               onClick={() => {
                 setStatus(status === 'airing' ? '' : 'airing');
               }}
-              className={`px-3 py-1.5 rounded-full text-[11px] font-bold transition whitespace-nowrap ${
+              className={`px-3 py-1 rounded-lg text-[11px] font-bold transition whitespace-nowrap cursor-pointer ${
                 status === 'airing'
-                  ? 'bg-purple-600 text-white shadow-lg'
+                  ? 'bg-purple-600 text-white shadow'
                   : 'bg-neutral-900 border border-neutral-800 text-neutral-400 hover:text-white'
               }`}
             >
               يعرض حالياً 🔴
             </button>
             <button
-              onClick={() => {
-                toggleGenre(1); // Action ID
-              }}
-              className={`px-3 py-1.5 rounded-full text-[11px] font-bold transition whitespace-nowrap ${
+              onClick={() => toggleGenre(1)}
+              className={`px-3 py-1 rounded-lg text-[11px] font-bold transition whitespace-nowrap cursor-pointer ${
                 selectedGenres.includes(1)
-                  ? 'bg-purple-600 text-white shadow-lg'
+                  ? 'bg-purple-600 text-white shadow'
                   : 'bg-neutral-900 border border-neutral-800 text-neutral-400 hover:text-white'
               }`}
             >
               أكشن ⚔️
             </button>
             <button
-              onClick={() => {
-                toggleGenre(2); // Adventure ID
-              }}
-              className={`px-3 py-1.5 rounded-full text-[11px] font-bold transition whitespace-nowrap ${
+              onClick={() => toggleGenre(2)}
+              className={`px-3 py-1 rounded-lg text-[11px] font-bold transition whitespace-nowrap cursor-pointer ${
                 selectedGenres.includes(2)
-                  ? 'bg-purple-600 text-white shadow-lg'
+                  ? 'bg-purple-600 text-white shadow'
                   : 'bg-neutral-900 border border-neutral-800 text-neutral-400 hover:text-white'
               }`}
             >
               مغامرة 🗺️
             </button>
             <button
-              onClick={() => {
-                toggleGenre(4); // Comedy ID
-              }}
-              className={`px-3 py-1.5 rounded-full text-[11px] font-bold transition whitespace-nowrap ${
+              onClick={() => toggleGenre(4)}
+              className={`px-3 py-1 rounded-lg text-[11px] font-bold transition whitespace-nowrap cursor-pointer ${
                 selectedGenres.includes(4)
-                  ? 'bg-purple-600 text-white shadow-lg'
+                  ? 'bg-purple-600 text-white shadow'
                   : 'bg-neutral-900 border border-neutral-800 text-neutral-400 hover:text-white'
               }`}
             >
               كوميديا 😂
             </button>
             <button
-              onClick={() => {
-                toggleGenre(10); // Fantasy ID
-              }}
-              className={`px-3 py-1.5 rounded-full text-[11px] font-bold transition whitespace-nowrap ${
+              onClick={() => toggleGenre(10)}
+              className={`px-3 py-1 rounded-lg text-[11px] font-bold transition whitespace-nowrap cursor-pointer ${
                 selectedGenres.includes(10)
-                  ? 'bg-purple-600 text-white shadow-lg'
+                  ? 'bg-purple-600 text-white shadow'
                   : 'bg-neutral-900 border border-neutral-800 text-neutral-400 hover:text-white'
               }`}
             >
@@ -319,7 +336,7 @@ export default function ExploreView({ onAnimeClick, initialQuery }: ExploreViewP
             </button>
           </div>
           
-          {/* Filters Panel */}
+          {/* لوحة الفلاتر المتقدمة */}
           <AnimatePresence>
             {showFilters && (
               <motion.div 
@@ -328,18 +345,17 @@ export default function ExploreView({ onAnimeClick, initialQuery }: ExploreViewP
                 exit={{ height: 0, opacity: 0 }}
                 className="overflow-hidden"
               >
-                <div className="pt-4 pb-2 space-y-6">
-                  {/* Genres */}
+                <div className="pt-3 pb-2 space-y-4 border-t border-white/5 mt-2">
                   <div>
-                    <h3 className="text-xs font-bold text-neutral-500 mb-3 uppercase tracking-wider">التصنيفات</h3>
-                    <div className="flex flex-wrap gap-2 max-h-40 overflow-y-auto hide-scrollbar">
+                    <h3 className="text-[11px] font-bold text-neutral-500 mb-2">التصنيفات</h3>
+                    <div className="flex flex-wrap gap-1.5 max-h-36 overflow-y-auto hide-scrollbar">
                       {genres.map((g, idx) => (
                         <button
                           key={`genre-${g?.mal_id || idx}-${idx}`}
                           onClick={() => toggleGenre(g.mal_id)}
-                          className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                          className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
                             selectedGenres.includes(g.mal_id) 
-                              ? 'bg-purple-600 text-white shadow-lg shadow-purple-500/30' 
+                              ? 'bg-purple-600 text-white shadow' 
                               : 'bg-neutral-900 border border-neutral-800 text-neutral-400 hover:text-white'
                           }`}
                         >
@@ -349,7 +365,7 @@ export default function ExploreView({ onAnimeClick, initialQuery }: ExploreViewP
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4 relative z-40">
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 relative z-40">
                     <CustomSelect 
                       label="ترتيب حسب" 
                       value={orderBy} 
@@ -396,8 +412,7 @@ export default function ExploreView({ onAnimeClick, initialQuery }: ExploreViewP
                     />
                   </div>
                   
-                  {/* Reset Filters */}
-                  <div className="flex justify-end pt-2 border-t border-white/5">
+                  <div className="flex justify-end pt-1">
                     <button 
                       onClick={() => {
                         setSelectedGenres([]);
@@ -407,7 +422,7 @@ export default function ExploreView({ onAnimeClick, initialQuery }: ExploreViewP
                         setOrderBy('');
                         setSortOrder('desc');
                       }}
-                      className="text-xs font-bold text-neutral-500 hover:text-white transition px-3 py-1.5 rounded-lg bg-neutral-900 hover:bg-neutral-800"
+                      className="text-[11px] font-bold text-neutral-400 hover:text-white transition px-3 py-1 rounded-lg bg-neutral-900 hover:bg-neutral-800 cursor-pointer"
                     >
                       إعادة الافتراضي
                     </button>
@@ -418,66 +433,174 @@ export default function ExploreView({ onAnimeClick, initialQuery }: ExploreViewP
           </AnimatePresence>
         </div>
 
-        {/* Results Grid */}
-        <div className="mt-6">
+        {/* عرض النتائج حسب الوضع المختار */}
+        <div className={isListMode ? 'p-2 md:p-4' : 'p-0 md:p-4'}>
           {loading ? (
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 md:gap-5">
-               {[1,2,3,4,5,6,7,8,9,10].map(i => (
-                 <div key={i} className="aspect-[3/4] bg-neutral-900 animate-pulse rounded-2xl border border-neutral-800"></div>
-               ))}
+            <div className={getLayoutGridClasses(layoutMode)}>
+              {[...Array(21)].map((_, i) => (
+                <div
+                  key={i}
+                  className={`${
+                    isListMode ? 'h-32 rounded-xl' : 'aspect-[3/4]'
+                  } bg-neutral-900 animate-pulse border border-white/10`}
+                />
+              ))}
             </div>
           ) : results.length > 0 ? (
             <>
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 md:gap-5">
-                {results.map((anime, idx) => (
-                  <motion.div 
-                    key={`search-${anime._id}-${idx}`}
-                    onClick={() => onAnimeClick(anime._id)}
-                    onMouseEnter={() => clientCache.prefetchDetails(anime._id)}
-                    whileHover={{ scale: 1.03, y: -6, borderColor: '#a855f7' }}
-                    whileTap={{ scale: 0.97 }}
-                    className="cursor-pointer relative aspect-[3/4] bg-neutral-900 rounded-2xl overflow-hidden group border border-neutral-800 transition-all duration-300 gpu-accelerated"
-                  >
-                    <img src={anime.posterUrl || 'https://via.placeholder.com/300x400?text=Anime'} alt={anime.title} loading="lazy" className="w-full h-full object-cover opacity-85 group-hover:opacity-100 hover:scale-[1.03] transition-all duration-500" />
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent flex flex-col justify-end p-3 pointer-events-none">
-                      <div className="absolute top-2 right-2 bg-black/60 backdrop-blur text-yellow-400 px-1.5 py-0.5 rounded flex items-center gap-1 text-[10px] font-bold border border-white/10">
-                        <Star size={10} fill="currentColor" /> {anime.rating || 'N/A'}
-                      </div>
-                      {anime.status && (
-                        <div className="absolute top-2 left-2 bg-neutral-900/60 backdrop-blur text-white px-1.5 py-0.5 rounded text-[10px] font-bold border border-white/10">
-                          {anime.status}
+              <div className={getLayoutGridClasses(layoutMode)}>
+                {results.map((anime, idx) => {
+                  const cleanTitle = cleanAnimeTitle(anime.title || anime.titleAr || 'Anime');
+                  const ratingVal = anime.rating && anime.rating !== 'N/A' && Number(anime.rating) > 0
+                    ? Number(anime.rating).toFixed(1)
+                    : null;
+                  const shortType = getShortTypeCode(anime.type || 'TV');
+                  const seasonLabel = getArabicSeasonLabel(anime.season, anime.releaseYear || anime.year);
+                  const statusInfo = normalizeAnimeStatusAr(anime.status);
+                  const episodesTotal = anime.episodesCount || anime.totalEpisodes || null;
+                  const genresList = Array.isArray(anime.genres)
+                    ? anime.genres.slice(0, 3).map((g: string) => GENRE_ARABIC_MAP[g] || g)
+                    : [];
+
+                  if (isListMode) {
+                    return (
+                      <div
+                        key={`search-${anime._id}-${idx}`}
+                        onClick={() => onAnimeClick(anime._id)}
+                        onMouseEnter={() => clientCache.prefetchDetails(anime._id)}
+                        className="cursor-pointer group flex items-stretch bg-neutral-900/95 border border-neutral-800/90 hover:border-purple-500/60 rounded-xl transition-all overflow-hidden shadow-md min-h-[124px] sm:min-h-[132px]"
+                      >
+                        {/* البوستر يملأ الجانب بالكامل من الحافة للحافة */}
+                        <div className="w-24 sm:w-28 shrink-0 bg-neutral-950 relative border-l border-white/10 overflow-hidden">
+                          <img
+                            src={anime.posterUrl || 'https://via.placeholder.com/300x400?text=Anime'}
+                            alt={cleanTitle}
+                            loading="lazy"
+                            referrerPolicy="no-referrer"
+                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                          />
                         </div>
-                      )}
-                      <LongPressCopy text={anime.title}>
-                        <h5 className="font-bold text-xs md:text-sm text-white truncate drop-shadow text-center pointer-events-auto">{anime.title}</h5>
-                      </LongPressCopy>
+
+                        {/* تفاصيل البطاقة محاذية لليمين بجانب البوستر مباشرة بدون أي فراغ */}
+                        <div className="flex-1 min-w-0 flex flex-col justify-center items-start text-right gap-1.5 p-2.5 sm:p-3">
+                          <h5
+                            className="w-full font-black text-sm sm:text-base text-white group-hover:text-purple-400 transition-colors line-clamp-1 leading-snug text-right"
+                            dir="auto"
+                          >
+                            {cleanTitle}
+                          </h5>
+
+                          <div className="flex flex-wrap items-center justify-start gap-1.5 text-[10px] sm:text-xs font-bold">
+                            {ratingVal && (
+                              <span className="bg-yellow-500/15 border border-yellow-500/30 text-yellow-400 px-2 py-0.5 rounded-lg flex items-center gap-1" dir="ltr">
+                                <Star size={10} fill="currentColor" /> {ratingVal}
+                              </span>
+                            )}
+                            <span className="bg-neutral-800 text-neutral-200 px-2 py-0.5 rounded-lg flex items-center gap-1" dir="ltr">
+                              <Tv size={10} className="text-neutral-400" />
+                              <span>{shortType}</span>
+                            </span>
+                            {statusInfo && (
+                              <span className={`border px-2 py-0.5 rounded-lg ${statusInfo.colorClass}`}>
+                                {statusInfo.label}
+                              </span>
+                            )}
+                            {seasonLabel && (
+                              <span className="flex items-center gap-1 bg-neutral-950/90 border border-white/10 text-neutral-300 px-2 py-0.5 rounded-lg">
+                                <Calendar size={10} className="text-neutral-400" />
+                                <span>{seasonLabel}</span>
+                              </span>
+                            )}
+                            {episodesTotal ? (
+                              <span className="flex items-center gap-1 bg-neutral-950/90 border border-white/10 text-neutral-300 px-2 py-0.5 rounded-lg">
+                                <Layers size={10} className="text-neutral-400" />
+                                <span>{episodesTotal} حلقة</span>
+                              </span>
+                            ) : null}
+                          </div>
+
+                          {genresList.length > 0 && (
+                            <div className="flex flex-wrap items-center justify-start gap-1 overflow-hidden pt-0.5">
+                              {genresList.map((g: string, i: number) => (
+                                <span
+                                  key={i}
+                                  className="text-[10px] text-neutral-300 bg-neutral-950/80 px-2 py-0.5 rounded-md border border-white/5 truncate"
+                                >
+                                  {g}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  // عرض الشبكة بدون فراغات + الاسم على البوستر + التقييم والنوع باختصار إنجليزي 3 حروف
+                  return (
+                    <div 
+                      key={`search-${anime._id}-${idx}`}
+                      onClick={() => onAnimeClick(anime._id)}
+                      onMouseEnter={() => clientCache.prefetchDetails(anime._id)}
+                      className="cursor-pointer group relative aspect-[3/4] overflow-hidden bg-neutral-950 border-b border-l border-white/10"
+                    >
+                      <img 
+                        src={anime.posterUrl || 'https://via.placeholder.com/300x400?text=Anime'} 
+                        alt={cleanTitle} 
+                        loading="lazy" 
+                        referrerPolicy="no-referrer"
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" 
+                      />
+
+                      {/* شريط علوي فوق البوستر: النوع (3 حروف) + التقييم */}
+                      <div className="absolute top-1.5 inset-x-1.5 z-10 flex items-center justify-between gap-1 pointer-events-none" dir="ltr">
+                        <span className="bg-black/80 backdrop-blur-md text-white px-1.5 py-0.5 rounded text-[9px] sm:text-[10px] font-black border border-white/15 uppercase tracking-tight">
+                          {shortType}
+                        </span>
+                        {ratingVal && (
+                          <span className="bg-black/80 backdrop-blur-md text-yellow-400 px-1.5 py-0.5 rounded flex items-center gap-0.5 text-[9px] sm:text-[10px] font-black border border-white/15 shadow">
+                            <Star size={8} fill="currentColor" /> {ratingVal}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* تدرج سفلي والاسم فوق البوستر */}
+                      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 via-black/70 to-transparent pt-8 pb-2 px-2 pointer-events-none flex flex-col justify-end">
+                        <h5
+                          className={`font-black ${
+                            isLargeGrid ? 'text-xs sm:text-sm' : 'text-[10px] sm:text-xs'
+                          } text-white group-hover:text-purple-400 transition-colors line-clamp-2 text-center leading-tight drop-shadow`}
+                          dir="ltr"
+                        >
+                          {cleanTitle}
+                        </h5>
+                      </div>
                     </div>
-                  </motion.div>
-                ))}
+                  );
+                })}
               </div>
               
-              {/* Load More */}
+              {/* زر عرض المزيد */}
               {hasNextPage && (
-                <div className="flex justify-center mt-8">
+                <div className="flex justify-center mt-6 pb-4">
                   <button 
                     onClick={() => fetchResults(false)}
                     disabled={loadingMore}
-                    className="bg-neutral-900 border border-neutral-800 hover:bg-neutral-800 text-white font-bold py-3 px-8 rounded-xl transition flex items-center gap-2"
+                    className="bg-neutral-900 border border-neutral-800 hover:bg-neutral-800 text-white text-xs font-black py-2.5 px-6 rounded-xl transition flex items-center gap-2 cursor-pointer"
                   >
-                    {loadingMore ? <><Loader2 size={18} className="animate-spin" /> جاري التحميل...</> : 'عرض المزيد'}
+                    {loadingMore ? <><Loader2 size={15} className="animate-spin" /> جاري التحميل...</> : 'عرض المزيد'}
                   </button>
                 </div>
               )}
             </>
           ) : (
-             <div className="text-center py-20 bg-neutral-900/30 rounded-3xl border border-neutral-800/50">
-               <Search className="mx-auto text-neutral-600 mb-4" size={48} />
-               <h3 className="text-lg font-bold text-neutral-400 mb-1">لم يتم العثور على نتائج</h3>
-               <p className="text-sm text-neutral-500">جرب البحث بكلمات أخرى أو تغيير الفلاتر</p>
-             </div>
+            <div className="text-center py-16 m-4 bg-neutral-900/20 rounded-2xl border border-neutral-800/40">
+              <Search className="mx-auto text-neutral-600 mb-3" size={36} />
+              <h3 className="text-sm font-bold text-neutral-400 mb-1">لم يتم العثور على نتائج</h3>
+              <p className="text-xs text-neutral-500">جرب البحث بكلمات أخرى أو تغيير الفلاتر</p>
+            </div>
           )}
         </div>
-
       </div>
     </div>
   );

@@ -41,14 +41,15 @@ import {
   Pin,
   Gift,
   Ticket,
-  History
+  History,
+  Zap
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { moderationService, RoleLevel, GlobalRole, ModPermissions, AuditLogEntry, PromoCodeEntry, isStaffEmail } from '../services/moderationService';
+import { moderationService, RoleLevel, GlobalRole, ModPermissions, AuditLogEntry, PromoCodeEntry, isStaffEmail, getAdminAuthHeaders, ServerVerifiedSession } from '../services/moderationService';
 import { notificationsService } from '../services/notificationsService';
 import { Recommendation } from '../services/animeInteractionService';
 import { auth, db } from '../firebase';
-import { collection, onSnapshot, doc, getDoc, updateDoc, deleteDoc, deleteField, increment } from 'firebase/firestore';
+import { collection, onSnapshot, doc, getDoc, updateDoc, deleteDoc, deleteField, increment, serverTimestamp } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
 
 type MainWorkspace = 'overview' | 'moderation' | 'community' | 'broadcast' | 'platform';
@@ -68,6 +69,8 @@ export default function AdminDashboardView({
   const [role, setRole] = useState<RoleLevel | null>(
     isDirectStaff ? 'owner' : contextRole && contextRole !== 'user' ? contextRole : null
   );
+  const [serverSession, setServerSession] = useState<ServerVerifiedSession | null>(null);
+  const [isServerVerifying, setIsServerVerifying] = useState<boolean>(true);
 
   // Navigation State: 5 Clean Workspaces instead of 11 cluttered tabs
   const [workspace, setWorkspace] = useState<MainWorkspace>('overview');
@@ -401,19 +404,31 @@ export default function AdminDashboardView({
         }
       } catch {}
 
-      const curRole = await moderationService.getCurrentUserRole(authUser);
-      setRole(curRole);
+      // Verify session & permissions server-side via Firebase Admin SDK
+      setIsServerVerifying(true);
+      const verifiedSession = await moderationService.verifyServerAdminSession();
+      setIsServerVerifying(false);
 
-      if (auth.currentUser?.uid) {
-        const myDoc = await getDoc(doc(db, 'globalRoles', auth.currentUser.uid)).catch(() => null);
-        if (myDoc && myDoc.exists()) {
-          const d = myDoc.data();
-          setModPerms({
-            canBan: d.canBan ?? false,
-            canNotify: d.canNotify ?? false,
-            canManageSettings: d.canManageSettings ?? false,
-            canViewRoles: d.canViewRoles ?? false
-          });
+      let curRole: RoleLevel = 'user';
+      if (verifiedSession) {
+        setServerSession(verifiedSession);
+        curRole = verifiedSession.role;
+        setRole(verifiedSession.role);
+        setModPerms(verifiedSession.permissions);
+      } else {
+        curRole = await moderationService.getCurrentUserRole(authUser);
+        setRole(curRole);
+        if (auth.currentUser?.uid) {
+          const myDoc = await getDoc(doc(db, 'globalRoles', auth.currentUser.uid)).catch(() => null);
+          if (myDoc && myDoc.exists()) {
+            const d = myDoc.data();
+            setModPerms({
+              canBan: d.canBan ?? false,
+              canNotify: d.canNotify ?? false,
+              canManageSettings: d.canManageSettings ?? false,
+              canViewRoles: d.canViewRoles ?? false
+            });
+          }
         }
       }
 
@@ -529,12 +544,13 @@ export default function AdminDashboardView({
     };
   }, [authUser, contextRole]);
 
-  // Poll Scraper Queue when viewing queue sub-tab
+  // Poll Scraper Queue when viewing queue sub-tab (authenticated via Firebase Admin SDK token)
   useEffect(() => {
     if (workspace !== 'platform' || platformSubTab !== 'queue') return;
     const fetchStatus = async () => {
       try {
-        const res = await fetch('/api/queue/status');
+        const headers = await getAdminAuthHeaders();
+        const res = await fetch('/api/queue/status', { headers });
         const data = await res.json();
         if (data.success) setQueueStatus(data);
       } catch {}
@@ -826,18 +842,24 @@ export default function AdminDashboardView({
 
   const handleDeleteSingleLiveItem = async (item: any) => {
     try {
+      await moderationService.authorizeServerModerationAction('delete_content', item.id, {
+        collectionName: item.collectionName,
+      });
       await deleteDoc(doc(db, item.collectionName, item.id));
       setSelectedContentIds(prev => prev.filter(k => k !== item.uniqueKey));
       writeAudit('report', item.authorName || item.id, `حذف مباشر لـ ${item.sourceLabel}: "${(item.text || '').slice(0, 40)}"`);
       notify('تم حذف المحتوى فوراً');
-    } catch {
-      notify('تعذر حذف المحتوى', 'error');
+    } catch (err: any) {
+      notify(err?.message || 'تعذر حذف المحتوى', 'error');
     }
   };
 
   const handleBulkDeleteSelectedContent = async () => {
     if (selectedContentIds.length === 0) return;
     try {
+      await moderationService.authorizeServerModerationAction('delete_content', 'bulk_delete', {
+        count: selectedContentIds.length,
+      });
       const toDelete = unifiedLiveContent.filter(i => selectedContentIds.includes(i.uniqueKey));
       await Promise.all(
         toDelete.map(item => deleteDoc(doc(db, item.collectionName, item.id)).catch(() => {}))
@@ -845,26 +867,30 @@ export default function AdminDashboardView({
       writeAudit('report', `${toDelete.length} عنصر محتوى`, `حذف جماعي لـ ${toDelete.length} منشور/تعليق محدد`);
       setSelectedContentIds([]);
       notify(`تم حذف ${toDelete.length} عنصر محدد بنجاح`);
-    } catch {
-      notify('حدث خطأ أثناء الحذف الجماعي', 'error');
+    } catch (err: any) {
+      notify(err?.message || 'حدث خطأ أثناء الحذف الجماعي', 'error');
     }
   };
 
   const handleToggleLiveCommentSpoiler = async (item: any) => {
     if (item.collectionName !== 'comments') return;
     try {
+      await moderationService.authorizeServerModerationAction('edit_comment', item.id, {
+        isSpoiler: !item.isSpoiler,
+      });
       await updateDoc(doc(db, 'comments', item.id), {
         isSpoiler: !item.isSpoiler
       });
       notify(!item.isSpoiler ? 'تم وضع علامة حرق (Spoiler) على التعليق' : 'تمت إزالة علامة الحرق');
-    } catch {
-      notify('تعذر تحديث حالة الحرق', 'error');
+    } catch (err: any) {
+      notify(err?.message || 'تعذر تحديث حالة الحرق', 'error');
     }
   };
 
   const handleSaveLiveCommentEdit = async (item: any) => {
     if (!editingLiveCommentText.trim() || item.collectionName !== 'comments') return;
     try {
+      await moderationService.authorizeServerModerationAction('edit_comment', item.id);
       await updateDoc(doc(db, 'comments', item.id), {
         text: editingLiveCommentText.trim()
       });
@@ -872,8 +898,8 @@ export default function AdminDashboardView({
       setEditingLiveCommentId(null);
       setEditingLiveCommentText('');
       notify('تم حفظ تعديل التعليق بنجاح');
-    } catch {
-      notify('تعذر تعديل التعليق', 'error');
+    } catch (err: any) {
+      notify(err?.message || 'تعذر تعديل التعليق', 'error');
     }
   };
 
@@ -885,8 +911,8 @@ export default function AdminDashboardView({
       await moderationService.restrictMember(authorId, { isMuted: nextMute });
       writeAudit('member_edit', authorName, nextMute ? 'كتم العضو من النشر والتعليق' : 'فك كتم العضو');
       notify(nextMute ? `تم كتم العضو (${authorName}) من التعليق والنشر` : `تم فك الكتم عن (${authorName})`);
-    } catch {
-      notify('تعذر تطبيق الكتم على العضو', 'error');
+    } catch (err: any) {
+      notify(err?.message || 'تعذر تطبيق الكتم على العضو', 'error');
     }
   };
 
@@ -942,13 +968,16 @@ export default function AdminDashboardView({
         resolution === 'deleted_content' ? `حذف محتوى مخالف (${report.reason})` : `تجاهل وإغلاق بلاغ (${report.reason})`
       );
       notify(resolution === 'deleted_content' ? 'تم حذف المحتوى المخالف وإغلاق البلاغ' : 'تم حفظ وتجاهل البلاغ');
-    } catch {
-      notify('تعذر معالجة البلاغ', 'error');
+    } catch (err: any) {
+      notify(err?.message || 'تعذر معالجة البلاغ', 'error');
     }
   };
 
   const handleApproveRec = async (rec: any) => {
     try {
+      await moderationService.authorizeServerModerationAction('manage_recommendations', rec.id, {
+        status: 'approved',
+      });
       const recRef = doc(db, 'recommendations', rec.id);
       await updateDoc(recRef, {
         status: 'approved',
@@ -971,8 +1000,8 @@ export default function AdminDashboardView({
       }
       writeAudit('recommendation', rec.targetAnimeTitle || 'توصية', `اعتماد توصية العضو ${getUserNameByUid(rec.userId)}`);
       notify('تم قبول ونشر التوصية');
-    } catch {
-      notify('فشل في قبول التوصية', 'error');
+    } catch (err: any) {
+      notify(err?.message || 'فشل في قبول التوصية', 'error');
     }
   };
 
@@ -982,6 +1011,9 @@ export default function AdminDashboardView({
       return;
     }
     try {
+      await moderationService.authorizeServerModerationAction('manage_recommendations', rec.id, {
+        status: 'rejected',
+      });
       await updateDoc(doc(db, 'recommendations', rec.id), {
         status: 'rejected',
         rejectionReason: reason.trim()
@@ -1005,8 +1037,8 @@ export default function AdminDashboardView({
       setRecIdBeingRejected(null);
       setRecRejectionReasonInput('');
       notify('تم رفض التوصية وإشعار العضو');
-    } catch {
-      notify('فشل في رفض التوصية', 'error');
+    } catch (err: any) {
+      notify(err?.message || 'فشل في رفض التوصية', 'error');
     }
   };
 
@@ -1023,28 +1055,30 @@ export default function AdminDashboardView({
       writeAudit('recommendation', rec?.targetAnimeTitle || recId, 'حذف نهائي للتوصية');
       setRecIdBeingDeleted(null);
       notify('تم حذف التوصية نهائياً');
-    } catch {
-      notify('فشل حذف التوصية', 'error');
+    } catch (err: any) {
+      notify(err?.message || 'فشل حذف التوصية', 'error');
     }
   };
 
   const handleDeleteSuggestion = async (id: string) => {
     try {
+      await moderationService.authorizeServerModerationAction('manage_suggestions', id);
       await deleteDoc(doc(db, 'suggestions', id));
       setSuggestionBeingDeleted(null);
       notify('تمت أرشفة وحذف الرسالة');
-    } catch {
-      notify('فشل حذف الرسالة', 'error');
+    } catch (err: any) {
+      notify(err?.message || 'فشل حذف الرسالة', 'error');
     }
   };
 
   const handleReplyToSuggestion = async (s: any) => {
     if (!suggestionReplyText.trim()) return;
     try {
+      await moderationService.authorizeServerModerationAction('manage_suggestions', s.id);
       await updateDoc(doc(db, 'suggestions', s.id), {
         adminReply: suggestionReplyText.trim(),
         repliedAt: serverTimestamp(),
-        repliedBy: user?.displayName || 'الإدارة',
+        repliedBy: authUser?.displayName || 'الإدارة',
         status: 'replied'
       });
       if (s.userId && s.userId !== 'guest_user') {
@@ -1059,19 +1093,22 @@ export default function AdminDashboardView({
       setReplyingSuggestion(null);
       setSuggestionReplyText('');
       notify('تم حفظ الرد على التذكرة وإرساله لإشعارات العضو');
-    } catch {
-      notify('تعذر إرسال الرد', 'error');
+    } catch (err: any) {
+      notify(err?.message || 'تعذر إرسال الرد', 'error');
     }
   };
 
   const handleUpdateSuggestionStatus = async (s: any, newStatus: 'pending' | 'in_progress' | 'replied' | 'resolved') => {
     try {
+      await moderationService.authorizeServerModerationAction('manage_suggestions', s.id, {
+        status: newStatus,
+      });
       await updateDoc(doc(db, 'suggestions', s.id), {
         status: newStatus
       });
       notify('تم تحديث حالة التذكرة');
-    } catch {
-      notify('تعذر تحديث حالة التذكرة', 'error');
+    } catch (err: any) {
+      notify(err?.message || 'تعذر تحديث حالة التذكرة', 'error');
     }
   };
 
@@ -1093,8 +1130,8 @@ export default function AdminDashboardView({
       );
       setEditingUser(null);
       notify('تم تحديث بيانات وصلاحيات العضو');
-    } catch {
-      notify('فشل تحديث بيانات العضو', 'error');
+    } catch (err: any) {
+      notify(err?.message || 'فشل تحديث بيانات العضو', 'error');
     } finally {
       setIsUpdatingUser(false);
     }
@@ -1113,8 +1150,8 @@ export default function AdminDashboardView({
       setSelectedSearchUser(null);
       setRoleSearchQuery('');
       notify('تم تحديث رتبة العضو بنجاح');
-    } catch {
-      notify('تعذر تعيين الرتبة', 'error');
+    } catch (err: any) {
+      notify(err?.message || 'تعذر تعيين الرتبة', 'error');
     }
   };
 
@@ -1124,14 +1161,19 @@ export default function AdminDashboardView({
       writeAudit('role', getUserNameByUid(uid), 'سحب الصلاحيات وإعادته لرتبة عضو');
       setConfirmDemoteUid(null);
       notify('تم سحب الصلاحيات وإعادة العضو إلى رتبة مستخدم');
-    } catch {
-      notify('فشل سحب الصلاحيات', 'error');
+    } catch (err: any) {
+      notify(err?.message || 'فشل سحب الصلاحيات', 'error');
     }
   };
 
   const handleSaveModCustomPermissions = async () => {
     if (!editingPermissionsMod) return;
     try {
+      await moderationService.authorizeServerModerationAction(
+        'manage_mod_permissions',
+        editingPermissionsMod.uid,
+        modCustomPerms
+      );
       await updateDoc(doc(db, 'globalRoles', editingPermissionsMod.uid), {
         canBan: modCustomPerms.canBan,
         canNotify: modCustomPerms.canNotify,
@@ -1141,8 +1183,8 @@ export default function AdminDashboardView({
       writeAudit('role', getUserNameByUid(editingPermissionsMod.uid), 'تحديث الصلاحيات الفرعية للمشرف');
       setEditingPermissionsMod(null);
       notify('تم حفظ صلاحيات المشرف');
-    } catch {
-      notify('فشل حفظ الصلاحيات', 'error');
+    } catch (err: any) {
+      notify(err?.message || 'فشل حفظ الصلاحيات', 'error');
     }
   };
 
@@ -1159,8 +1201,8 @@ export default function AdminDashboardView({
       writeAudit('ban', getUserNameByUid(resolvedUid), `حظر الحساب — السبب: ${reason}`);
       setUserIdInput('');
       notify('تم حظر الحساب وإضافته لقائمة المبعدين');
-    } catch {
-      notify('تعذر حظر الحساب', 'error');
+    } catch (err: any) {
+      notify(err?.message || 'تعذر حظر الحساب', 'error');
     }
   };
 
@@ -1169,8 +1211,8 @@ export default function AdminDashboardView({
       await moderationService.unbanUser(uid);
       writeAudit('ban', getUserNameByUid(uid), 'رفع الحظر عن الحساب');
       notify('تم رفع الحظر عن الحساب');
-    } catch {
-      notify('تعذر رفع الحظر', 'error');
+    } catch (err: any) {
+      notify(err?.message || 'تعذر رفع الحظر', 'error');
     }
   };
 
@@ -1278,6 +1320,10 @@ export default function AdminDashboardView({
     if (!notifTitle.trim() || !notifBody.trim()) return;
     try {
       setIsSendingNotif(true);
+      await moderationService.authorizeServerModerationAction(
+        'send_broadcast',
+        notifTargetChoice === 'all' ? 'all' : notifTargetUid
+      );
       let finalLink = '';
       if (interactiveLinkChoice === 'rewards') finalLink = 'rewards';
       else if (interactiveLinkChoice === 'games') finalLink = 'games';
@@ -1328,8 +1374,8 @@ export default function AdminDashboardView({
       setAnimeSuggestions([]);
       setInteractiveLinkChoice('none');
       notify('تم بث وإرسال الإشعار بنجاح');
-    } catch {
-      notify('حدث خطأ أثناء إرسال الإشعار', 'error');
+    } catch (err: any) {
+      notify(err?.message || 'حدث خطأ أثناء إرسال الإشعار', 'error');
     } finally {
       setIsSendingNotif(false);
     }
@@ -1376,10 +1422,77 @@ export default function AdminDashboardView({
 
       writeAudit('settings', 'إعدادات المنصة والسلايدر', `حفظ إعدادات السلايدر (${sliderMode}) والروابط`);
       notify('تم حفظ ومزامنة إعدادات المنصة بنجاح');
-    } catch {
-      notify('فشل حفظ الإعدادات', 'error');
+    } catch (err: any) {
+      notify(err?.message || 'فشل حفظ الإعدادات', 'error');
     } finally {
       setIsSavingSettings(false);
+    }
+  };
+
+  const [cacheStats, setCacheStats] = useState<any>(null);
+  const [isUpdatingCacheMode, setIsUpdatingCacheMode] = useState(false);
+
+  const loadCacheEngineStats = async () => {
+    try {
+      const headers = await getAdminAuthHeaders();
+      const res = await fetch('/api/cache/stats', { headers });
+      const data = await res.json();
+      if (data.success && data.data) {
+        setCacheStats(data.data.stats);
+      }
+    } catch {}
+  };
+
+  useEffect(() => {
+    if (workspace === 'platform' && platformSubTab === 'maintenance') {
+      loadCacheEngineStats();
+      const t = setInterval(loadCacheEngineStats, 4000);
+      return () => clearInterval(t);
+    }
+  }, [workspace, platformSubTab]);
+
+  const handleToggleServerCacheMode = async (newMode: '10k_smart_ram' | 'zero_live') => {
+    try {
+      setIsUpdatingCacheMode(true);
+      const headers = await getAdminAuthHeaders();
+      const res = await fetch('/api/cache/mode', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ mode: newMode })
+      });
+      const data = await res.json();
+      if (data.success && data.data?.stats) {
+        setCacheStats(data.data.stats);
+        notify(
+          newMode === '10k_smart_ram'
+            ? 'تم تفعيل محرك 10,000+ مستخدم (دمج الطلبات المتزامنة + ذاكرة RAM اللحظية بدون ملفات)'
+            : 'تم التحويل إلى وضع الاتصال المباشر الحي 100% (Zero-Cache Live)'
+        );
+      } else {
+        notify(data?.message || 'تعذر تغيير وضع محرك التخزين اللحظي', 'error');
+      }
+    } catch (err: any) {
+      notify(err?.message || 'تعذر تغيير وضع محرك التخزين اللحظي', 'error');
+    } finally {
+      setIsUpdatingCacheMode(false);
+    }
+  };
+
+  const handlePurgeRamCacheNow = async () => {
+    try {
+      setIsUpdatingCacheMode(true);
+      const headers = await getAdminAuthHeaders();
+      const res = await fetch('/api/cache/clear', { method: 'POST', headers });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        throw new Error(data?.message || 'رفض الخادم تفريغ الذاكرة');
+      }
+      await loadCacheEngineStats();
+      notify('تم تفريغ ذاكرة RAM اللحظية بالكامل بنجاح');
+    } catch (err: any) {
+      notify(err?.message || 'تعذر تفريغ ذاكرة RAM اللحظية', 'error');
+    } finally {
+      setIsUpdatingCacheMode(false);
     }
   };
 
@@ -1398,23 +1511,24 @@ export default function AdminDashboardView({
           }
         }
       }
+      const headers = await getAdminAuthHeaders();
       const res = await fetch('/api/queue/add', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ name: queueTaskName, data: parsedData, maxRetries: 2 })
       });
       const data = await res.json();
       if (data.success) {
         notify(`تمت جدولة المهمة (${data.jobId})`);
         setQueueTaskData('');
-        const stRes = await fetch('/api/queue/status');
+        const stRes = await fetch('/api/queue/status', { headers });
         const stData = await stRes.json();
         if (stData.success) setQueueStatus(stData);
       } else {
         notify(data.message || 'تعذر جدولة المهمة', 'error');
       }
-    } catch {
-      notify('فشل الاتصال بمحرك المهام', 'error');
+    } catch (err: any) {
+      notify(err?.message || 'فشل الاتصال بمحرك المهام', 'error');
     } finally {
       setIsSubmittingQueueTask(false);
     }
@@ -1422,16 +1536,19 @@ export default function AdminDashboardView({
 
   const handleClearQueueLogs = async () => {
     try {
-      const res = await fetch('/api/queue/clear', { method: 'POST' });
+      const headers = await getAdminAuthHeaders();
+      const res = await fetch('/api/queue/clear', { method: 'POST', headers });
       const data = await res.json();
       if (data.success) {
         notify('تم تصفية سجل المهام');
         setQueueStatus((prev: any) =>
           prev ? { ...prev, jobs: [], stats: { pending: 0, active: 0, completed: 0, failed: 0, total: 0 } } : null
         );
+      } else {
+        notify(data?.message || 'فشل تصفية السجل', 'error');
       }
-    } catch {
-      notify('فشل تصفية السجل', 'error');
+    } catch (err: any) {
+      notify(err?.message || 'فشل تصفية السجل', 'error');
     }
   };
 
@@ -1440,8 +1557,10 @@ export default function AdminDashboardView({
   const handlePurgeAllSystemCaches = async () => {
     try {
       setIsPurgingAllCaches(true);
+      await moderationService.authorizeServerModerationAction('manage_cache_queue');
+      const headers = await getAdminAuthHeaders();
       // 1. Purge Server Multi-Tier Cache (node-cache + .cache/*.json + Redis)
-      await fetch('/api/cache/clear', { method: 'POST' }).catch(() => {});
+      await fetch('/api/cache/clear', { method: 'POST', headers }).catch(() => {});
 
       // 2. Purge Client Memory + LocalStorage Caches
       const { clientCache } = await import('../utils/clientCache');
@@ -1465,8 +1584,8 @@ export default function AdminDashboardView({
 
       writeAudit('settings', 'تخزين المنصة (Cache)', 'تفريغ شامل لجميع طبقات التخزين المؤقت في الخادم والمتصفح');
       notify('تم تفريغ جميع البيانات القديمة والتخزين المؤقت من الخادم والمتصفح بنجاح!');
-    } catch {
-      notify('حدث خطأ أثناء تفريغ التخزين المؤقت', 'error');
+    } catch (err: any) {
+      notify(err?.message || 'حدث خطأ أثناء تفريغ التخزين المؤقت', 'error');
     } finally {
       setIsPurgingAllCaches(false);
     }
@@ -1478,8 +1597,8 @@ export default function AdminDashboardView({
       await moderationService.resetAllAccounts();
       setConfirmResetModal(false);
       notify('تم تصفير وإعادة تهيئة حسابات المنصة بالكامل');
-    } catch {
-      notify('فشلت عملية تصفير الحسابات', 'error');
+    } catch (err: any) {
+      notify(err?.message || 'فشلت عملية تصفير الحسابات', 'error');
     } finally {
       setIsResettingAll(false);
     }
@@ -1488,11 +1607,12 @@ export default function AdminDashboardView({
   const handleFactoryWipeForLaunch = async () => {
     try {
       setIsFactoryWiping(true);
-      // 1. Wipe all Firestore collections, accounts, subcollections, and cloud caches
+      // 1. Wipe all Firestore collections, accounts, subcollections, and cloud caches (validates server-side Owner role first)
       const resStats = await moderationService.factoryWipeForLaunch();
 
-      // 2. Wipe Server Multi-Tier Cache (.cache/*.json, node-cache, Redis, ScraperQueue)
-      await fetch('/api/system/factory-reset', { method: 'POST' }).catch(() => {});
+      // 2. Wipe Server Multi-Tier Cache (.cache/*.json, node-cache, Redis, ScraperQueue) with Admin SDK token
+      const headers = await getAdminAuthHeaders();
+      await fetch('/api/system/factory-reset', { method: 'POST', headers }).catch(() => {});
 
       // 3. Wipe Client Memory, LocalStorage, SessionStorage, and Service Worker Caches
       const { clientCache } = await import('../utils/clientCache');
@@ -1511,8 +1631,8 @@ export default function AdminDashboardView({
       notify(
         `تم تنظيف الخوادم وحذف ${resStats.deletedUsers} حساب و ${resStats.deletedDocs} سجل وجميع النسخ والكاشات بنجاح — التطبيق جاهز للإطلاق!`
       );
-    } catch {
-      notify('حدث خطأ أثناء التنظيف الشامل للإطلاق', 'error');
+    } catch (err: any) {
+      notify(err?.message || 'حدث خطأ أثناء التنظيف الشامل للإطلاق', 'error');
     } finally {
       setIsFactoryWiping(false);
     }
@@ -1638,8 +1758,14 @@ export default function AdminDashboardView({
               </button>
             )}
             <div className="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-zinc-900 border border-zinc-800 text-[11px] text-zinc-400 font-semibold">
-              <span className="w-2 h-2 rounded-full bg-emerald-500" />
-              <span>متصل لحظياً</span>
+              <ShieldCheck size={13} className={serverSession ? 'text-emerald-400' : 'text-amber-400'} />
+              <span>
+                {isServerVerifying
+                  ? 'جاري التحقق عبر الخادم...'
+                  : serverSession
+                    ? 'محمي عبر Firebase Admin SDK'
+                    : 'متصل لحظياً'}
+              </span>
             </div>
           </div>
         </div>
@@ -2409,7 +2535,7 @@ export default function AdminDashboardView({
                   }
                   return (
                     <div className="space-y-3">
-                      {filtered.map(report => {
+                      {filtered.map((report, rIdx) => {
                         // Dynamic fallback lookup if report was created before metadata enrichment
                         const liveCommentMatch =
                           report.contentType === 'comment'
@@ -2436,7 +2562,7 @@ export default function AdminDashboardView({
 
                         return (
                           <div
-                            key={report.id}
+                            key={`report-${report.id || rIdx}-${rIdx}`}
                             className="bg-zinc-950/60 border border-zinc-800/80 rounded-xl p-4 space-y-3"
                           >
                             <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
@@ -2618,7 +2744,7 @@ export default function AdminDashboardView({
 
                   return (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {list.map(rec => {
+                      {list.map((rec, rIdx) => {
                         const userName = getUserNameByUid(rec.userId);
                         const currentStatus = rec.status || 'approved';
                         const srcTitle =
@@ -2634,7 +2760,7 @@ export default function AdminDashboardView({
 
                         return (
                           <div
-                            key={rec.id}
+                            key={`rec-${rec.id || rIdx}-${rIdx}`}
                             className="bg-zinc-950/80 border border-zinc-800/90 rounded-2xl p-4 flex flex-col justify-between gap-3.5 shadow-lg"
                           >
                             {/* Header: Status Badge & Natural Arabic Summary */}
@@ -2873,9 +2999,9 @@ export default function AdminDashboardView({
                   <div className="space-y-3">
                     {suggestionsList
                       .filter(s => (suggestionsFilter === 'all' ? true : s.type === suggestionsFilter))
-                      .map((s: any) => (
+                      .map((s: any, sIdx: number) => (
                         <div
-                          key={s.id}
+                          key={`sug-${s.id || sIdx}-${sIdx}`}
                           className="bg-zinc-950/60 border border-zinc-800/80 rounded-xl p-4 space-y-3"
                         >
                           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -3077,7 +3203,7 @@ export default function AdminDashboardView({
                     <div className="space-y-2.5 max-h-[520px] overflow-y-auto pr-1">
                       {filtered.map((log, idx) => (
                         <div
-                          key={log.id || idx}
+                          key={`audit-${log.id || idx}-${idx}`}
                           className="bg-zinc-950/60 border border-zinc-800/80 rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
                         >
                           <div className="space-y-1">
@@ -3376,12 +3502,12 @@ export default function AdminDashboardView({
                       );
                     }
 
-                    return filtered.slice(0, 60).map(u => {
+                    return filtered.slice(0, 60).map((u, uIdx) => {
                       const memberRoleObj = usersInfo.find(r => r.uid === u.uid || r.id === u.uid);
                       const memberRole = isStaffEmail(u.email) ? 'owner' : memberRoleObj?.role || u.role || 'user';
                       return (
                         <div
-                          key={u.uid}
+                          key={`member-${u.uid || u.id || uIdx}-${uIdx}`}
                           className="bg-zinc-950/60 border border-zinc-800/70 hover:border-zinc-700/80 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition"
                         >
                           <div className="flex items-center gap-3 min-w-0">
@@ -3511,10 +3637,10 @@ export default function AdminDashboardView({
 
                     {!selectedSearchUser && (
                       <div className="bg-zinc-950 border border-zinc-800/80 rounded-xl divide-y divide-zinc-900 max-h-44 overflow-y-auto">
-                        {suggestedRoleUsers.map(u => (
+                        {suggestedRoleUsers.map((u, sIdx) => (
                           <button
                             type="button"
-                            key={u.uid}
+                            key={`role-sug-${u.uid || u.id || sIdx}-${sIdx}`}
                             onClick={() => {
                               setSelectedSearchUser(u);
                               setUserIdInput(u.username || u.uid);
@@ -3578,11 +3704,11 @@ export default function AdminDashboardView({
                   </div>
 
                   <div className="space-y-2.5 max-h-[360px] overflow-y-auto pr-1">
-                    {usersInfo.map(u => {
+                    {usersInfo.map((u, stIdx) => {
                       const profile = allUsers.find(m => m.uid === u.uid) || { displayName: 'مشرف', username: u.uid };
                       return (
                         <div
-                          key={u.uid}
+                          key={`staff-${u.uid || u.id || stIdx}-${stIdx}`}
                           className="bg-zinc-950/60 border border-zinc-800/80 rounded-xl p-3 space-y-2.5"
                         >
                           <div className="flex items-center justify-between gap-2">
@@ -3751,9 +3877,9 @@ export default function AdminDashboardView({
                       لا توجد حسابات محظورة حالياً
                     </div>
                   ) : (
-                    bannedUsers.map(b => (
+                    bannedUsers.map((b, bIdx) => (
                       <div
-                        key={b.uid}
+                        key={`ban-${b.uid || bIdx}-${bIdx}`}
                         className="bg-zinc-950/60 border border-zinc-800/80 rounded-xl p-3 flex items-center justify-between gap-3"
                       >
                         <div>
@@ -3850,11 +3976,11 @@ export default function AdminDashboardView({
                         لا توجد أكواد هدايا مضافة حالياً
                       </div>
                     ) : (
-                      promoCodesList.map(promo => {
+                      promoCodesList.map((promo, pIdx) => {
                         const isExhausted = (promo.usedCount || 0) >= (promo.maxUses || 1);
                         return (
                           <div
-                            key={promo.id}
+                            key={`promo-${promo.id || pIdx}-${pIdx}`}
                             className="bg-zinc-950/70 border border-zinc-800/80 rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
                           >
                             <div className="flex items-center gap-3">
@@ -4119,7 +4245,7 @@ export default function AdminDashboardView({
                             animeSuggestions.map((a, idx) => (
                               <button
                                 type="button"
-                                key={`${a._id || idx}`}
+                                key={`notif-sug-${a._id || idx}-${idx}`}
                                 onClick={() => {
                                   setSelectedNotifAnime(a);
                                   setAnimeSearchQuery(a.title);
@@ -4384,8 +4510,8 @@ export default function AdminDashboardView({
                         {isSearchingSliderAnime ? (
                           <div className="py-4 text-center text-xs text-zinc-400">جاري البحث...</div>
                         ) : sliderSearchResults.length > 0 ? (
-                          sliderSearchResults.map((animeItem: any) => {
-                            const animeIdStr = String(animeItem._id || animeItem.mal_id || animeItem.id);
+                          sliderSearchResults.map((animeItem: any, sIdx: number) => {
+                            const animeIdStr = String(animeItem._id || animeItem.mal_id || animeItem.id || sIdx);
                             const alreadyAdded = customSliderAnime.some(a => String(a._id) === animeIdStr);
                             const poster =
                               animeItem.posterUrl ||
@@ -4396,7 +4522,7 @@ export default function AdminDashboardView({
                             return (
                               <button
                                 type="button"
-                                key={animeIdStr}
+                                key={`slider-res-${animeIdStr}-${sIdx}`}
                                 onClick={() => {
                                   if (alreadyAdded) return;
                                   if (customSliderAnime.length >= 10) {
@@ -4540,8 +4666,8 @@ export default function AdminDashboardView({
                       {isSearchingCurationAnime ? (
                         <div className="py-4 text-center text-xs text-zinc-400">جاري البحث...</div>
                       ) : curationSearchResults.length > 0 ? (
-                        curationSearchResults.map((animeItem: any) => {
-                          const animeIdStr = String(animeItem._id || animeItem.mal_id || animeItem.id);
+                        curationSearchResults.map((animeItem: any, cIdx: number) => {
+                          const animeIdStr = String(animeItem._id || animeItem.mal_id || animeItem.id || cIdx);
                           const poster =
                             animeItem.posterUrl ||
                             animeItem.images?.jpg?.large_image_url ||
@@ -4553,7 +4679,7 @@ export default function AdminDashboardView({
 
                           return (
                             <div
-                              key={animeIdStr}
+                              key={`curation-res-${animeIdStr}-${cIdx}`}
                               className="p-2.5 hover:bg-zinc-800/60 flex items-center justify-between gap-2 text-xs transition"
                             >
                               <div className="flex items-center gap-2.5 min-w-0">
@@ -5246,6 +5372,96 @@ export default function AdminDashboardView({
             {/* SUB-TAB 5.4: DATABASE MAINTENANCE */}
             {platformSubTab === 'maintenance' && (
               <div className="space-y-4">
+                {/* 0. 10,000+ Users High-Concurrency Smart RAM Micro-Cache + Request Coalescing Engine */}
+                <div className="bg-[#121215] border border-emerald-500/35 rounded-2xl p-5 space-y-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h2 className="text-sm font-black text-emerald-400 flex items-center gap-2">
+                          <Zap size={16} />
+                          <span>محرك 10,000+ مستخدم (Request Coalescing + RAM Micro-Cache)</span>
+                        </h2>
+                        <span
+                          className={`text-[10px] font-black px-2.5 py-0.5 rounded-md border ${
+                            cacheStats?.mode !== 'zero_live'
+                              ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                              : 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30'
+                          }`}
+                        >
+                          {cacheStats?.mode !== 'zero_live' ? 'وضع 10K الذكي نشط' : 'وضع المباشر الصافي 0% تخزين'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-zinc-400 mt-1.5 leading-relaxed">
+                        يدمج آلاف الطلبات المتزامنة في طلب واحد فقط (Single-Flight Request Coalescing) ويحفظ النتيجة في ذاكرة الخادم العشوائية (RAM) لمدة 90 ثانية إلى 5 دقائق فقط، مع <span className="text-white font-bold">صفر ملفات على القرص</span> و<span className="text-white font-bold">صفر تخزين محلي</span> على هواتف المستخدمين لمنع ظهور أي بيانات قديمة نهائياً.
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        onClick={() => handleToggleServerCacheMode('10k_smart_ram')}
+                        disabled={isUpdatingCacheMode || cacheStats?.mode !== 'zero_live'}
+                        className={`px-3.5 py-2 rounded-xl text-xs font-black transition cursor-pointer ${
+                          cacheStats?.mode !== 'zero_live'
+                            ? 'bg-emerald-500 text-black'
+                            : 'bg-zinc-900 text-zinc-300 hover:text-white border border-zinc-800'
+                        }`}
+                      >
+                        وضع 10,000+ مستخدم (RAM + دمج الطلبات)
+                      </button>
+                      <button
+                        onClick={() => handleToggleServerCacheMode('zero_live')}
+                        disabled={isUpdatingCacheMode || cacheStats?.mode === 'zero_live'}
+                        className={`px-3.5 py-2 rounded-xl text-xs font-black transition cursor-pointer ${
+                          cacheStats?.mode === 'zero_live'
+                            ? 'bg-cyan-500 text-black'
+                            : 'bg-zinc-900 text-zinc-300 hover:text-white border border-zinc-800'
+                        }`}
+                      >
+                        مباشر حي 100% (دمج الطلبات اللحظي فقط)
+                      </button>
+                      <button
+                        onClick={handlePurgeRamCacheNow}
+                        disabled={isUpdatingCacheMode}
+                        className="px-3.5 py-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/35 text-rose-300 text-xs font-bold cursor-pointer transition"
+                      >
+                        تفريغ ذاكرة RAM الآن
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 pt-1">
+                    <div className="bg-zinc-950 border border-zinc-800/80 rounded-xl p-3">
+                      <div className="text-[10px] text-zinc-400">مفاتيح RAM النشطة</div>
+                      <div className="text-base font-black text-white mt-0.5">
+                        {cacheStats?.keys ?? 0} <span className="text-[10px] text-zinc-500 font-normal">/ {cacheStats?.maxKeys ?? 300}</span>
+                      </div>
+                    </div>
+                    <div className="bg-zinc-950 border border-zinc-800/80 rounded-xl p-3">
+                      <div className="text-[10px] text-zinc-400">الطلبات المدمجة لحظياً</div>
+                      <div className="text-base font-black text-emerald-400 mt-0.5">
+                        {cacheStats?.coalescedSaves ?? 0}
+                      </div>
+                    </div>
+                    <div className="bg-zinc-950 border border-zinc-800/80 rounded-xl p-3">
+                      <div className="text-[10px] text-zinc-400">استجابات RAM الفورية (Hits)</div>
+                      <div className="text-base font-black text-cyan-400 mt-0.5">
+                        {cacheStats?.hits ?? 0}
+                      </div>
+                    </div>
+                    <div className="bg-zinc-950 border border-zinc-800/80 rounded-xl p-3">
+                      <div className="text-[10px] text-zinc-400">طلبات نشطة قيد الجلب</div>
+                      <div className="text-base font-black text-amber-400 mt-0.5">
+                        {cacheStats?.inFlightRequests ?? 0}
+                      </div>
+                    </div>
+                    <div className="bg-zinc-950 border border-zinc-800/80 rounded-xl p-3">
+                      <div className="text-[10px] text-zinc-400">ملفات القرص (Disk Cache)</div>
+                      <div className="text-base font-black text-emerald-400 mt-0.5">
+                        0 (ملغى نهائياً)
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 {/* 1. Reset Season XP & Coins */}
                 <div className="bg-[#121215] border border-amber-500/30 rounded-2xl p-5 space-y-4">
                   <div>

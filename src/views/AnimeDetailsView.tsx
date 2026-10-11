@@ -439,12 +439,77 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
   const [showCelebration, setShowCelebration] = useState(false);
   const [celebrationDetails, setCelebrationDetails] = useState<{coins: number, xp: number} | null>(null);
 
+  const normalizeEpisodeNum = (numVal: any, fallbackIdx: number = 1, titleStr: string = ''): number => {
+    if (typeof numVal === 'number' && !isNaN(numVal) && numVal > 0) return numVal;
+    const direct = Number(numVal);
+    if (!isNaN(direct) && direct > 0) return direct;
+    const match = String(numVal || titleStr || '').match(/\d+/);
+    if (match) {
+      const parsed = parseInt(match[0], 10);
+      if (!isNaN(parsed) && parsed > 0) return parsed;
+    }
+    return fallbackIdx;
+  };
+
+  const isEpisodeWatched = (epNum: number): boolean => {
+    if (userEntry?.status === 'completed') return true;
+    const watched = userEntry?.watchedEpisodes || [];
+    return watched.some((w: any) => Number(w) === Number(epNum));
+  };
+
+  const isAnimeOngoingOrUpcoming = React.useMemo(() => {
+    if (!anime) return false;
+    const st = String(anime.status || '').toLowerCase().trim();
+    if (
+      st.includes('now') ||
+      st.includes('airing') ||
+      st.includes('releasing') ||
+      st.includes('ongoing') ||
+      st.includes('مستمر') ||
+      st.includes('يعرض') ||
+      st.includes('not yet') ||
+      st.includes('upcoming') ||
+      st.includes('قادم')
+    ) {
+      return true;
+    }
+    return false;
+  }, [anime]);
+
+  const currentSeasonNumber = React.useMemo(() => {
+    if (!anime) return 1;
+    const titleStr = `${anime.englishTitle || ''} ${anime.title || ''}`;
+    const m =
+      titleStr.match(/(?:season|s|cour)\s*(\d+)/i) ||
+      titleStr.match(/(\d+)(?:nd|rd|th)\s*season/i) ||
+      titleStr.match(/(?:الموسم|موسم)\s*(\d+)/i);
+    if (m && m[1]) return parseInt(m[1], 10);
+    if (/second season|الموسم الثاني/i.test(titleStr)) return 2;
+    if (/third season|الموسم الثالث/i.test(titleStr)) return 3;
+    if (/fourth season|الموسم الرابع|final season/i.test(titleStr)) return 4;
+    return Number(selectedSeasonNum || anime.activeSeason || 1);
+  }, [anime, selectedSeasonNum]);
+
   const fetchQuiz = async () => {
     setQuizLoading(true);
     setQuizError('');
     setQuizData(null);
     try {
-       const res = await fetch(`/api/ai/anti-cheat?title=${encodeURIComponent(anime?.title || '')}`);
+       const qs = new URLSearchParams();
+       qs.set('title', String(anime?.title || ''));
+       if (anime?.englishTitle) qs.set('englishTitle', String(anime.englishTitle));
+       qs.set('season', String(currentSeasonNumber));
+       if (anime?.episodesCount || anime?.episodes?.length) {
+         qs.set('episodesCount', String(anime.episodesCount || anime.episodes?.length || 12));
+       }
+       if (anime?.description) {
+         qs.set('synopsis', String(anime.description).slice(0, 600));
+       }
+       if (Array.isArray(anime?.characters) && anime.characters.length > 0) {
+         const charNames = anime.characters.slice(0, 8).map((c: any) => c.name).filter(Boolean).join(', ');
+         if (charNames) qs.set('characters', charNames);
+       }
+       const res = await fetch(`/api/ai/anti-cheat?${qs.toString()}`);
        const json = await res.json();
        if (json.success) {
           setQuizData(json.data);
@@ -452,7 +517,7 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
           setQuizError(json.message || 'فشل تحميل الاختبار');
        }
     } catch (e) {
-       setQuizError('خطأ في الاتصال بالذكاء الاصطناعي');
+       setQuizError('خطأ في الاتصال بنظام التحقق الذكي');
     } finally {
        setQuizLoading(false);
     }
@@ -462,11 +527,21 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
     if (!user || !anime) return;
     
     const animeTotalEpisodes = anime.episodesCount || anime.episodes?.length || 0;
-    const targetStatus = updateData.status !== undefined ? updateData.status : (userEntry?.status || 'none');
-    const targetWatched = updateData.watchedEpisodes !== undefined ? updateData.watchedEpisodes : (userEntry?.watchedEpisodes || []);
+    let targetStatus = updateData.status !== undefined ? updateData.status : (userEntry?.status || 'none');
+    if (targetStatus === 'completed' && isAnimeOngoingOrUpcoming) {
+      targetStatus = 'watching';
+    }
+    const rawWatched = updateData.watchedEpisodes !== undefined ? updateData.watchedEpisodes : (userEntry?.watchedEpisodes || []);
+    const targetWatched = Array.from(new Set(rawWatched.map((n: any) => Number(n)).filter((n: number) => !isNaN(n) && n > 0))).sort((a, b) => a - b);
+    const allEpisodeNums = activeSeasonEpisodes.length > 0
+      ? activeSeasonEpisodes.map((ep: any, i: number) => normalizeEpisodeNum(ep.num, i + 1, ep.title))
+      : Array.from({ length: animeTotalEpisodes }, (_, i) => i + 1);
+    const finalWatched = targetStatus === 'completed' && allEpisodeNums.length > 0
+      ? Array.from(new Set([...targetWatched, ...allEpisodeNums])).sort((a, b) => a - b)
+      : targetWatched;
     const progressToSave = targetStatus === 'completed' && animeTotalEpisodes > 0 
       ? animeTotalEpisodes 
-      : targetWatched.length;
+      : finalWatched.length;
 
     const previousEntry = userEntry;
     
@@ -479,7 +554,7 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
       status: targetStatus,
       customLists: userEntry?.customLists || {},
       score: userEntry?.score,
-      watchedEpisodes: targetWatched,
+      watchedEpisodes: finalWatched,
       episodesCount: animeTotalEpisodes,
       progress: progressToSave,
       addedAt: userEntry?.addedAt || new Date().toISOString(),
@@ -496,7 +571,7 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
         status: targetStatus,
         customLists: userEntry?.customLists || {},
         score: userEntry?.score,
-        watchedEpisodes: targetWatched,
+        watchedEpisodes: finalWatched,
         episodesCount: animeTotalEpisodes,
         progress: progressToSave,
         extraXp: updateData.extraXp,
@@ -512,10 +587,15 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
   const handleUpdateStatus = async (status: MainListStatus) => {
     if (!user || !anime) return;
     
+    if (status === 'completed' && isAnimeOngoingOrUpcoming) {
+      return;
+    }
+
     const updatedStatus = userEntry?.status === status ? 'none' : status;
     
     if (updatedStatus === 'completed') {
        // Anti-cheat quiz
+       setShowListModal(false);
        setPendingUpdate({ status: 'completed' });
        setShowQuizModal(true);
        fetchQuiz();
@@ -558,21 +638,87 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
     }
   };
 
-  const handleToggleWatchedEpisode = async (epMalId: number, e?: React.MouseEvent) => {
+  const handleEnterEpisode = (ep: any, fallbackIdx: number) => {
+    const epNum = normalizeEpisodeNum(ep.num, fallbackIdx, ep.title);
+    if (user && anime) {
+      const currentWatched = (userEntry?.watchedEpisodes || []).map((n: any) => Number(n)).filter((n: number) => !isNaN(n) && n > 0);
+      if (!currentWatched.includes(epNum)) {
+        const newWatched = [...currentWatched, epNum].sort((a, b) => a - b);
+        const currentStatus = userEntry?.status && userEntry.status !== 'none' ? userEntry.status : 'watching';
+        const animeTotalEpisodes = anime.episodesCount || anime.episodes?.length || 0;
+
+        setUserEntry(prev => ({
+          id: anime._id,
+          title: anime.title,
+          posterUrl: anime.posterUrl,
+          releaseYear: anime.releaseYear || '',
+          status: currentStatus,
+          customLists: prev?.customLists || {},
+          score: prev?.score,
+          isFavorite: prev?.isFavorite,
+          watchedEpisodes: newWatched,
+          episodesCount: animeTotalEpisodes,
+          progress: newWatched.length,
+          addedAt: prev?.addedAt || new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        }));
+
+        listService.saveAnimeEntry(user.id, anime._id, {
+          title: anime.title,
+          posterUrl: anime.posterUrl,
+          releaseYear: anime.releaseYear || '',
+          status: currentStatus,
+          customLists: userEntry?.customLists || {},
+          score: userEntry?.score,
+          watchedEpisodes: newWatched,
+          episodesCount: animeTotalEpisodes,
+          progress: newWatched.length
+        }).catch(console.error);
+      }
+    }
+    onWatch({ ...ep, num: epNum }, { ...anime, episodes: activeSeasonEpisodes });
+  };
+
+  const handleToggleWatchedEpisode = async (rawEpNum: number | string, e?: React.MouseEvent) => {
     e?.stopPropagation();
     if (!user || !anime) return signIn();
     try {
-      const currentWatched = userEntry?.watchedEpisodes || [];
+      const epMalId = normalizeEpisodeNum(rawEpNum, 1);
+      const currentWatched = (userEntry?.watchedEpisodes || []).map((n: any) => Number(n)).filter((n: number) => !isNaN(n) && n > 0);
       const isWatched = currentWatched.includes(epMalId);
-      const newWatched = isWatched ? currentWatched.filter(id => id !== epMalId) : [...currentWatched, epMalId];
+      const newWatched = isWatched ? currentWatched.filter(id => id !== epMalId) : [...currentWatched, epMalId].sort((a, b) => a - b);
       
-      const newStatus = (anime.episodesCount && newWatched.length >= anime.episodesCount && userEntry?.status !== 'completed') ? 'completed' : (userEntry?.status || 'none');
+      const totalEps = anime.episodesCount || activeSeasonEpisodes.length || 0;
+      const canAutoComplete = !isAnimeOngoingOrUpcoming && totalEps > 0 && newWatched.length >= totalEps && userEntry?.status !== 'completed';
+      const newStatus = canAutoComplete
+        ? 'completed'
+        : (userEntry?.status && userEntry.status !== 'none' ? userEntry.status : (newWatched.length > 0 ? 'watching' : 'none'));
       
-      const previousEntry = userEntry;
-      
+      if (newStatus === 'completed' && userEntry?.status !== 'completed') {
+         // Anti-cheat quiz applies if they finish watching all episodes of a completed season
+         setPendingUpdate({ status: 'completed', watchedEpisodes: newWatched });
+         setShowQuizModal(true);
+         fetchQuiz();
+         return;
+      }
+
       // Optimistic Update!
       setUserEntry(prev => {
-        if (!prev) return null;
+        if (!prev) {
+          return {
+            id: anime._id,
+            title: anime.title,
+            posterUrl: anime.posterUrl,
+            releaseYear: anime.releaseYear || '',
+            status: newStatus,
+            customLists: {},
+            watchedEpisodes: newWatched,
+            episodesCount: totalEps,
+            progress: newWatched.length,
+            addedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          };
+        }
         return {
           ...prev,
           watchedEpisodes: newWatched,
@@ -580,14 +726,6 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
           progress: newWatched.length
         };
       });
-
-      if (newStatus === 'completed' && userEntry?.status !== 'completed') {
-         // Anti-cheat quiz applies if they try to finish it by watching the last episode
-         setPendingUpdate({ status: 'completed', watchedEpisodes: newWatched });
-         setShowQuizModal(true);
-         fetchQuiz();
-         return;
-      }
       
       await executeStatusUpdate({ status: newStatus, watchedEpisodes: newWatched });
     } catch (err) {
@@ -1353,22 +1491,29 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
                  list.reverse();
                }
                return list;
-             })().map((ep: any, idx: number) => {
-               const epIdx = ep.num || (idx + 1);
-               const isWatched = userEntry?.status === 'completed' || userEntry?.watchedEpisodes?.includes(epIdx) || false;
+               })().map((ep: any, idx: number) => {
+               const epIdx = normalizeEpisodeNum(ep.num, idx + 1, ep.title);
+               const isWatched = isEpisodeWatched(epIdx);
                return (
                <motion.div 
                  key={`${ep.id}-${idx}`}
-                 onClick={() => onWatch(ep, { ...anime, episodes: activeSeasonEpisodes })}
+                 onClick={() => handleEnterEpisode(ep, idx + 1)}
                  whileHover={{ scale: 1.01, x: -4 }}
                  whileTap={{ scale: 0.99 }}
                  className={`w-full bg-[#1E1E1E] border ${isWatched ? 'border-green-500/35' : 'border-neutral-800'} rounded-xl p-4 flex justify-between items-center transition-all duration-300 group shadow-md cursor-pointer relative overflow-hidden gpu-accelerated`}
                >
                  {/* Left Side: Title & Info aligned appropriately */}
                  <div className="flex flex-col text-right dir-rtl min-w-0 pr-1">
-                   <h4 className="font-bold text-white text-sm group-hover:text-red-500 transition line-clamp-1">
-                     {ep.title || `الحلقة ${ep.num}`}
-                   </h4>
+                   <div className="flex items-center gap-2">
+                     <h4 className="font-bold text-white text-sm group-hover:text-red-500 transition line-clamp-1">
+                       {ep.title || `الحلقة ${epIdx}`}
+                     </h4>
+                     {isWatched && (
+                       <span className="text-[9px] font-black bg-green-500/15 text-green-400 border border-green-500/30 px-1.5 py-0.5 rounded-md shrink-0">
+                         تمت المشاهدة
+                       </span>
+                     )}
+                   </div>
                    <span className="text-[10px] text-neutral-400 mt-0.5">
                      {anime.seasonsList && anime.seasonsList.length > 1 ? `الموسم ${selectedSeasonNum} • ` : ''}رقم الحلقة {epIdx} مترجمة للعربية
                    </span>
@@ -1674,20 +1819,36 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
                     <div className="space-y-2">
                       {MAIN_LISTS.map(list => {
                          const isActive = userEntry?.status === list.id;
+                         const isBlockedCompleted = list.id === 'completed' && isAnimeOngoingOrUpcoming;
                          const Icon = list.icon;
                          return (
                            <button 
                              key={list.id}
-                             onClick={() => handleUpdateStatus(list.id)}
+                             disabled={isBlockedCompleted}
+                             onClick={() => {
+                               if (isBlockedCompleted) return;
+                               handleUpdateStatus(list.id);
+                             }}
                              className={`w-full flex items-center justify-between p-3 rounded-xl border transition-all duration-300 ${
-                                isActive ? 'bg-neutral-800 border-neutral-600 shadow-md ring-1 ring-white/10' : 'bg-[#121212] border-neutral-800 hover:border-neutral-700'
+                                isBlockedCompleted
+                                  ? 'bg-[#121212]/60 border-neutral-800/60 opacity-50 cursor-not-allowed'
+                                  : isActive
+                                    ? 'bg-neutral-800 border-neutral-600 shadow-md ring-1 ring-white/10 cursor-pointer'
+                                    : 'bg-[#121212] border-neutral-800 hover:border-neutral-700 cursor-pointer'
                              }`}
                            >
                               <div className="flex items-center gap-3">
-                                <Icon size={18} className={list.color} />
-                                <span className={`text-sm font-bold ${isActive ? 'text-white' : 'text-neutral-300'}`}>{list.label}</span>
+                                <Icon size={18} className={isBlockedCompleted ? 'text-neutral-600' : list.color} />
+                                <div className="flex flex-col items-start text-right">
+                                  <span className={`text-sm font-bold ${isBlockedCompleted ? 'text-neutral-500' : isActive ? 'text-white' : 'text-neutral-300'}`}>{list.label}</span>
+                                  {isBlockedCompleted && (
+                                    <span className="text-[10px] font-bold text-amber-500/90 mt-0.5">
+                                      غير متاح لأن الأنمي يعرض حالياً ولم يكتمل بعد
+                                    </span>
+                                  )}
+                                </div>
                               </div>
-                             {isActive && <div className={`w-2 h-2 rounded-full ${list.color.replace('text-', 'bg-')} shadow-[0_0_10px_currentColor] ${list.color}`} />}
+                             {isActive && !isBlockedCompleted && <div className={`w-2 h-2 rounded-full ${list.color.replace('text-', 'bg-')} shadow-[0_0_10px_currentColor] ${list.color}`} />}
                            </button>
                          )
                       })}
@@ -1828,26 +1989,30 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
                   <X size={16} />
                 </button>
               </div>
-              <div className="p-6">
+               <div className="p-6">
                  {quizLoading && (
                    <div className="flex flex-col items-center py-6">
                       <div className="w-10 h-10 border-4 border-red-500/20 border-t-red-500 rounded-full animate-spin mb-4" />
-                      <p className="text-sm font-bold text-neutral-400">جاري إحضار سؤال المراقبة...</p>
+                      <p className="text-sm font-bold text-neutral-400">جاري تجهيز سؤال التحقق من مشاهدة الموسم {currentSeasonNumber}...</p>
                    </div>
                  )}
                  {quizError && !quizLoading && (
                    <div className="text-center py-4">
                      <p className="text-red-400 mb-4 font-bold text-sm">{quizError}</p>
-                     <button onClick={fetchQuiz} className="bg-red-500/20 text-red-500 px-4 py-2 flex items-center justify-center gap-2 w-full rounded-lg font-bold hover:bg-red-500/30 transition">
-                       حاول مرة أخرى
+                     <button onClick={fetchQuiz} className="bg-red-500/20 text-red-500 px-4 py-2 flex items-center justify-center gap-2 w-full rounded-lg font-bold hover:bg-red-500/30 transition cursor-pointer">
+                       حاول بسؤال آخر
                      </button>
                    </div>
                  )}
                  {quizData && !quizLoading && (
                    <div className="space-y-4">
                       <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4">
-                        <p className="text-sm leading-relaxed font-bold text-white mb-2" dangerouslySetInnerHTML={{ __html: quizData.question }}></p>
-                        <span className="text-[10px] text-red-400 font-bold bg-red-400/10 px-2 py-0.5 rounded">إثبات مشاهدة الانمي</span>
+                        <div className="flex items-center justify-between gap-2 mb-2">
+                          <span className="text-[10px] text-red-400 font-bold bg-red-400/10 px-2 py-0.5 rounded">
+                            إثبات مشاهدة {anime?.title} {currentSeasonNumber > 1 ? `(الموسم ${currentSeasonNumber})` : ''} بالكامل
+                          </span>
+                        </div>
+                        <p className="text-sm leading-relaxed font-bold text-white" dangerouslySetInnerHTML={{ __html: quizData.question }}></p>
                       </div>
                       <div className="space-y-2">
                         {quizData.options.map((opt: string, idx: number) => (

@@ -54,7 +54,104 @@ export interface PromoCodeEntry {
   createdAt?: any;
 }
 
+export type SensitiveModerationAction =
+  | 'access_dashboard'
+  | 'delete_content'
+  | 'edit_comment'
+  | 'resolve_report'
+  | 'manage_recommendations'
+  | 'manage_suggestions'
+  | 'edit_member_stats'
+  | 'restrict_member'
+  | 'ban_user'
+  | 'unban_user'
+  | 'assign_role'
+  | 'manage_mod_permissions'
+  | 'manage_promos'
+  | 'mass_grant'
+  | 'send_broadcast'
+  | 'manage_settings'
+  | 'manage_cache_queue'
+  | 'reset_all_accounts'
+  | 'factory_wipe';
+
+export interface ServerVerifiedSession {
+  uid: string;
+  email: string;
+  emailVerified: boolean;
+  role: RoleLevel;
+  permissions: ModPermissions;
+  verifiedVia: string;
+  verifiedAt: string;
+}
+
+export async function getAdminAuthHeaders(): Promise<Record<string, string>> {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('يجب تسجيل الدخول أولاً للتحقق من صلاحيات الإدارة عبر الخادم.');
+  }
+  const idToken = await currentUser.getIdToken();
+  return {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${idToken}`,
+  };
+}
+
 export const moderationService = {
+  /**
+   * Verifies the current user's session and role on the backend using Firebase Admin SDK.
+   */
+  verifyServerAdminSession: async (): Promise<ServerVerifiedSession | null> => {
+    if (!auth.currentUser) return null;
+    try {
+      const headers = await getAdminAuthHeaders();
+      const res = await fetch('/api/admin/verify-session', {
+        method: 'GET',
+        headers,
+      });
+      if (!res.ok) {
+        return null;
+      }
+      const data = await res.json();
+      if (data?.success && data?.session) {
+        return data.session as ServerVerifiedSession;
+      }
+      return null;
+    } catch (error) {
+      console.warn('[moderationService] Server session verification warning:', error);
+      return null;
+    }
+  },
+
+  /**
+   * Enforces a server-side permission check using Firebase Admin SDK before executing any sensitive moderation action.
+   * Throws an error if the user is not authorized on the server.
+   */
+  authorizeServerModerationAction: async (
+    action: SensitiveModerationAction,
+    targetId?: string,
+    metadata?: Record<string, any>
+  ): Promise<void> => {
+    const headers = await getAdminAuthHeaders();
+    const res = await fetch('/api/admin/authorize-action', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        action,
+        targetId,
+        metadata,
+      }),
+    });
+
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.success || !data?.authorized) {
+      const errMsg =
+        data?.message ||
+        'رفض الخادم (Firebase Admin SDK) تنفيذ هذا الإجراء الحساس لعدم كفاية الصلاحيات.';
+      throw new Error(errMsg);
+    }
+  },
+
   getModPermissions: async (): Promise<ModPermissions> => {
     try {
       const snap = await getDoc(doc(db, 'globalSettings', 'modPermissions'));
@@ -75,6 +172,7 @@ export const moderationService = {
   
   updateModPermissions: async (perms: ModPermissions): Promise<void> => {
     if (!auth.currentUser) return;
+    await moderationService.authorizeServerModerationAction('manage_mod_permissions', 'modPermissions', perms);
     try {
       await setDoc(doc(db, 'globalSettings', 'modPermissions'), perms);
     } catch (error) {
@@ -96,6 +194,7 @@ export const moderationService = {
 
   updateGlobalSettings: async (id: string, data: any): Promise<void> => {
     if (!auth.currentUser) return;
+    await moderationService.authorizeServerModerationAction('manage_settings', id);
     try {
       await setDoc(doc(db, 'globalSettings', id), data, { merge: true });
     } catch (error) {
@@ -104,10 +203,7 @@ export const moderationService = {
   },
 
   getAppStats: async (): Promise<any> => {
-    // We will aggregate stats from our collections
     try {
-       // Ideally we would use count() queries if supported, but here we will just get the size of main collections
-       // Note: in a real big app this requires aggregation, but for this preview we'll do simple queries or mock
        const usersQuery = await getDocs(query(collection(db, 'users')));
        const rolesQuery = await getDocs(query(collection(db, 'globalRoles')));
        const bansQuery = await getDocs(query(collection(db, 'bannedUsers')));
@@ -123,7 +219,6 @@ export const moderationService = {
        };
     } catch (error: any) {
        console.warn("[moderationService] Could not aggregate real-time app stats (offline fallback active):", error?.message || error);
-       // Return some mock/fallback data if queries fail due to index/permissions
        return {
          totalUsers: 125,
          totalRoles: 3,
@@ -141,7 +236,6 @@ export const moderationService = {
     
     const email = targetUser.email;
     if (isStaffEmail(email)) {
-      // Ensure the global role doc is populated in the background for this staff user
       const uid = targetUser.uid || targetUser.id;
       if (uid) {
         setDoc(doc(db, 'globalRoles', uid), {
@@ -236,6 +330,11 @@ export const moderationService = {
     contentType?: 'comment' | 'recommendation' | 'arena_post' | 'leak',
     contentId?: string
   ): Promise<void> => {
+    await moderationService.authorizeServerModerationAction('resolve_report', reportId, {
+      resolution,
+      contentType,
+      contentId,
+    });
     try {
       await updateDoc(doc(db, 'reports', reportId), {
         status: 'resolved',
@@ -262,6 +361,7 @@ export const moderationService = {
   
   assignRole: async (id: string, role: RoleLevel): Promise<void> => {
     if (!auth.currentUser) throw new Error('Not auth');
+    await moderationService.authorizeServerModerationAction('assign_role', id, { targetRole: role });
     try {
       if (role === 'user') {
          await deleteDoc(doc(db, 'globalRoles', id));
@@ -279,6 +379,7 @@ export const moderationService = {
 
   banUser: async (id: string, reason: string): Promise<void> => {
     if (!auth.currentUser) return;
+    await moderationService.authorizeServerModerationAction('ban_user', id, { reason });
     try {
       await setDoc(doc(db, 'bannedUsers', id), {
         reason,
@@ -291,6 +392,7 @@ export const moderationService = {
   },
   
   unbanUser: async (id: string): Promise<void> => {
+    await moderationService.authorizeServerModerationAction('unban_user', id);
     try {
       await deleteDoc(doc(db, 'bannedUsers', id));
     } catch (error) {
@@ -328,6 +430,7 @@ export const moderationService = {
   },
 
   updateUserCoinsAndXP: async (id: string, coins: number, xp: number, level: number): Promise<void> => {
+    await moderationService.authorizeServerModerationAction('edit_member_stats', id, { coins, xp, level });
     try {
       await updateDoc(doc(db, 'users', id), {
         coins: Number(coins),
@@ -340,13 +443,19 @@ export const moderationService = {
     }
   },
 
-  restrictMember: async (id: string, restrictions: { isMuted: boolean; isGamesRestricted: boolean; isCoinsRestricted: boolean }): Promise<void> => {
+  restrictMember: async (id: string, restrictions: { isMuted: boolean; isGamesRestricted?: boolean; isCoinsRestricted?: boolean }): Promise<void> => {
+    await moderationService.authorizeServerModerationAction('restrict_member', id, restrictions);
     try {
-      await updateDoc(doc(db, 'users', id), {
-        isMuted: restrictions.isMuted,
-        isGamesRestricted: restrictions.isGamesRestricted,
-        isCoinsRestricted: restrictions.isCoinsRestricted
-      });
+      const patch: Record<string, boolean> = {
+        isMuted: Boolean(restrictions.isMuted),
+      };
+      if (restrictions.isGamesRestricted !== undefined) {
+        patch.isGamesRestricted = Boolean(restrictions.isGamesRestricted);
+      }
+      if (restrictions.isCoinsRestricted !== undefined) {
+        patch.isCoinsRestricted = Boolean(restrictions.isCoinsRestricted);
+      }
+      await updateDoc(doc(db, 'users', id), patch);
     } catch (error) {
       console.error("Failed to restrict member in Firestore", error);
       throw error;
@@ -354,6 +463,7 @@ export const moderationService = {
   },
 
   deleteComment: async (commentId: string): Promise<void> => {
+    await moderationService.authorizeServerModerationAction('delete_content', commentId);
     try {
       await deleteDoc(doc(db, 'comments', commentId));
     } catch(error) {
@@ -362,6 +472,7 @@ export const moderationService = {
   },
 
   deleteRecommendation: async (recId: string): Promise<void> => {
+    await moderationService.authorizeServerModerationAction('manage_recommendations', recId);
     try {
       await deleteDoc(doc(db, 'recommendations', recId));
     } catch (error) {
@@ -371,22 +482,20 @@ export const moderationService = {
 
   resetAllAccounts: async (): Promise<void> => {
     if (!auth.currentUser) throw new Error('Not authenticated');
+    await moderationService.authorizeServerModerationAction('reset_all_accounts');
     
     try {
-      // Find all users
       const usersSnap = await getDocs(collection(db, 'users'));
       
       const promises = usersSnap.docs.map(async (userDoc) => {
         const id = userDoc.id;
         
-        // Fetch and delete all anime entries for this user
         const entriesSnap = await getDocs(collection(db, 'users', id, 'animeEntries'));
         const deletePromises = entriesSnap.docs.map(d => 
           deleteDoc(doc(db, 'users', id, 'animeEntries', d.id))
         );
         await Promise.all(deletePromises);
         
-        // Reset the user statistics and level stats
         await updateDoc(doc(db, 'users', id), {
           xp: 0,
           level: 1,
@@ -409,6 +518,7 @@ export const moderationService = {
 
   factoryWipeForLaunch: async (): Promise<{ deletedDocs: number; deletedUsers: number }> => {
     if (!auth.currentUser) throw new Error('Not authenticated');
+    await moderationService.authorizeServerModerationAction('factory_wipe');
     let deletedDocs = 0;
     let deletedUsers = 0;
 
@@ -525,6 +635,7 @@ export const moderationService = {
     if (!auth.currentUser) throw new Error('Not authenticated');
     const cleanCode = params.code.trim().toUpperCase().replace(/\s+/g, '');
     if (!cleanCode) throw new Error('Invalid code');
+    await moderationService.authorizeServerModerationAction('manage_promos', cleanCode, params);
     await setDoc(doc(db, 'promoCodes', cleanCode), {
       code: cleanCode,
       rewardCoins: Math.max(0, Number(params.rewardCoins) || 0),
@@ -539,11 +650,63 @@ export const moderationService = {
   },
 
   togglePromoCode: async (codeId: string, active: boolean): Promise<void> => {
+    await moderationService.authorizeServerModerationAction('manage_promos', codeId, { active });
     await updateDoc(doc(db, 'promoCodes', codeId), { active });
   },
 
   deletePromoCode: async (codeId: string): Promise<void> => {
+    await moderationService.authorizeServerModerationAction('manage_promos', codeId);
     await deleteDoc(doc(db, 'promoCodes', codeId));
+  },
+
+  redeemPromoCode: async (
+    userId: string,
+    code: string
+  ): Promise<{ rewardCoins: number; rewardXp: number }> => {
+    const cleanCode = code.trim().toUpperCase().replace(/\s+/g, '');
+    if (!cleanCode) throw new Error('يرجى إدخال كود صحيح');
+
+    const promoRef = doc(db, 'promoCodes', cleanCode);
+    const promoSnap = await getDoc(promoRef);
+    if (!promoSnap.exists()) {
+      throw new Error('الكود غير موجود أو غير صالح.');
+    }
+
+    const promoData = promoSnap.data() as PromoCodeEntry;
+    if (!promoData.active) {
+      throw new Error('تم إيقاف هذا الكود الترويجي من قبل الإدارة.');
+    }
+
+    const usedCount = Number(promoData.usedCount || 0);
+    const maxUses = Number(promoData.maxUses || 1);
+    if (usedCount >= maxUses) {
+      throw new Error('انتهت جميع مرات استخدام هذا الكود.');
+    }
+
+    const redeemedBy = Array.isArray(promoData.redeemedBy) ? promoData.redeemedBy : [];
+    if (redeemedBy.includes(userId)) {
+      throw new Error('لقد قمت باسترداد هذا الكود مسبقاً!');
+    }
+
+    const rewardCoins = Math.max(0, Number(promoData.rewardCoins || 0));
+    const rewardXp = Math.max(0, Number(promoData.rewardXp || 0));
+
+    await updateDoc(promoRef, {
+      usedCount: usedCount + 1,
+      redeemedBy: [...redeemedBy, userId]
+    });
+
+    const userRef = doc(db, 'users', userId);
+    const userSnap = await getDoc(userRef);
+    if (userSnap.exists()) {
+      const uData = userSnap.data();
+      await updateDoc(userRef, {
+        coins: Number(uData.coins || 0) + rewardCoins,
+        xp: Number(uData.xp || 0) + rewardXp
+      });
+    }
+
+    return { rewardCoins, rewardXp };
   },
 
   massGrantReward: async (params: {
@@ -552,6 +715,7 @@ export const moderationService = {
     segment: 'all' | 'active_30' | 'elite';
   }): Promise<number> => {
     if (!auth.currentUser) throw new Error('Not authenticated');
+    await moderationService.authorizeServerModerationAction('mass_grant', params.segment, params);
     const usersSnap = await getDocs(collection(db, 'users'));
     let count = 0;
     const addCoins = Math.max(0, Number(params.coins) || 0);
@@ -575,3 +739,4 @@ export const moderationService = {
     return count;
   }
 };
+

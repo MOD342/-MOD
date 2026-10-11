@@ -810,15 +810,37 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
     // ========================================================================
     if (cleanPath === '/api/ai/anti-cheat') {
       const title = urlObj.searchParams.get('title') || 'الأنمي';
+      const season = parseInt(urlObj.searchParams.get('season') || '1', 10) || 1;
+      const epsCount = parseInt(urlObj.searchParams.get('episodesCount') || '12', 10) || 12;
+      const characters = urlObj.searchParams.get('characters') || '';
+      const seasonLabel = season > 1 ? ` (الموسم ${season})` : '';
+      const charList = characters.split(',').map(s => s.trim()).filter(Boolean);
+
+      if (charList.length >= 2) {
+        return createSimulatedResponse({
+          success: true,
+          data: {
+            question: `للتحقق من مشاهدتك الكاملة لأنمي "${title}"${seasonLabel} حتى الحلقة ${epsCount}: أي من الشخصيات التالية كان لها الدور الرئيسي في أحداث هذا الموسم وحسم مواجهاته الأخيرة؟`,
+            options: [
+              `${charList[0]} و ${charList[1]}`,
+              'تاتسوماكي وكينغ من جمعية الأبطال',
+              'غينتوكي ساكاتا وكاغورا',
+              'إدوارد نيغيت وماركو العنقاء'
+            ],
+            correct: 0
+          }
+        });
+      }
+
       return createSimulatedResponse({
         success: true,
         data: {
-          question: `ما هو الدافع الأساسي لأحداث أنمي "${title}"؟`,
+          question: `للتحقق من مشاهدتك الكاملة لأنمي "${title}"${seasonLabel} (${epsCount} حلقة): كيف انتهت الذروة الدرامية لأحداث هذا الموسم؟`,
           options: [
-            'حماية الأصدقاء وتجاوز العقبات المستحيلة لتحقيق الهدف الأسمى ⚔️',
-            'البحث عن وظيفة مكتبية تقليدية فقط 💼',
-            'برنامج طبخ وثائقي قديم 🍲',
-            'لا توجد أي حبكة أو صراع في القصة 💤'
+            'بحسم المواجهة الرئيسية في الحلقات الأخيرة وكشف مصير الأبطال للمرحلة القادمة ⚔️',
+            'بتحول القصة إلى برنامج طبخ وثائقي بدون أي حبكة أو صراع 🍲',
+            'بإلغاء جميع الأحداث السابقة واكتشاف أن الموسم مجرد إعلان تجاري 💼',
+            'بعدم ظهور الشخصية الرئيسية طوال النصف الثاني من الموسم 💤'
           ],
           correct: 0
         }

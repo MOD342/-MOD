@@ -39,9 +39,10 @@ interface WatchViewProps {
   episode?: any;
   anime?: any;
   onEpisodeSelect?: (ep: any) => void;
+  onAnimeClick?: () => void;
 }
 
-export default function WatchView({ onBack, episode: initialEpisode, anime, onEpisodeSelect }: WatchViewProps) {
+export default function WatchView({ onBack, episode: initialEpisode, anime, onEpisodeSelect, onAnimeClick }: WatchViewProps) {
   const [episode, setEpisode] = useState(initialEpisode);
   const [activeTab, setActiveTab] = useState<'servers' | 'episodes' | 'comments'>('servers');
   const [serverSubTab, setServerSubTab] = useState<'watch' | 'download'>('watch');
@@ -62,7 +63,6 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
   const [liveComments, setLiveComments] = useState<any[]>([]);
   const [newChatText, setNewChatText] = useState('');
   const [sendingChat, setSendingChat] = useState(false);
-  const [isCinemaMode, setIsCinemaMode] = useState(false);
   const [selectedQualityFilter, setSelectedQualityFilter] = useState<'ALL' | '1080p' | '720p' | '480p'>('ALL');
   const [copiedServerUrl, setCopiedServerUrl] = useState<string | null>(null);
   const [episodeSearchQuery, setEpisodeSearchQuery] = useState('');
@@ -102,7 +102,7 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
     if (episode) {
       window.scrollTo({ top: 0, behavior: 'smooth' });
       const activeSeasonNumber = episode?.seasonNumber || watchSeasonNum || 1;
-      const serversCacheKey = `servers_v8_${anime?._id || 'unknown'}_s_${activeSeasonNumber}_ep_${episode?.num || episode?.id || '1'}`;
+      const serversCacheKey = `servers_v9_${anime?._id || 'unknown'}_s_${activeSeasonNumber}_ep_${episode?.num || episode?.id || '1'}`;
       const cachedServers = clientCache.get<any[]>(serversCacheKey);
       
       if (cachedServers && Array.isArray(cachedServers) && cachedServers.length > 0 && cachedServers.some((s: any) => s.category === 'download')) {
@@ -262,36 +262,18 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
       return;
     }
 
-    // 2. السيرفرات المضمنة المباشرة (Mega, Videa, MP4Upload, Streamwish, Dailymotion, Ok.ru, Drive, VidLink...)
-    // ملاحظة: 4Shared يتم تمريره لمستخرج الـ Backend لاستخراج ملف الـ MP4 المباشر وتخطي عداد الـ 10 ثوانٍ
-    const isKnownEmbedHost =
+    // 2. السيرفرات النظيفة الخالية من الإعلانات والـ Sandbox Wall (Mega, Videa, Google Drive, Ok.ru, Dailymotion, Mail.ru, VK)
+    // تعمل فوراً كـ Embed نظيف مع قفل النوافذ المنبثقة، بينما السيرفرات التي تحتوي على Sandboxed embed أو إعلانات (Streamwish, CloudStream, Uqload, Vidmoly, Sendvid, 4Shared, MP4Upload, YourUpload) يتم سحب البث الخام منها وتشغيله على مشغل التطبيق الداخلي بلا أي إعلان
+    const isCleanNativeIframeHost =
       lowerUrl.includes('mega.nz') ||
       lowerUrl.includes('videa.hu') ||
-      lowerUrl.includes('mp4upload.com') ||
-      lowerUrl.includes('streamwish') ||
-      lowerUrl.includes('asnwish') ||
-      lowerUrl.includes('awish') ||
-      lowerUrl.includes('swish') ||
-      lowerUrl.includes('sfastwish') ||
-      lowerUrl.includes('flaswish') ||
-      lowerUrl.includes('obeywish') ||
-      lowerUrl.includes('cdnwish') ||
-      lowerUrl.includes('dailymotion.com/embed') ||
-      lowerUrl.includes('vk.com/video_ext') ||
-      lowerUrl.includes('lulustream.com/e/') ||
-      lowerUrl.includes('upns.online') ||
-      lowerUrl.includes('vidlink.') ||
-      lowerUrl.includes('vidsrc.') ||
-      lowerUrl.includes('2embed.') ||
-      lowerUrl.includes('autoembed.') ||
-      lowerUrl.includes('multiembed.') ||
       lowerUrl.includes('drive.google.com') ||
       lowerUrl.includes('ok.ru/videoembed') ||
-      lowerUrl.includes('sendvid.com/embed') ||
-      lowerUrl.includes('dhcplay.com') ||
-      lowerUrl.includes('hgcloud.to');
+      lowerUrl.includes('dailymotion.com/embed') ||
+      lowerUrl.includes('my.mail.ru') ||
+      lowerUrl.includes('vk.com/video_ext');
 
-    if (isKnownEmbedHost) {
+    if (isCleanNativeIframeHost) {
       setExtractedUrl(url);
       setExtractedType('iframe');
       setExtractedSources([{ file: url, label: 'FHD', type: 'iframe' }]);
@@ -299,7 +281,7 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
       return;
     }
 
-    // 3. استخراج رابط MP4/M3U8 خام من السيرفر مباشرة بدون تخزين مؤقت، وإذا كان محمياً يتم تشغيله مباشرة كـ Embed حقيقي
+    // 3. استخراج رابط البث المباشر (HLS / MP4) لتجاوز رسالة Sandboxed embed is not allowed وإزالة الإعلانات المنبثقة نهائياً
     setExtracting(true);
     try {
       const res = await fetch('/api/anime/extract', {
@@ -436,17 +418,6 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
       transition={{ duration: 0.3 }}
       className="bg-[#050505] min-h-screen flex flex-col"
     >
-      {/* Cinema mode exit floating toggle */}
-      {isCinemaMode && (
-        <button 
-          onClick={() => setIsCinemaMode(false)}
-          className="fixed bottom-6 right-6 z-[60] bg-purple-600 hover:bg-purple-700 text-white font-extrabold text-xs px-5 py-3 rounded-full shadow-2xl flex items-center gap-2 border border-purple-500/30 transition-all scale-100 hover:scale-105 active:scale-95"
-        >
-          <span className="w-2 h-2 rounded-full bg-white animate-ping" />
-          إلغاء نمط السينما
-        </button>
-      )}
-
       {/* Video Player Area */}
       <div className="w-full aspect-video bg-black relative flex flex-col justify-between border-b border-neutral-900 sticky top-0 z-50 overflow-hidden group shadow-2xl">
         <button onClick={onBack} className="absolute top-4 right-4 w-10 h-10 bg-black/60 backdrop-blur-md rounded-full flex items-center justify-center text-white z-20 border border-white/10 hover:bg-white/20 transition-all opacity-0 group-hover:opacity-100 shadow-lg select-none">
@@ -468,6 +439,7 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
                   src={extractedUrl || activeServerUrl || ''}
                   title={episode?.title || `الحلقة ${episode?.num}`}
                   className="w-full h-full border-0"
+                  sandbox="allow-scripts allow-same-origin allow-forms allow-presentation"
                   allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
                   allowFullScreen
                   referrerPolicy="origin"
@@ -502,7 +474,7 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
       </div>
 
       {/* Info & Controls */}
-      <div className={`p-4 flex-1 overflow-y-auto pb-24 transition-all duration-500 ${isCinemaMode ? 'opacity-10 pointer-events-none filter blur-[1.5px]' : 'opacity-100'}`}>
+      <div className="p-4 flex-1 overflow-y-auto pb-24 transition-all duration-500">
 
         <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
           <div>
@@ -553,12 +525,19 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
               >
                  <Play size={15} /> MX Player
               </a>
-              <a 
-                href={`intent:${extractedUrl || activeServerUrl}#Intent;package=org.videolan.vlc;S.title=${encodeURIComponent(`${anime?.title || 'Anime'}_Ep${episode?.num || 1}`)};end`}
-                className="bg-[#e85d00] rounded-xl p-3 flex items-center justify-center gap-1.5 text-white text-xs font-bold shadow-lg hover:bg-[#c44f00] transition"
+              <button 
+                type="button"
+                onClick={() => {
+                  if (onAnimeClick) {
+                    onAnimeClick();
+                  } else {
+                    onBack();
+                  }
+                }}
+                className="bg-purple-600 rounded-xl p-3 flex items-center justify-center gap-1.5 text-white text-xs font-bold shadow-lg hover:bg-purple-500 transition cursor-pointer"
               >
-                 <Play size={15} /> VLC Player
-              </a>
+                 <Tv size={15} /> صفحة الأنمي
+              </button>
               <a 
                 href={`intent:${extractedUrl || activeServerUrl}#Intent;package=com.dv.adm;S.title=${encodeURIComponent(`${anime?.title || 'Anime'}_Ep${episode?.num || 1}`)};end`}
                 className="bg-[#d84e20] rounded-xl p-3 flex items-center justify-center gap-1.5 text-white text-xs font-bold shadow-lg hover:bg-[#b03d17] transition"
@@ -567,46 +546,6 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
               </a>
            </div>
         )}
-
-        <div className="grid grid-cols-3 gap-3 mb-8">
-          <button
-            type="button"
-            onClick={() => {
-              try {
-                navigator.clipboard.writeText(window.location.href);
-              } catch {}
-            }}
-            className="flex flex-col items-center justify-center gap-2 p-3 rounded-2xl bg-neutral-900/50 hover:bg-neutral-800 border border-neutral-800/50 text-neutral-400 hover:text-white transition group cursor-pointer"
-          >
-            <Share2 size={22} className="group-hover:scale-110 transition-transform" />
-            <span className="text-[11px] font-bold">مشاركة</span>
-          </button>
-          
-          <button 
-            type="button"
-            onClick={() => setIsCinemaMode(!isCinemaMode)}
-            className={`flex flex-col items-center justify-center gap-2 p-3 rounded-2xl border transition group cursor-pointer ${isCinemaMode ? 'bg-purple-900/40 border-purple-500 text-purple-400 font-bold shadow-lg shadow-purple-500/10' : 'bg-neutral-900/50 hover:bg-neutral-800 border-neutral-800/50 text-neutral-400 hover:text-white'}`}
-          >
-            <Tv size={22} className={`transition-transform ${isCinemaMode ? 'scale-110 animate-pulse' : 'group-hover:scale-110'}`} />
-            <span className="text-[11px] font-bold">نمط السينما</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setActiveTab('servers');
-              setServerSubTab('download');
-            }}
-            className={`flex flex-col items-center justify-center gap-2 p-3 rounded-2xl border transition group cursor-pointer ${
-              activeTab === 'servers' && serverSubTab === 'download'
-                ? 'bg-indigo-900/40 border-indigo-500 text-indigo-300 font-bold shadow-lg shadow-indigo-500/10'
-                : 'bg-neutral-900/50 hover:bg-neutral-800 border-neutral-800/50 text-neutral-400 hover:text-white'
-            }`}
-          >
-            <Download size={22} className="group-hover:scale-110 transition-transform text-indigo-400" />
-            <span className="text-[11px] font-bold">تحميل الحلقة (SD/HD)</span>
-          </button>
-        </div>
 
         {/* Tabs */}
         <div className="flex bg-neutral-900/80 backdrop-blur-md rounded-xl p-1 mb-6 shadow-inner border border-neutral-800/50">
@@ -680,14 +619,14 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
                             <p className="text-[10px] text-neutral-600 max-w-xs leading-relaxed">كن أول من يعلق أو يشارك أفكاره حول هذه الحلقة مع بقية المتابعين!</p>
                          </div>
                        ) : (
-                         liveComments.map((chat: any) => {
+                         liveComments.map((chat: any, cIdx: number) => {
                            const chatAvatar = STORE_ITEMS_SORTED.find(i => i.id === chat.equippedAvatar);
                            const chatFrame = STORE_ITEMS_SORTED.find(i => i.id === chat.equippedFrame);
                            const chatTitle = STORE_ITEMS_SORTED.find(i => i.id === chat.equippedTitle);
                            const chatBadge = STORE_ITEMS_SORTED.find(i => i.id === chat.equippedBadge);
                            
                            return (
-                             <div key={chat.id} className="flex gap-2.5 items-start group">
+                             <div key={`${chat.id || cIdx}-${cIdx}`} className="flex gap-2.5 items-start group">
                                 {/* Cosmetic Avatar Container */}
                                 <div className="relative p-0.5 shrink-0">
                                    <div className={`w-8 h-8 ${getAvatarShapeClass(chatFrame?.avatarShape)} overflow-hidden border border-neutral-800 bg-neutral-900 flex items-center justify-center`}>
@@ -840,7 +779,7 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
                   }`}
                 >
                   <span className="text-sm">📺</span>
-                  <span>سيرفرات المشاهدة ({servers.filter(s => s.category !== 'download').length})</span>
+                  <span>مشاهدة</span>
                 </button>
                 <button
                   type="button"
@@ -852,7 +791,7 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
                   }`}
                 >
                   <span className="text-sm">📥</span>
-                  <span>روابط التحميل والتنزيل ({servers.filter(s => s.category === 'download').length})</span>
+                  <span>تحميل</span>
                 </button>
               </div>
 

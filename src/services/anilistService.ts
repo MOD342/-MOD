@@ -179,8 +179,8 @@ export function mapAniListToJikan(media: any): any {
         ? 1
         : media.episodes || 12,
     nextAiringEpisode: media.nextAiringEpisode || null,
-    year: media.seasonYear || media.startDate?.year || 2025,
-    season: media.season ? media.season.toLowerCase() : "winter",
+    year: media.seasonYear || media.startDate?.year || null,
+    season: media.season ? media.season.toLowerCase() : null,
     type: media.format || "TV",
     duration: media.duration ? `${media.duration} min per ep` : "24 min per ep",
     genres: (media.genres || []).map((g: string, idx: number) => ({ mal_id: idx + 1, name: g })),

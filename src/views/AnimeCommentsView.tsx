@@ -262,7 +262,7 @@ export default function AnimeCommentsView({ animeId, focusCommentId, onBack, onA
               </div>
             ) : (
               <div className="space-y-3 pb-8">
-                {mainComments.map(comment => {
+                {mainComments.map((comment, cIdx) => {
                   const commentReplies = comments
                     .filter(c => c.parentCommentId === comment.id)
                     .sort((a, b) => {
@@ -272,7 +272,7 @@ export default function AnimeCommentsView({ animeId, focusCommentId, onBack, onA
                     });
                   return (
                     <AnimeCommentItem 
-                      key={comment.id} 
+                      key={`${comment.id || cIdx}-${cIdx}`} 
                       comment={comment} 
                       user={user} 
                       onReply={(c: any) => setNewComment(`@${c.userDisplayName} `)} 

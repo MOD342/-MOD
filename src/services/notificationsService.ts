@@ -6,7 +6,7 @@ export interface AppNotification {
   id: string;
   title: string;
   body: string;
-  type: 'system' | 'episode' | 'tournament' | 'social';
+  type: 'system' | 'episode' | 'tournament' | 'social' | 'reward';
   imageUrl?: string;
   linkTo?: string; // a route or id to navigate to
   createdAt: any;

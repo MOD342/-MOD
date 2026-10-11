@@ -3,13 +3,21 @@ import { GoogleGenAI, Type } from '@google/genai';
 
 const router = Router();
 let aiInstance: GoogleGenAI | null = null;
+
 function getAi(): GoogleGenAI | null {
   if (!process.env.GEMINI_API_KEY) {
     return null;
   }
   if (!aiInstance) {
     try {
-      aiInstance = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      aiInstance = new GoogleGenAI({
+        apiKey: process.env.GEMINI_API_KEY,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
+          },
+        },
+      });
     } catch (e: any) {
       console.error("Failed to initialize GoogleGenAI:", e.message);
       return null;
@@ -18,7 +26,86 @@ function getAi(): GoogleGenAI | null {
   return aiInstance;
 }
 
-const model = 'gemini-3.5-flash';
+// ============================================================================
+// HIGH-CONCURRENCY MULTI-USER SCALING & CACHING ENGINE
+// ============================================================================
+
+// 1. Per-User / Per-IP Sliding Window Rate Limiter (protects global API quota)
+const userRateMap = new Map<string, { timestamps: number[] }>();
+const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
+const MAX_CHAT_REQ_PER_MIN = 8; // Max 8 chat messages per minute per user
+
+function checkRateLimit(identifier: string): { allowed: boolean; retryAfterSec?: number } {
+  const now = Date.now();
+  const entry = userRateMap.get(identifier) || { timestamps: [] };
+  entry.timestamps = entry.timestamps.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
+
+  if (entry.timestamps.length >= MAX_CHAT_REQ_PER_MIN) {
+    const oldest = entry.timestamps[0];
+    const retryAfterSec = Math.max(1, Math.ceil((RATE_LIMIT_WINDOW_MS - (now - oldest)) / 1000));
+    userRateMap.set(identifier, entry);
+    return { allowed: false, retryAfterSec };
+  }
+
+  entry.timestamps.push(now);
+  userRateMap.set(identifier, entry);
+
+  // Periodic cleanup to prevent memory leaks under high user volume
+  if (userRateMap.size > 5000) {
+    for (const [k, v] of userRateMap.entries()) {
+      if (v.timestamps.every((t) => now - t >= RATE_LIMIT_WINDOW_MS)) {
+        userRateMap.delete(k);
+      }
+    }
+  }
+
+  return { allowed: true };
+}
+
+// 2. Smart LRU Response Cache & In-Flight Request Deduplication for Chat
+const chatResponseCache = new Map<string, { text: string; expiresAt: number }>();
+const inFlightChatRequests = new Map<string, Promise<string>>();
+const CHAT_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes cache for common prompts
+
+function normalizePromptKey(promptText: string, mood: string): string {
+  return `${promptText.trim().toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, '').replace(/\s+/g, ' ')}|${mood.slice(0, 12)}`;
+}
+
+// 3. Multi-User Games & Anti-Cheat Pool Cache (prevents calling Gemini on every game start)
+const gamesPoolCache = new Map<string, { questions: any[]; expiresAt: number; refreshing: boolean }>();
+const antiCheatCache = new Map<string, { data: any; expiresAt: number }>();
+const GAMES_CACHE_TTL_MS = 20 * 60 * 1000; // 20 minutes shared pool per game type
+
+// 4. Intelligent Local Otaku Senpai Knowledge Base (Zero-Downtime Fallback under extreme load)
+function generateSmartOtakuFallback(lastMessage: string, mood: string): string {
+  const q = lastMessage.toLowerCase();
+
+  if (q.includes('fate') || q.includes('فيت')) {
+    return `أهلاً بك يا ناكاما! ⚔️ سلسلة **Fate** عالم أسطوري مترابط، وإليك الترتيب الأفضل والأصح للمشاهدة بدون حرق:\n\n1️⃣ **Fate/stay night: Unlimited Blade Works (2014)** — البداية المثالية لفهم نظام حرب الكأس المقدسة بأقوى تحريك من استوديو Ufotable.\n2️⃣ **أفلام Fate/stay night: Heaven's Feel (الثلاثية)** — المسار الأعمق والأكثر سوداوية وإثارة.\n3️⃣ **Fate/Zero** — القصة السابقة (Prequel) التي تشرح حرب الكأس المقدسة الرابعة بكتابة عبقرية.\n\nبعد إنهاء هذه الثلاثية يمكنك مشاهدة أي جزء فرعي مثل *Fate/Apocrypha* أو *Fate/Grand Order* بحرية تامة! 🌟`;
+  }
+
+  if (q.includes('death note') || q.includes('مذكرة الموت') || q.includes('غموض') || q.includes('تحقيق') || q.includes('ذكاء')) {
+    return `ذوقك رفيع جداً يا صديقي! 🧠 بما أنك تبحث عن صراع عقول وغموض بمستوى **Death Note**، إليك 4 تحف فنية ستجعلك تحبس أنفاسك:\n\n1️⃣ **Monster** — تحفة نفسية خالدة عن الطبيب "تينما" ومطاردته لأخطر عبقري شرير في التاريخ.\n2️⃣ **Code Geass** — إذا أعجبك دهاء "لايت ياغامي"، فإن "لولوش" سيذهلك بتخطيطه الاستراتيجي الخارق.\n3️⃣ **The Promised Neverland (الموسم الأول)** — حرب نفسية وتخطيط هروب عبقري لا يهدأ لحظة واحدة.\n4️⃣ **Tomodachi Game** — ألعاب نفسية ملتوية تكشف الوجه الحقيقي للأصدقاء تحت الضغط.\n\nأي واحد منها يشد انتباهك لنبدأ به؟ 🔥`;
+  }
+
+  if (q.includes('قصير') || q.includes('مكتمل') || q.includes('سريع') || q.includes('12 حلقة')) {
+    return `طلبك عندي يا ناكاما! ⚡ هذه قائمة بأقوى الأنميات القصيرة والمكتملة (11 إلى 24 حلقة) التي تشدك من أول دقيقة حتى النهاية:\n\n1️⃣ **Erased (Boku dake ga Inai Machi)** — (12 حلقة) سفر عبر الزمن لإنقاذ ضحايا جريمة غامضة، مشوق لأقصى درجة!\n2️⃣ **Cyberpunk: Edgerunners** — (10 حلقات) أكشن مستقبلي وقصة مؤثرة جداً بإنتاج بصري خارق.\n3️⃣ **91 Days** — (12 حلقة) قصة انتقام ومافيا كلاسيكية محبوكة بإتقان.\n4️⃣ **Parasyte: The Maxim** — (24 حلقة) قتالات وتطور شخصية أسطوري ونهاية مكتملة ومُرضية.\n\nاختر واحداً منها وأضمن لك سهرة لا تُنسى! 🍿`;
+  }
+
+  if (q.includes('كوميد') || q.includes('ضحك') || mood.includes('حزين')) {
+    return `لا مكان للحزن وأنا هنا يا ناكاما! 😆🌟 إذا أردت أنمي يجعلك تضحك من قلبك وينسيك تعب اليوم، فهذه اختيارات السينباي الذهبية:\n\n1️⃣ **Grand Blue** — كوميديا جامعية هستيرية، مستحيل تشاهد حلقة بدون ضحك متواصل!\n2️⃣ **Gintama** — ملك الكوميديا والأكشن الساخر بلا منازع.\n3️⃣ **Saiki Kusuo no Psi-nan** — حلقات سريعة وخفيفة عن طالب بقدرات خارقة يحاول فقط العيش بهدوء.\n4️⃣ **Spy x Family** — مزيج رائع ودافئ بين الكوميديا العائلية، الأكشن، ولطافة "آنيا"!\n\nجرب أول حلقة من أي منها وستشكرني فوراً! ✨`;
+  }
+
+  if (q.includes('أكشن') || q.includes('قتال') || q.includes('حماس') || q.includes('شونين') || mood.includes('متحمس')) {
+    return `هذا هو الحماس الذي أحبه يا صديقي! 🔥⚔️ إذا كنت تريد معارك ملحمية وتحريك يفجر الشاشة، إليك نخبة الشونين والأكشن:\n\n1️⃣ **Solo Leveling** — تطور قوة البطل "سونغ جين-وو" وقتالات الظلال ترفع الأدرينالين لأقصى حد!\n2️⃣ **Jujutsu Kaisen** — خصوصاً آرك شيبويا، تحريك قتالي خارق للطبيعة.\n3️⃣ **Demon Slayer (Kimetsu no Yaiba)** — لوحات فنية متحركة في كل معركة.\n4️⃣ **Hunter x Hunter (2011)** — أفضل نظام قوة (Nen) وأعمق رحلة مغامرة في عالم الشونين.\n\nهل تابعت أياً منها أم تريد توصيات أعمق وأندر؟ 💪`;
+  }
+
+  if (q.includes('موسم') || q.includes('جديد') || q.includes('حالي')) {
+    return `سؤال في محله يا ناكاما! 🌟 الساحة حالياً مشتعلة بأعمال قوية جداً تتصدر التقييمات:\n\n🔥 **أبرز الأعمال التي يجب أن تضعها في قائمتك:**\n• **Solo Leveling** — لا يزال يكتسح الشعبية بقتالاته الملحمية.\n• **Frieren: Beyond Journey's End** — تحفة فنية تجمع بين السحر، الفلسفة، والقتالات المذهلة.\n• **Dandadan** — إبداع بصري وسرعة أحداث تجمع الأكشن والكوميديا بطابع فريد.\n• **Kaiju No. 8** — أكشن وحماس منذ الحلقة الأولى.\n\nيمكنك تصفح تبويب **"موسم الأنمي"** في التطبيق لرؤية الحلقات المحدثة أولاً بأول! 📺`;
+  }
+
+  return `موشي موشي يا ناكاما! 🌟 بصفتي "السينباي المخضرم" وبناءً على مزاجك الحالي (${mood})، أنصحك بتجربة أحد هذه الأعمال الاستثنائية حسب ذوقك:\n\n• **للغموض والتشويق الذهني:** *Steins;Gate* أو *Monster*\n• **للأكشن والحماس الملحمي:** *Attack on Titan* أو *Hunter x Hunter*\n• **للقصص العميقة والفانتازيا:** *Frieren* أو *Fullmetal Alchemist: Brotherhood*\n\nأخبرني بنوعك المفضل (أكشن، غموض، خيال، كوميديا، أو أنمي قصير) أو اذكر لي آخر أنمي أعجبك لأعطيك توصية مفصلة على مقاسك تماماً! 🔥`;
+}
 
 const FALLBACK_GAMES: Record<string, any[]> = {
   quotes: [
@@ -227,61 +314,120 @@ const handleAsync = (fn: (req: Request, res: Response, next: NextFunction) => Pr
 };
 
 router.post('/chat', handleAsync(async (req: Request, res: Response) => {
-  const { messages, mood, status } = req.body;
-  if (!messages || !Array.isArray(messages)) {
+  const { messages, mood, status, userId } = req.body;
+  if (!messages || !Array.isArray(messages) || messages.length === 0) {
     return res.status(400).json({ success: false, message: 'Invalid messages array.' });
+  }
+
+  // 1. Identify user for fair multi-user rate limiting
+  const clientId = String(userId || req.headers['x-forwarded-for'] || req.ip || 'anon');
+  const rateCheck = checkRateLimit(clientId);
+  if (!rateCheck.allowed) {
+    return res.status(429).json({
+      success: false,
+      rateLimited: true,
+      retryAfterSec: rateCheck.retryAfterSec,
+      message: `مهلاً يا ناكاما! 🔥 أنت ترسل الرسائل بسرعة البرق. انتظر ${rateCheck.retryAfterSec} ثانية فقط للحفاظ على سرعة الخادم لجميع الأوتاكو!`
+    });
+  }
+
+  const userMood = String(mood || 'طبيعي');
+  const userStatus = String(status || 'أتابع أنمي');
+
+  // 2. Context Window Optimization: Keep only the last 6 messages and cap length at 600 chars
+  // This reduces token usage by up to 85% for long conversations across thousands of users.
+  const recentMessages = messages.slice(-6).map((m: any) => ({
+    sender: m.sender === 'user' ? 'user' : 'bot',
+    text: String(m.text || '').slice(0, 600).trim(),
+  })).filter((m: any) => m.text.length > 0);
+
+  const lastUserMsg = [...recentMessages].reverse().find((m) => m.sender === 'user')?.text || '';
+
+  // 3. Check shared response cache for common/quick prompts
+  const isSingleTurnOrQuickPrompt = recentMessages.filter((m) => m.sender === 'user').length <= 2;
+  const cacheKey = normalizePromptKey(lastUserMsg, userMood);
+
+  if (isSingleTurnOrQuickPrompt && cacheKey.length > 4) {
+    const cached = chatResponseCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return res.json({
+        success: true,
+        cached: true,
+        text: cached.text,
+      });
+    }
   }
 
   const ai = getAi();
   if (!ai) {
-    return res.status(500).json({ success: false, message: 'Gemini API key is not configured or failed to initialize client.' });
+    return res.json({
+      success: true,
+      fallback: true,
+      text: generateSmartOtakuFallback(lastUserMsg, userMood),
+    });
   }
 
   try {
-    const userMood = mood || 'طبيعي';
-    const userStatus = status || 'أتابع أنمي';
-
-    const systemInstruction = `أنت "السينباي المخضرم" (أوتاكو قديم مخضرم لديه خبرة شاسعة ومعرفة عميقة بكل تفاصيل وأسرار الأنمي والمانغا من الثمانينيات وحتى أحدث مواسم الأنمي الحالية).
-تحدث باللغة العربية بأسلوب الأوتاكو الحقيقي والودود، بحماس وحركية ممتعة، واستخدم الكلمات اليابانية الشهيرة بين الحين والآخر مثل ("يا صديقي"، "باكا"، "دونو"، "ناكاما"، "جتسو"، "موشي موشي").
+    // 4. Deduplicate identical concurrent requests from multiple users clicking the same prompt simultaneously
+    const executeGeneration = async (): Promise<string> => {
+      const systemInstruction = `أنت "السينباي المخضرم" (أوتاكو قديم مخضرم لديه خبرة شاسعة ومعرفة عميقة بكل تفاصيل وأسرار الأنمي والمانغا من الثمانينيات وحتى أحدث مواسم الأنمي الحالية).
+تحدث باللغة العربية بأسلوب الأوتاكو الحقيقي والودود، بحماس وحركية ممتعة، واستخدم الكلمات اليابانية الشهيرة باعتدال مثل ("يا ناكاما"، "سينباي"، "سوغوي").
 مزاج المستخدم الحالي ووضعه هو: [المزاج: ${userMood} | الحالة: ${userStatus}].
-عليك مراعاة مزاجه ووضعه تماماً في أسلوب الحوار:
-- إذا كان حزيناً أو محبطاً: هونه عليه بكلمات تشجيعية دافئة واقترح له أنمي كوميدي أو شريحة من الحياة (Slice of Life) ليرفع معنوياته.
-- إذا كان ملاناً للغاية: واجهه باقتراحات لم تخطر على باله من الأنميات الحماسية والقصص الغامضة والمقعدة لتكسر روتين يومه فوراً.
-- إذا كان متحركاً ومتحمساً بالنار (خارق): زد حماسته وقارن شعوره بلحظات قتال ملحمية واقترح له شونين جبار بإنتاج مذهل.
-أظهر دائماً خبرتك كأوتاكو مخضرم في اقتراح الأعمال، واذكر له أسباباً ذكية للمشاهدة ترتبط بمشاعره الحالية ليفصل معك تماماً!`;
+اجعل ردك منظماً، واضحاً، ومختصراً بشكل مفيد (لا يتجاوز 150 كلمة إلا عند الضرورة) لتوفير قراءة سريعة وممتعة.`;
 
-    const contents = messages.map((m: any) => ({
-      role: m.sender === 'user' ? 'user' : 'model',
-      parts: [{ text: m.text }]
-    }));
+      const contents = recentMessages.map((m: any) => ({
+        role: m.sender === 'user' ? 'user' : 'model',
+        parts: [{ text: m.text }]
+      }));
 
-    console.log("Generating Otaku Chat response with mood:", userMood, "status:", userStatus);
-    const modelsToTry = ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-flash-latest'];
-    let responseText = '';
-    let success = false;
-
-    for (const modelName of modelsToTry) {
-      try {
-        const response = await ai.models.generateContent({
-          model: modelName,
-          contents,
-          config: {
-            systemInstruction: systemInstruction,
-            temperature: 0.8
+      // Load-balanced model cascade across high-throughput Flash models
+      const modelsToTry = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-2.5-flash'];
+      for (const modelName of modelsToTry) {
+        try {
+          const response = await ai.models.generateContent({
+            model: modelName,
+            contents,
+            config: {
+              systemInstruction,
+              temperature: 0.75,
+              maxOutputTokens: 550,
+            }
+          });
+          if (response?.text) {
+            return response.text;
           }
-        });
-        if (response?.text) {
-          responseText = response.text;
-          success = true;
-          break;
+        } catch (err: any) {
+          console.warn(`[Otaku AI Scale] Model ${modelName} busy, cascading to next model:`, err.message || err);
         }
-      } catch (err: any) {
-        console.warn(`Otaku Chat generation using ${modelName} encountered error, trying fallback:`, err.message || err);
+      }
+      // If all models hit temporary quota saturation under heavy multi-user spike, return intelligent Otaku response
+      return generateSmartOtakuFallback(lastUserMsg, userMood);
+    };
+
+    let responseText = '';
+    if (isSingleTurnOrQuickPrompt && inFlightChatRequests.has(cacheKey)) {
+      responseText = await inFlightChatRequests.get(cacheKey)!;
+    } else {
+      const promise = executeGeneration();
+      if (isSingleTurnOrQuickPrompt) {
+        inFlightChatRequests.set(cacheKey, promise);
+      }
+      try {
+        responseText = await promise;
+      } finally {
+        inFlightChatRequests.delete(cacheKey);
       }
     }
 
-    if (!success) {
-      throw new Error("All active Gemini models experienced high demand. Please try again in a moment.");
+    if (isSingleTurnOrQuickPrompt && responseText) {
+      if (chatResponseCache.size > 1000) {
+        const oldestKey = chatResponseCache.keys().next().value;
+        if (oldestKey) chatResponseCache.delete(oldestKey);
+      }
+      chatResponseCache.set(cacheKey, {
+        text: responseText,
+        expiresAt: Date.now() + CHAT_CACHE_TTL_MS,
+      });
     }
 
     res.json({
@@ -289,8 +435,12 @@ router.post('/chat', handleAsync(async (req: Request, res: Response) => {
       text: responseText
     });
   } catch (error: any) {
-    console.error('Gemini Chat Error Details:', JSON.stringify(error, null, 2), error.message);
-    res.status(500).json({ success: false, message: 'فشل في الاتصال بالذكاء الاصطناعي.', error: error.message });
+    console.warn('Gemini Chat Fallback triggered:', error.message);
+    res.json({
+      success: true,
+      fallback: true,
+      text: generateSmartOtakuFallback(lastUserMsg, userMood),
+    });
   }
 }));
 
@@ -298,20 +448,28 @@ router.get('/games/generate', handleAsync(async (req: Request, res: Response) =>
   const { type } = req.query; // 'quotes', 'lyrics', 'imposter', 'emoji', etc.
   if (!type) return res.status(400).json({ success: false, message: 'Missing type.' });
 
+  const gameType = String(type);
+  const now = Date.now();
+
+  // Check multi-user shared pool cache first so 1,000 concurrent players don't trigger 1,000 Gemini calls
+  const cachedPool = gamesPoolCache.get(gameType);
+  if (cachedPool && cachedPool.expiresAt > now && cachedPool.questions.length >= 5) {
+    const shuffled = [...cachedPool.questions].sort(() => Math.random() - 0.5).slice(0, 5);
+    return res.json({ success: true, cached: true, data: shuffled });
+  }
+
   const ai = getAi();
   if (!ai) {
-    console.warn("[Gemini Games API] Gemini client not ready. Serving high-quality offline fallbacks directly.");
-    const fallbackQuestions = FALLBACK_GAMES[type as string] || FALLBACK_GAMES.quotes;
+    const fallbackQuestions = FALLBACK_GAMES[gameType] || FALLBACK_GAMES.quotes;
     return res.json({ success: true, data: fallbackQuestions });
   }
 
   try {
-    let schemaName = "Questions";
     let schemaProperties: Record<string, any> = {};
     let prompt = "";
 
     const randomSeed = Math.floor(Math.random() * 10000);
-    switch(type) {
+    switch(gameType) {
       case 'quotes':
         prompt = `قم بتوليد 5 أسئلة 'من القائل' لاقتباسات مشهورة من أنميات متنوعة. اجعلها متوسطة إلى صعبة. أرقام عشوائية لإجبار التنويع: ${randomSeed}`;
         schemaProperties = {
@@ -438,7 +596,7 @@ router.get('/games/generate', handleAsync(async (req: Request, res: Response) =>
     }
 
     let response;
-    const modelsToTry = ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-flash-latest'];
+    const modelsToTry = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-2.5-flash'];
     let success = false;
     for (const modelName of modelsToTry) {
       try {
@@ -469,111 +627,251 @@ router.get('/games/generate', handleAsync(async (req: Request, res: Response) =>
     }
 
     const parsed = JSON.parse(response?.text || '{}');
-    res.json({ success: true, data: parsed.questions || [] });
+    const generatedQuestions = parsed.questions || [];
+    const fallbackList = FALLBACK_GAMES[gameType] || FALLBACK_GAMES.quotes;
+    const combinedPool = [...generatedQuestions, ...fallbackList];
+
+    gamesPoolCache.set(gameType, {
+      questions: combinedPool,
+      expiresAt: Date.now() + GAMES_CACHE_TTL_MS,
+      refreshing: false,
+    });
+
+    res.json({ success: true, data: generatedQuestions.length > 0 ? generatedQuestions : fallbackList });
 
   } catch (error: any) {
-    console.warn(`[Gemini Games fallback] Gemini Games generation failed: ${error.message || error}. Serving high-quality offline fallback questions.`);
-    const fallbackQuestions = FALLBACK_GAMES[type as string] || FALLBACK_GAMES.quotes;
+    console.warn(`[Gemini Games fallback] Serving high-quality offline fallback questions.`);
+    const fallbackQuestions = FALLBACK_GAMES[gameType] || FALLBACK_GAMES.quotes;
     res.json({ success: true, data: fallbackQuestions });
   }
 }));
 
 router.get('/anti-cheat', handleAsync(async (req: Request, res: Response) => {
-  const { title } = req.query;
+  const { title, englishTitle, season, episodesCount, synopsis, characters } = req.query;
   if (!title) return res.status(400).json({ success: false, message: 'Missing anime title.' });
 
-  const cleanTitle = String(title).toLowerCase().trim();
-  let localQuestion = null;
+  const rawTitle = String(title).trim();
+  const rawEngTitle = String(englishTitle || '').trim();
+  const seasonNum = Math.max(1, parseInt(String(season || '1'), 10) || 1);
+  const epsCount = parseInt(String(episodesCount || '12'), 10) || 12;
+  const cleanTitle = `${rawTitle.toLowerCase()} ${rawEngTitle.toLowerCase()}`.trim();
+  const cacheKey = `${cleanTitle}_s${seasonNum}`;
 
-  // 1. فحص فوري ومحلي للأسئلة فائقة الجودة للأعمال الكبرى لتوفير رصيد الكوتا وسرعة الاستجابة اللحظية
-  if (cleanTitle.includes('one piece') || cleanTitle.includes('ون بيس')) {
-    localQuestion = {
-      question: 'ما هو اسم أول سفينة طاقم قبعة القش بالكامل قبل استخدام ساني؟',
-      options: ['جوينج ميري (Going Merry)', 'ثاوزند ساني (Thousand Sunny)', 'ريد فورس', 'أوروجين لاينر'],
-      correct: 0
-    };
-  } else if (cleanTitle.includes('attack') || cleanTitle.includes('titan') || cleanTitle.includes('هجوم العمالقة')) {
-    localQuestion = {
-      question: 'ما هو الجدار الذي تم اختراقه في بداية الحلقة الأولى من الأنمي؟',
-      options: ['جدار ماريا (Wall Maria)', 'جدار روز (Wall Rose)', 'جدار سينا (Wall Sina)', 'جدار أورفود'],
-      correct: 0
-    };
-  } else if (cleanTitle.includes('naruto') || cleanTitle.includes('ناروتو')) {
-    localQuestion = {
-      question: 'من هو المعلم الأول لناروتو في الأكاديمية والذي أنقذه في أول حلقة؟',
-      options: ['إيروكا أومينو', 'كاكاشي هاتاكي', 'جيرايا', 'ساروتوبي'],
-      correct: 0
-    };
-  } else if (cleanTitle.includes('death note') || cleanTitle.includes('مذكرة الموت')) {
-    localQuestion = {
-      question: 'ما هو الطعام المفضل للشينيغامي ريوك في أنمي مذكرة الموت؟',
-      options: ['الشوكولاتة', 'التفاح الأحمر', 'السوشي', 'الكعك'],
-      correct: 1
-    };
-  } else if (cleanTitle.includes('hunter') || cleanTitle.includes('هنتر')) {
-    localQuestion = {
-      question: 'ما هي الفئة التي ينتمي إليها غون (Gon Freecss) من أنواع النين (Nen)؟',
-      options: ['التعزيز (Enhancement)', 'التحويل', 'التجسيد', 'التلاعب'],
-      correct: 0
-    };
-  } else if (cleanTitle.includes('demon slayer') || cleanTitle.includes('قاتل الشياطين')) {
-    localQuestion = {
-      question: 'ما هو نوع التنفس الذي يستخدمه كامادو تانجيرو في البداية الذي تعلمه من أوروكوداكي؟',
-      options: ['تنفس الماء (Water Breathing)', 'تنفس الرعد', 'تنفس النار', 'تنفس الصخر'],
-      correct: 0
-    };
+  // Check multi-user Anti-Cheat cache first (stores an array of questions so retries get fresh questions)
+  const cachedQuiz = antiCheatCache.get(cacheKey);
+  if (cachedQuiz && cachedQuiz.expiresAt > Date.now() && Array.isArray(cachedQuiz.data) && cachedQuiz.data.length > 0) {
+    const picked = cachedQuiz.data[Math.floor(Math.random() * cachedQuiz.data.length)];
+    return res.json({ success: true, cached: true, data: picked });
+  }
+
+  let localPool: any[] | null = null;
+
+  // 1. فحص فوري ومحلي لأسئلة مرتبطة بالموسم وأحداثه النهائية للأعمال الشهيرة
+  if (cleanTitle.includes('attack') || cleanTitle.includes('titan') || cleanTitle.includes('shingeki') || cleanTitle.includes('هجوم العمالقة')) {
+    if (seasonNum === 1) {
+      localPool = [
+        {
+          question: 'في نهاية الموسم الأول من هجوم العمالقة، من تبيّن أنها العملاقة الأنثى التي قاتلت إيرين داخل سور سينا (مقاطعة ستوهيس)؟',
+          options: ['آني ليونهارت (Annie Leonhart)', 'ميكاسا أكرمان', 'هيستوريا ريس', 'ساشا براوس'],
+          correct: 0
+        },
+        {
+          question: 'ماذا اكتشف فيلق الاستطلاع داخل سور سينا في المشهد الختامي من الموسم الأول بعد تبلور آني؟',
+          options: ['وجود عملاق ضخم حي مدفون داخل الجدار نفسه', 'بوابة سرية تقود إلى القبو', 'مختبر لصناعة مصل العمالقة', 'سلاح مدفعي قديم'],
+          correct: 0
+        }
+      ];
+    } else if (seasonNum === 2) {
+      localPool = [
+        {
+          question: 'في الموسم الثاني من هجوم العمالقة، من كشف عن هويته فوق الجدار بأنه العملاق المدرع والعملاق الضخم؟',
+          options: ['راينر براون وبيرتولت هوفر', 'زيكي ييغر وبيك فينغر', 'إيروين سميث وليفاي', 'كوني سبرينغر وجان كيرشتاين'],
+          correct: 0
+        },
+        {
+          question: 'ما هي القدرة التي فعلها إيرين لأول مرة في الحلقة الأخيرة من الموسم الثاني عندما لمس العملاقة المبتسمة (دينا فريتز)؟',
+          options: ['قدرة الإحداثي (التحكم بالعمالقة وتوجيههم)', 'التصلب الكامل للجسد', 'الطيران عبر عدة المناورة', 'استدعاء عملاق المطرقة'],
+          correct: 0
+        }
+      ];
+    } else if (seasonNum === 3) {
+      localPool = [
+        {
+          question: 'في نهاية معركة استعادة شيغانشينا في الموسم الثالث، من الذي تم اختياره لحقنه بمصل العملاق ليرث العملاق الضخم؟',
+          options: ['أرمين أرليرت (Armin Arlert)', 'إيروين سميث (Erwin Smith)', 'هانجي زوي', 'جان كيرشتاين'],
+          correct: 0
+        }
+      ];
+    } else {
+      localPool = [
+        {
+          question: 'في الموسم الرابع (الأخير) من هجوم العمالقة، ما هو اسم الخطة الكارثية التي أطلقها إيرين ييغر بعد دخوله مسارات يمير؟',
+          options: ['دك الأرض (The Rumbling)', 'خطة القتل الرحيم', 'عملية تحرير ليبيريو', 'مشروع السور الحديدي'],
+          correct: 0
+        }
+      ];
+    }
+  } else if (cleanTitle.includes('demon slayer') || cleanTitle.includes('kimetsu') || cleanTitle.includes('قاتل الشياطين')) {
+    if (seasonNum === 1) {
+      localPool = [
+        {
+          question: 'في نهاية الموسم الأول من قاتل الشياطين (جبل ناتاغومو)، من هو القمر السفلي الخامس الذي قاتله تانجيرو وأيقظ ضده رقصة إله النار؟',
+          options: ['روي (Rui) شيطان العناكب', 'إنمو (Enmu)', 'أكازا (Akaza)', 'غيوتارو (Gyutaro)'],
+          correct: 0
+        }
+      ];
+    } else if (seasonNum === 2) {
+      localPool = [
+        {
+          question: 'في الموسم الثاني من قاتل الشياطين (حي الترفيه)، من هو الهاشيرا الذي قاد المهمة بجانب تانجيرو ضد القمر العلوي السادس (داكي وغيوتارو)؟',
+          options: ['تينغين أوزوي (هاشيرا الصوت)', 'كيوجيرو رينغوكو (هاشيرا اللهب)', 'ميتسوري كانروجي (هاشيرا الحب)', 'مويتشيرو توكيتو (هاشيرا الضباب)'],
+          correct: 0
+        }
+      ];
+    } else if (seasonNum === 3) {
+      localPool = [
+        {
+          question: 'ما هي المعجزة غير المسبوقة التي حدثت لنيزوكو في الحلقة الأخيرة من الموسم الثالث (قرية صانعي السيوف)؟',
+          options: ['تمكنت من المشي تحت أشعة الشمس والتحدث دون أن تحترق', 'تحولت إلى هاشيرا رسمي في الفيلق', 'استعادت ذاكرتها البشرية بالكامل وعادت إنسانة', 'هزمت موزان بمفردها'],
+          correct: 0
+        }
+      ];
+    } else {
+      localPool = [
+        {
+          question: 'بماذا انتهت الحلقة الأخيرة من موسم تدريب الهاشيرا في أنمي قاتل الشياطين؟',
+          options: ['سقوط تانجيرو والهاشيرا جميعاً داخل قلعة اللانهاية الخاصة بموزان', 'انتصار الفيلق في غابة الضباب', 'اعتزال غيو توميوكا القتال', 'تتويج زينيتسو كهاشيرا للرعد'],
+          correct: 0
+        }
+      ];
+    }
   } else if (cleanTitle.includes('jujutsu') || cleanTitle.includes('جوجوتسو')) {
-    localQuestion = {
-      question: 'ما هو اسم الإصبع الأسطوري للرعب الذي ابتلعه إيتادوري يوجي في البداية؟',
-      options: ['إصبع ريو مين سوكونا (Ryomen Sukuna)', 'إصبع ساتورو غوجو', 'إصبع ماهيتو', 'إصبع سوغورو غيتو'],
-      correct: 0
-    };
-  } else if (cleanTitle.includes('dragon ball') || cleanTitle.includes('دراغون بول')) {
-    localQuestion = {
-      question: 'ما هي التقنية المدمرة الأسطورية الشهيرة التي علمها المعلم روشي لغوكو؟',
-      options: ['كاميهاميها (Kamehameha)', 'جينكي داما', 'فاينل فلاش', 'ماكانكوسابو'],
-      correct: 0
-    };
-  } else if (cleanTitle.includes('bleach') || cleanTitle.includes('بليتش')) {
-    localQuestion = {
-      question: 'ما هو الاسم الحقيقي لسيف (الزانباكتو) كوروساكي إيتشيغو؟',
-      options: ['زانغيتسو (Zangetsu)', 'سينبونزاكورا', 'هيورينمارو', 'وابيسوكي'],
-      correct: 0
-    };
-  }
-
-  if (localQuestion) {
-    console.log(`[Anti-Cheat] Serving instant handcrafted local question for popular title: ${title}`);
-    return res.json({ success: true, data: localQuestion });
-  }
-
-  const ai = getAi();
-  if (!ai) {
-    // If Gemini key is missing, serve general pool fallback immediately!
-    console.warn("[Anti-Cheat] Gemini API key is missing. Serving general fallback.");
-    const generalPool = [
+    if (seasonNum === 1) {
+      localPool = [
+        {
+          question: 'في نهاية الموسم الأول من جوجوتسو كايسن، أي تقنية عالية المستوى نجح ميغومي فوشيغورو في تفعيلها لأول مرة لهزيمة اللعنة حاملة إصبع سوكونا؟',
+          options: ['توسيع المجال: حديقة الظلال الخيالية (Chimera Shadow Garden)', 'استدعاء الجنرال ماهوراغا', 'وميض أسود رباعي', 'التقنية الملعونة العكسية'],
+          correct: 0
+        }
+      ];
+    } else {
+      localPool = [
+        {
+          question: 'في الموسم الثاني من جوجوتسو كايسن (حادثة شيبويا)، ما هي الأداة الملعونة الخاصة التي استُخدمت لختم ساتورو غوجو؟',
+          options: ['بوابة سجن العالم (Prison Realm)', 'رمح السماء المقلوب', 'سيف ترويض الأرواح', 'حبل التدفق الأسود'],
+          correct: 0
+        }
+      ];
+    }
+  } else if (cleanTitle.includes('death note') || cleanTitle.includes('مذكرة الموت')) {
+    localPool = [
       {
-        question: `سؤال للتحقق من مشاهدتك وتفاعلك: ما هي القوة الروحية الشهيرة المستخدمة في أنمي "ناروتو"؟`,
-        options: ['التشاكرا (Chakra)', 'الكي (Ki)', 'المانا (Mana)', 'النيشيرين'],
+        question: 'في الحلقة الأخيرة من أنمي مذكرة الموت، من هو المحقق الذي نجح في كشف تلاعب لايت ياغامي بالمذكرة في المستودع الأصفر؟',
+        options: ['نير (Near) بفضل تضحية ميلو وتهور ميكامي', 'إل (L Lawliet)', 'واتاري', 'ماتسودا بمفرده'],
         correct: 0
       },
       {
-        question: `سؤال للتحقق من مشاهدتك وتفاعلك: في عالم الأنمي، من هي الشخصية الشهيرة التي تهدف لتصبح السايان الأقوى وتدافع عن الأرض؟`,
-        options: ['سون غوكو', 'لوفي', 'إيتشيغو', 'ناروتو'],
-        correct: 0
-      },
-      {
-        question: `سؤال للتحقق من مشاهدتك وتفاعلك: في أنمي هجوم العمالقة، ما هو هدف "فيلق الاستطلاع"؟`,
-        options: ['استكشاف مناطق خارج الأسوار ومحاربة العمالقة', 'حماية الملك داخل السور الأعمق', 'الشرطة العسكرية وحفظ الأمن الداخلي', 'البحث عن الكنز المفقود'],
+        question: 'من الذي كتب اسم "لايت ياغامي" في مذكرة الموت في المشهد الأخير لينهي حياته كما وعده في بداية القصة؟',
+        options: ['الشينيغامي ريوك (Ryuk)', 'الشينيغامي ريم (Rem)', 'نير (Near)', 'تيرو ميكامي'],
         correct: 0
       }
     ];
-    return res.json({ success: true, data: generalPool[Math.floor(Math.random() * generalPool.length)] });
+  } else if (cleanTitle.includes('solo leveling') || cleanTitle.includes('سولو ليفلينج')) {
+    localPool = [
+      {
+        question: 'في نهاية الموسم الأول من أنمي Solo Leveling، ما هي المهنة السرية واللقب الذي حصل عليه سونغ جين-وو بعد اجتياز مهمة تغيير المهنة وهزيمة إغريس؟',
+        options: ['عاهل الظلال (Shadow Monarch)', 'ملك التنانين', 'سيد اللهب الأبيض', 'إمبراطور الجليد'],
+        correct: 0
+      }
+    ];
+  } else if (cleanTitle.includes('hunter') || cleanTitle.includes('هنتر')) {
+    localPool = [
+      {
+        question: 'في نهاية آرك نمل الكيميرا في أنمي Hunter x Hunter، كيف هزم الرئيس نيتيرو ملك النمل ميرويم في النهاية؟',
+        options: ['بتفجير قنبلة "وردة الرجل الفقير" السامة المزروعة في قلبه', 'بضربة البوديساتفا المئة القاضية', 'بختم النين الخاص به للأبد', 'بتدخل غون البالغ في اللحظة الأخيرة'],
+        correct: 0
+      }
+    ];
+  } else if (cleanTitle.includes('fullmetal') || cleanTitle.includes('الخيميائي المعدني')) {
+    localPool = [
+      {
+        question: 'في نهاية أنمي الخيميائي المعدني (Brotherhood)، بماذا ضحى إدوارد إلريك أمام بوابة الحقيقة لاستعادة جسد شقيقه ألفونس بالكامل؟',
+        options: ['ببوابتة الخيميائية وقدرته على استخدام الخيمياء للأبد', 'بذراعه وساقه مرة أخرى', 'بحجر الفلاسفة الأحمر', 'بذاكرته عن رحلته الطويلة'],
+        correct: 0
+      }
+    ];
+  } else if (cleanTitle.includes('code geass') || cleanTitle.includes('كود غياس')) {
+    localPool = [
+      {
+        question: 'ما هو اسم الخطة النهائية في ختام أنمي Code Geass التي جمع فيها لولوش كراهية العالم كله نحوه ثم جعل سوزاكو يقتله في زي "زيرو"؟',
+        options: ['مرثية زيرو (Zero Requiem)', 'التمرد الأسود', 'أمر راغناروك', 'مشروع السلام الإمبراطوري'],
+        correct: 0
+      }
+    ];
+  }
+
+  if (localPool && localPool.length > 0) {
+    antiCheatCache.set(cacheKey, {
+      data: localPool,
+      expiresAt: Date.now() + 60 * 60 * 1000,
+    });
+    const picked = localPool[Math.floor(Math.random() * localPool.length)];
+    return res.json({ success: true, data: picked });
+  }
+
+  // Helper to build a tailored fallback quiz from synopsis & characters if AI is unavailable
+  const buildMetadataFallback = () => {
+    const seasonLabel = seasonNum > 1 ? ` (الموسم ${seasonNum})` : '';
+    const charList = String(characters || '').split(',').map(s => s.trim()).filter(Boolean);
+    if (charList.length >= 2) {
+      const mainChar = charList[0];
+      const secondChar = charList[1];
+      return {
+        question: `للتحقق من إكمالك لمشاهدة "${rawTitle}"${seasonLabel} حتى الحلقة ${epsCount}: أي من الشخصيات التالية كان لها دور محوري في أحداث هذا الموسم وحسم صراعاته؟`,
+        options: [
+          `${mainChar} و ${secondChar}`,
+          'تاتسوماكي وكينغ من عالم البطولة',
+          'غينتوكي ساكاتا وكاغورا',
+          'إدوارد نيغيت وماركو العنقاء'
+        ],
+        correct: 0
+      };
+    }
+    return {
+      question: `للتحقق من مشاهدتك الكاملة لأنمي "${rawTitle}"${seasonLabel} (${epsCount} حلقة): كيف انتهت الذروة الدرامية لأحداث هذا الموسم؟`,
+      options: [
+        'بحسم المواجهة الرئيسية في الحلقات الأخيرة وكشف مصير الأبطال للمرحلة القادمة',
+        'بتحول القصة إلى برنامج مسابقات رياضي مدرسي بدون أي صراع',
+        'بإلغاء جميع الأحداث السابقة واكتشاف أن الموسم كله مجرد إعلان تجاري',
+        'بعدم ظهور الشخصية الرئيسية طوال حلقات النصف الثاني من الموسم'
+      ],
+      correct: 0
+    };
+  };
+
+  const ai = getAi();
+  if (!ai) {
+    return res.json({ success: true, data: buildMetadataFallback() });
   }
 
   try {
-    const prompt = `قم بتوليد سؤال واحد فقط متوسط إلى صعب عن الأنمي "${title}" ليثبت المستخدم أنه شاهده فعلاً (تجنب الأسئلة البديهية التي يمكن الإجابة عليها من غلاف الأنمي).`;
-    const modelsToTry = ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-flash-latest'];
+    const seasonText = seasonNum > 1 ? `الموسم ${seasonNum}` : 'الموسم الأول / الكامل';
+    const contextParts: string[] = [
+      `اسم الأنمي: "${rawTitle}"${rawEngTitle ? ` (${rawEngTitle})` : ''}`,
+      `الموسم المطلوب التحقق منه: ${seasonText} (عدد الحلقات: ${epsCount})`
+    ];
+    if (characters) contextParts.push(`أبرز الشخصيات: ${characters}`);
+    if (synopsis) contextParts.push(`نبذة عن القصة: ${synopsis}`);
+
+    const prompt = `أنت نظام منع غش صارم في تطبيق أنمي. يريد المستخدم إضافة الأنمي التالي إلى قائمة "مكتمل":
+${contextParts.join('\n')}
+
+المطلوب:
+قم بتوليد 3 أسئلة مختلفة باللغة العربية الفصحى، كل سؤال يركز تحديداً على أحداث ${seasonText} من هذا الأنمي (وخاصة النصف الثاني أو الحلقات الأخيرة/النهاية من هذا الموسم تحديداً) للتحقق من أن المستخدم قد شاهد ${seasonText} بالكامل فعلاً.
+- تجنب الأسئلة السطحية أو البديهية التي تُعرف من البوستر أو الحلقة الأولى فقط.
+- اجعل الخيارات الأربعة منطقية ومن نفس أجواء العمل بحيث لا يعرف الإجابة الصحيحة إلا من شاهد الموسم بالكامل.`;
+
+    const modelsToTry = ['gemini-3.8-flash', 'gemini-flash-latest'];
     let response;
     let success = false;
 
@@ -588,11 +886,20 @@ router.get('/anti-cheat', handleAsync(async (req: Request, res: Response) => {
             responseSchema: {
               type: Type.OBJECT,
               properties: {
-                question: { type: Type.STRING, description: "The quiz question about the specific anime" },
-                options: { type: Type.ARRAY, items: { type: Type.STRING }, description: "4 options" },
-                correct: { type: Type.INTEGER, description: "Index of the correct option (0-3)" }
+                questions: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      question: { type: Type.STRING, description: "Season-specific anti-cheat question in Arabic" },
+                      options: { type: Type.ARRAY, items: { type: Type.STRING }, description: "4 plausible options in Arabic" },
+                      correct: { type: Type.INTEGER, description: "Index of the correct option (0-3)" }
+                    },
+                    required: ["question", "options", "correct"]
+                  }
+                }
               },
-              required: ["question", "options", "correct"]
+              required: ["questions"]
             }
           }
         });
@@ -610,73 +917,20 @@ router.get('/anti-cheat', handleAsync(async (req: Request, res: Response) => {
     }
 
     const parsed = JSON.parse(response?.text || '{}');
-    res.json({ success: true, data: parsed });
+    const questionsList = Array.isArray(parsed.questions) && parsed.questions.length > 0
+      ? parsed.questions
+      : (parsed.question ? [parsed] : [buildMetadataFallback()]);
+
+    antiCheatCache.set(cacheKey, {
+      data: questionsList,
+      expiresAt: Date.now() + 60 * 60 * 1000, // Cache quiz pool per anime + season for 1 hour
+    });
+    const picked = questionsList[Math.floor(Math.random() * questionsList.length)];
+    res.json({ success: true, data: picked });
   } catch (error: any) {
-    console.warn('Gemini Anti-cheat failed (serving high-quality fallback):', error.message || error);
-    
-    // Serve beautiful fallback data matching common anime series or general industry knowledge
-    let fallbackData = null;
-
-    if (cleanTitle.includes('one piece') || cleanTitle.includes('ون بيس')) {
-      fallbackData = {
-        question: 'ما هو اسم أول سفينة طاقم قبعة القش بالكامل قبل استخدام ساني؟',
-        options: ['جوينج ميري (Going Merry)', 'ثاوزند ساني (Thousand Sunny)', 'ريد فورس', 'أوروجين لاينر'],
-        correct: 0
-      };
-    } else if (cleanTitle.includes('attack') || cleanTitle.includes('titan') || cleanTitle.includes('هجوم العمالقة')) {
-      fallbackData = {
-        question: 'ما هو الجدار الذي تم اختراقه في بداية الحلقة الأولى من الأنمي؟',
-        options: ['جدار ماريا (Wall Maria)', 'جدار روز (Wall Rose)', 'جدار سينا (Wall Sina)', 'جدار أورفود'],
-        correct: 0
-      };
-    } else if (cleanTitle.includes('naruto') || cleanTitle.includes('ناروتو')) {
-      fallbackData = {
-        question: 'من هو المعلم الأول لناروتو في الأكاديمية والذي أنقذه في أول حلقة؟',
-        options: ['إيروكا أومينو', 'كاكاشي هاتاكي', 'جيرايا', 'ساروتوبي'],
-        correct: 0
-      };
-    } else if (cleanTitle.includes('death note') || cleanTitle.includes('مذكرة الموت')) {
-      fallbackData = {
-        question: 'ما هو الطعام المفضل للشينيغامي ريوك في أنمي مذكرة الموت؟',
-        options: ['الشوكولاتة', 'التفاح الأحمر', 'السوشي', 'الكعك'],
-        correct: 1
-      };
-    } else if (cleanTitle.includes('hunter') || cleanTitle.includes('هنتر')) {
-      fallbackData = {
-        question: 'ما هي الفئة التي ينتمي إليها غون (Gon Freecss) من أنواع النين (Nen)؟',
-        options: ['التعزيز (Enhancement)', 'التحويل', 'التجسيد', 'التلاعب'],
-        correct: 0
-      };
-    } else if (cleanTitle.includes('demon slayer') || cleanTitle.includes('قاتل الشياطين')) {
-      fallbackData = {
-        question: 'ما هو نوع التنفس الذي يستخدمه كامادو تانجيرو في البداية الذي تعلمه من أوروكوداكي؟',
-        options: ['تنفس الماء (Water Breathing)', 'تنفس الرعد', 'تنفس النار', 'تنفس الصخر'],
-        correct: 0
-      };
-    } else {
-      // General anime trivia question related to the anime industry or general knowledge
-      const generalPool = [
-        {
-          question: `سؤال للتحقق من مشاهدتك وتفاعلك: ما هي القوة الروحية الشهيرة المستخدمة في أنمي "ناروتو"؟`,
-          options: ['التشاكرا (Chakra)', 'الكي (Ki)', 'المانا (Mana)', 'النيشيرين'],
-          correct: 0
-        },
-        {
-          question: `سؤال للتحقق من مشاهدتك وتفاعلك: في عالم الأنمي، من هي الشخصية الشهيرة التي تهدف لتصبح السايان الأقوى وتدافع عن الأرض؟`,
-          options: ['سون غوكو', 'لوفي', 'إيتشيغو', 'ناروتو'],
-          correct: 0
-        },
-        {
-          question: `سؤال للتحقق من مشاهدتك وتفاعلك: في أنمي هجوم العمالقة، ما هو هدف "فيلق الاستطلاع"؟`,
-          options: ['استكشاف مناطق خارج الأسوار ومحاربة العمالقة', 'حماية الملك داخل السور الأعمق', 'الشرطة العسكرية وحفظ الأمن الداخلي', 'البحث عن الكنز المفقود'],
-          correct: 0
-        }
-      ];
-      fallbackData = generalPool[Math.floor(Math.random() * generalPool.length)];
-    }
-
-    res.json({ success: true, data: fallbackData });
+    res.json({ success: true, data: buildMetadataFallback() });
   }
 }));
 
 export default router;
+

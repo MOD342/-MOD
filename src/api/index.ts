@@ -3,6 +3,7 @@ import crypto from "crypto";
 import * as cheerio from "cheerio";
 import { ScraperService } from "../services/scraperService";
 import geminiRoutes from "./gemini";
+import adminAuthRoutes, { requireServerAdminAuth } from "./adminAuth";
 import { GoogleGenAI } from "@google/genai";
 import { serverCache } from "../services/cacheService";
 import { schedulerService } from "../services/schedulerService";
@@ -244,8 +245,9 @@ async function translateItemsList(items: any[]): Promise<any[]> {
   );
 }
 
-// إضافة المسارات الخاصة بـ Gemini
+// إضافة المسارات الخاصة بـ Gemini و Firebase Admin Security
 router.use("/ai", geminiRoutes);
+router.use("/admin", adminAuthRoutes);
 
 // Helper for Jikan API to handle 429 Rate Limit
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -945,7 +947,7 @@ router.post(
 
 // دالات التشفير وفك الأقنعة لتوفير نظام قشط ذكي للسيرفرات المشهورة
 
-// 1. مفكك حزم جافاسكريبت الشهيرة لفك أكواد Mp4Upload, Streamwish, Filemoon, Vidmoly وغيرها
+// 1. مفكك حزم جافاسكريبت الشهيرة لفك أكواد Mp4Upload, Streamwish, Filemoon, Vidmoly, Uqload وغيرها بجميع أنظمة العد (Radix 10..62)
 function unpackDeanEdwards(packed: string): string {
   try {
     const regex =
@@ -958,19 +960,28 @@ function unpackDeanEdwards(packed: string): string {
       if (!matchAlt) return "";
       return runUnpack(
         matchAlt[1],
-        parseInt(matchAlt[2]),
-        parseInt(matchAlt[3]),
+        parseInt(matchAlt[2], 10),
+        parseInt(matchAlt[3], 10),
         matchAlt[4],
       );
     }
     return runUnpack(
       match[1],
-      parseInt(match[2]),
-      parseInt(match[3]),
+      parseInt(match[2], 10),
+      parseInt(match[3], 10),
       match[4],
     );
   } catch (e) {
     return "";
+  }
+
+  function encodeBase(val: number, radix: number): string {
+    if (radix <= 36) {
+      return val.toString(radix);
+    }
+    const prefix = val < radix ? "" : encodeBase(Math.floor(val / radix), radix);
+    const rem = val % radix;
+    return prefix + (rem > 35 ? String.fromCharCode(rem + 29) : rem.toString(36));
   }
 
   function runUnpack(pStr: string, a: number, c: number, kStr: string): string {
@@ -996,27 +1007,15 @@ function unpackDeanEdwards(packed: string): string {
       .replace(/\\\\/g, "\\");
     const k = kRaw.split("|");
 
-    const lookup = (val: number): string => {
-      return k[val] || val.toString(36);
-    };
+    const dict: Record<string, string> = {};
+    let count = c;
+    while (count--) {
+      const key = encodeBase(count, a);
+      dict[key] = k[count] || key;
+    }
 
-    const baseDecoder = (char: string): string => {
-      let baseVal = 0;
-      if (a === 62) {
-        const alphabet =
-          "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-        for (let i = 0; i < char.length; i++) {
-          baseVal = baseVal * 62 + alphabet.indexOf(char[i]);
-        }
-      } else {
-        baseVal = parseInt(char, a);
-      }
-      if (isNaN(baseVal)) return char;
-      return lookup(baseVal) || char;
-    };
-
-    return p.replace(/\b([0-9a-zA-Z]+)\b/g, (matchVal) => {
-      return baseDecoder(matchVal) || matchVal;
+    return p.replace(/\b(\w+)\b/g, (word) => {
+      return Object.prototype.hasOwnProperty.call(dict, word) ? dict[word] : word;
     });
   }
 }
@@ -1443,8 +1442,8 @@ async function extractDirectStream(
       }
     }
 
-    // 3.5. دعم إضافي للسيرفرات الشهيرة (4Shared, Uqload, Sibnet, Vidmoly, Filemoon)
-    // 4Shared Direct MP4 Extraction (بث مباشر فوري بدون عداد الانتظار 10 ثوانٍ)
+    // 3.5. دعم إضافي للسيرفرات الشهيرة (4Shared, Uqload, Sibnet, Vidmoly, Filemoon, Streamwish, CloudStream, Sendvid, MP4Upload, YourUpload)
+    // 4Shared Direct MP4 Extraction (بث مباشر فوري بدون عداد الانتظار 10 ثوانٍ وبدون إعلانات)
     if (currentUrl.includes("4shared.com")) {
       const sharedMp4Match =
         html.match(/<source\s+src=["'](https?:[^"']+\.mp4[^"']*)["']/i) ||
@@ -1456,7 +1455,7 @@ async function extractDirectStream(
           sources: [
             {
               file: sharedMp4Match[1],
-              label: "4Shared Direct (MP4)",
+              label: "FHD",
               type: "mp4",
             },
           ],
@@ -1464,40 +1463,175 @@ async function extractDirectStream(
       }
     }
 
-    // MP4Upload & Streamwish / AsnWish: مشغل السيرفر المدمج يتطلب جلسة المتصفح وترويسة Referer الأصلية
+    // Streamwish / AsnWish / CloudStream (hgcloud / dhcplay): فك حزمة Dean Edwards واستخراج رابط HLS المباشر لتجاوز خطأ Sandboxed embed والإعلانات نهائياً
     if (
-      currentUrl.includes("mp4upload.com") ||
-      currentUrl.includes("asnwish.com") ||
+      currentUrl.includes("asnwish") ||
       currentUrl.includes("streamwish") ||
       currentUrl.includes("awish") ||
-      currentUrl.includes("swish")
+      currentUrl.includes("swish") ||
+      currentUrl.includes("sfastwish") ||
+      currentUrl.includes("flaswish") ||
+      currentUrl.includes("obeywish") ||
+      currentUrl.includes("cdnwish") ||
+      currentUrl.includes("hgcloud") ||
+      currentUrl.includes("dhcplay")
     ) {
-      return {
-        directUrl: currentUrl,
-        type: "iframe",
-        sources: [{ file: currentUrl, label: "FHD", type: "iframe" }],
-      };
+      let wishCode = combinedCodeToScan;
+      if (currentUrl.includes("hgcloud") || currentUrl.includes("dhcplay")) {
+        const idMatch = currentUrl.match(/\/e\/([A-Za-z0-9_-]+)/);
+        if (idMatch) {
+          try {
+            const asnResp = await fetchWithTimeout(
+              `https://asnwish.com/e/${idMatch[1]}`,
+              { headers: { ...headers, Referer: "https://asnwish.com/" } },
+              3500
+            );
+            if (asnResp.ok) {
+              const asnHtml = await asnResp.text();
+              const unpackedAsn = unpackDeanEdwards(asnHtml);
+              wishCode = unpackedAsn + "\n" + asnHtml;
+            }
+          } catch (_) {}
+        }
+      }
+
+      const hls2Match =
+        wishCode.match(/["']hls2["']\s*:\s*["'](https?:[^"']+\.m3u8[^"']*)["']/i) ||
+        wishCode.match(/file\s*:\s*["'](https?:[^"']+\.m3u8[^"']*)["']/i) ||
+        wishCode.match(/(https?:\/\/[^\s'"]+\/hls2\/[^\s'"]+\.m3u8[^\s'"]*)/i);
+
+      if (hls2Match && hls2Match[1]) {
+        return {
+          directUrl: hls2Match[1],
+          type: "hls",
+          sources: [
+            {
+              file: hls2Match[1],
+              label: "FHD",
+              type: "hls",
+            },
+          ],
+        };
+      }
     }
 
-    // Uqload Direct Extraction
+    // Uqload Direct HLS/MP4 Extraction (تجاوز جدار الـ Sandbox والإعلانات المنبثقة)
     if (currentUrl.includes("uqload")) {
-      const uqMatch =
+      const uqHlsMatch =
+        combinedCodeToScan.match(/file\s*:\s*["'](https?:[^"']+\.m3u8[^"']*)["']/i) ||
+        combinedCodeToScan.match(/(https?:\/\/[^\s'"]*uqload[^\s'"]+\.m3u8[^\s'"]*)/i);
+      if (uqHlsMatch && uqHlsMatch[1]) {
+        return {
+          directUrl: uqHlsMatch[1],
+          type: "hls",
+          sources: [
+            {
+              file: uqHlsMatch[1],
+              label: "FHD",
+              type: "hls",
+            },
+          ],
+        };
+      }
+
+      const uqMp4Match =
         html.match(/sources\s*:\s*\[\s*['"](https?:[^'"]+\.mp4[^'"]*)['"]/i) ||
-        html.match(/file\s*:\s*['"](https?:[^'"]+\.mp4[^'"]*)['"]/i) ||
-        html.match(/video_url\s*:\s*['"](https?:[^'"]+\.mp4[^'"]*)['"]/i) ||
-        html.match(/src\s*:\s*['"](https?:[^'"]+\.mp4[^'"]*)['"]/i) ||
-        combinedCodeToScan.match(
-          /video_url\s*:\s*['"](https?:[^'"]+\.mp4[^'"]*)['"]/i,
-        ) ||
-        combinedCodeToScan.match(
-          /sources\s*:\s*\[\s*['"](https?:[^'"]+\.mp4[^'"]*)['"]/i,
-        );
-      if (uqMatch) {
-        sources.push({
-          file: uqMatch[1],
-          label: "سيرفر Uqload مباشر (HD)",
-          type: "mp4",
-        });
+        combinedCodeToScan.match(/file\s*:\s*['"](https?:[^'"]+\.mp4[^'"]*)['"]/i);
+      if (uqMp4Match && uqMp4Match[1]) {
+        return {
+          directUrl: uqMp4Match[1],
+          type: "direct",
+          sources: [
+            {
+              file: uqMp4Match[1],
+              label: "HD",
+              type: "mp4",
+            },
+          ],
+        };
+      }
+    }
+
+    // Vidmoly Direct HLS Extraction (تجاوز الإعلانات المنبثقة وتشغيل البث على مشغل التطبيق)
+    if (currentUrl.includes("vidmoly")) {
+      const molyMatch =
+        html.match(/file\s*:\s*['"](https?:[^'"]+\.m3u8[^'"]*)['"]/i) ||
+        combinedCodeToScan.match(/file\s*:\s*['"](https?:[^'"]+\.m3u8[^'"]*)['"]/i) ||
+        combinedCodeToScan.match(/(https?:\/\/[^\s'"]+\/master\.m3u8[^\s'"]*)/i);
+      if (molyMatch && molyMatch[1]) {
+        return {
+          directUrl: molyMatch[1],
+          type: "hls",
+          sources: [
+            {
+              file: molyMatch[1],
+              label: "FHD",
+              type: "hls",
+            },
+          ],
+        };
+      }
+    }
+
+    // Sendvid Direct MP4 Extraction
+    if (currentUrl.includes("sendvid")) {
+      const svMatch =
+        html.match(/var\s+video_source\s*=\s*["'](https?:[^"']+\.mp4[^"']*)["']/i) ||
+        html.match(/<source\s+src=["'](https?:[^"']+\.mp4[^"']*)["']/i);
+      if (svMatch && svMatch[1]) {
+        return {
+          directUrl: svMatch[1],
+          type: "direct",
+          sources: [
+            {
+              file: svMatch[1],
+              label: "HD",
+              type: "mp4",
+            },
+          ],
+        };
+      }
+    }
+
+    // YourUpload Direct MP4 Extraction via Server Stream Proxy (لتمرير Referer وتخطي كافة الإعلانات)
+    if (currentUrl.includes("yourupload.com")) {
+      const yuMatch =
+        html.match(/property=["']og:video["']\s+content=["'](https?:[^"']+\.mp4[^"']*)["']/i) ||
+        html.match(/file\s*:\s*['"](https?:\/\/vidcache\.net[^'"]+\.mp4[^'"]*)['"]/i);
+      if (yuMatch && yuMatch[1]) {
+        const proxiedUrl = `/api/anime/stream-proxy?url=${encodeURIComponent(yuMatch[1])}&referer=${encodeURIComponent("https://www.yourupload.com/")}`;
+        return {
+          directUrl: proxiedUrl,
+          type: "direct",
+          sources: [
+            {
+              file: proxiedUrl,
+              label: "FHD",
+              type: "mp4",
+            },
+          ],
+        };
+      }
+    }
+
+    // MP4Upload Direct MP4 Extraction via Server Stream Proxy (لتمرير Referer وتخطي الإعلانات)
+    if (currentUrl.includes("mp4upload.com")) {
+      const mp4uMatch =
+        html.match(/src\s*:\s*["'](https?:\/\/[^"']+mp4upload\.com[^"']+\.mp4[^"']*)["']/i) ||
+        combinedCodeToScan.match(/(https?:\/\/[a-z0-9]+\.mp4upload\.com(?::\d+)?\/d\/[^"'\s]+\/video\.mp4)/i);
+      if (mp4uMatch && mp4uMatch[1]) {
+        const proxiedUrl = `/api/anime/stream-proxy?url=${encodeURIComponent(mp4uMatch[1])}&referer=${encodeURIComponent("https://www.mp4upload.com/")}`;
+        return {
+          directUrl: proxiedUrl,
+          type: "direct",
+          sources: [
+            {
+              file: proxiedUrl,
+              label: "FHD",
+              type: "mp4",
+            },
+          ],
+        };
       }
     }
 
@@ -1513,7 +1647,7 @@ async function extractDirectStream(
       if (fmMatch) {
         sources.push({
           file: fmMatch[1],
-          label: "سيرفر Filemoon مباشر (HLS)",
+          label: "FHD",
           type: "hls",
         });
       }
@@ -1535,24 +1669,8 @@ async function extractDirectStream(
           : sibMatch[1];
         sources.push({
           file: fileUrl,
-          label: "سيرفر Sibnet مباشر (HD)",
+          label: "HD",
           type: "mp4",
-        });
-      }
-    }
-
-    // Vidmoly Direct Extraction
-    if (currentUrl.includes("vidmoly")) {
-      const molyMatch =
-        html.match(/file\s*:\s*['"](https?:[^'"]+\.m3u8[^'"]*)['"]/i) ||
-        combinedCodeToScan.match(
-          /file\s*:\s*['"](https?:[^'"]+\.m3u8[^'"]*)['"]/i,
-        );
-      if (molyMatch) {
-        sources.push({
-          file: molyMatch[1],
-          label: "سيرفر Vidmoly مباشر (HLS)",
-          type: "hls",
         });
       }
     }
@@ -1571,7 +1689,7 @@ async function extractDirectStream(
         if (fileUrl.startsWith("//")) fileUrl = "https:" + fileUrl;
         sources.push({
           file: fileUrl,
-          label: "سيرفر Mixdrop مباشر",
+          label: "HD",
           type: "mp4",
         });
       }
@@ -1590,7 +1708,7 @@ async function extractDirectStream(
       if (vidozaMatch) {
         sources.push({
           file: vidozaMatch[1],
-          label: "سيرفر Vidoza مباشر (HD)",
+          label: "HD",
           type: "mp4",
         });
       }
@@ -1611,7 +1729,7 @@ async function extractDirectStream(
         const isHls = fileUrl.includes(".m3u8");
         sources.push({
           file: fileUrl,
-          label: "سيرفر VOE مباشر",
+          label: "HD",
           type: isHls ? "hls" : "mp4",
         });
       }
@@ -1627,7 +1745,7 @@ async function extractDirectStream(
       if (direct) {
         sources.push({
           file: direct,
-          label: "سيرفر Doodstream فائق السرعة",
+          label: "HD",
           type: "mp4",
         });
       }
@@ -1648,7 +1766,7 @@ async function extractDirectStream(
             if (fileUrl) {
               sources.push({
                 file: fileUrl,
-                label: src.label || src.type || "سيرفر مباشر مكتشف",
+                label: src.label || src.type || "FHD",
                 type: fileUrl.includes(".m3u8") ? "hls" : "mp4",
               });
             }
@@ -1679,49 +1797,16 @@ async function extractDirectStream(
     );
 
     m3u8Matches.forEach((url) => {
-      sources.push({ file: url, label: "بث تلقائي مكتشف (HLS)", type: "hls" });
+      sources.push({ file: url, label: "FHD", type: "hls" });
     });
 
-    mp4Matches.forEach((url, i) => {
-      // تجنب إلحاق المتروسكا والمشغلات الجانبية غير المتطابقة
+    mp4Matches.forEach((url) => {
       sources.push({
         file: url,
-        label: `مشاهدة مباشرة HD (${i + 1})`,
+        label: "HD",
         type: "mp4",
       });
     });
-
-    // 7. فك تشفير السلاسل المخفية بنظام Base64 في الكود البرمجي المشوش تلقائياً
-    const base64Regex = /[A-Za-z0-9+/]{30,}={0,2}/g;
-    const b64Matches = combinedCodeToScan.match(base64Regex) || [];
-    for (const b64 of b64Matches) {
-      try {
-        const decoded = Buffer.from(b64, "base64").toString("utf8");
-        if (decoded.startsWith("http://") || decoded.startsWith("https://")) {
-          if (
-            decoded.includes(".m3u8") &&
-            !decoded.includes("google") &&
-            !decoded.includes("facebook")
-          ) {
-            sources.push({
-              file: decoded,
-              label: "فك تشفير ذكي (HLS)",
-              type: "hls",
-            });
-          } else if (
-            decoded.includes(".mp4") &&
-            !decoded.includes("google") &&
-            !decoded.includes("facebook")
-          ) {
-            sources.push({
-              file: decoded,
-              label: "فك تشفير ذكي (MP4)",
-              type: "mp4",
-            });
-          }
-        }
-      } catch (_) {}
-    }
 
     if (sources.length > 0) {
       const hlsSource = sources.find((s) => s.type === "hls");
@@ -1763,6 +1848,114 @@ async function extractDirectStream(
   }
 }
 
+// مسار وكيل البث المباشر (Stream Proxy) لتمرير ترويسة Referer ودعم الـ Range Requests لسيرفرات YourUpload و MP4Upload بدون إعلانات
+router.get(
+  "/anime/stream-proxy",
+  handleAsync(async (req: Request, res: Response) => {
+    const rawUrl = (req.query.url as string) || "";
+    const referer = (req.query.referer as string) || "";
+    if (!rawUrl || !rawUrl.startsWith("http")) {
+      return res.status(400).send("Invalid stream URL");
+    }
+
+    const proxyHeaders: Record<string, string> = {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+      Accept: "*/*",
+    };
+
+    if (referer) {
+      proxyHeaders["Referer"] = referer;
+      try {
+        const refObj = new URL(referer);
+        proxyHeaders["Origin"] = `${refObj.protocol}//${refObj.host}`;
+      } catch (_) {}
+    }
+
+    if (req.headers.range) {
+      proxyHeaders["Range"] = req.headers.range as string;
+    }
+
+    try {
+      // في حال كان السيرفر (مثل vidcache.net الخاص بـ YourUpload) يوجه 302 إلى سيرفر فرعي يتطلب عدم إرسال Referer في الخطوة الثانية
+      let upstream = await fetch(rawUrl, {
+        headers: proxyHeaders,
+        redirect: "manual",
+      });
+
+      if (
+        (upstream.status === 301 ||
+          upstream.status === 302 ||
+          upstream.status === 303 ||
+          upstream.status === 307 ||
+          upstream.status === 308) &&
+        upstream.headers.get("location")
+      ) {
+        const nextUrl = new URL(
+          upstream.headers.get("location")!,
+          rawUrl
+        ).href;
+        // إذا كان رابط التوجيه على vidcache.net يعمل مباشرة مع Range، يمكننا توجيه المتصفح إليه أو جلبه مباشرة
+        const nextHeaders: Record<string, string> = {
+          "User-Agent": proxyHeaders["User-Agent"],
+          Accept: "*/*",
+        };
+        if (req.headers.range) {
+          nextHeaders["Range"] = req.headers.range as string;
+        }
+        if (referer && !nextUrl.includes("vidcache.net")) {
+          nextHeaders["Referer"] = referer;
+        }
+        upstream = await fetch(nextUrl, {
+          headers: nextHeaders,
+          redirect: "follow",
+        });
+      }
+
+      res.status(upstream.status);
+      const forwardHeaders = [
+        "content-type",
+        "content-length",
+        "content-range",
+        "accept-ranges",
+      ];
+      forwardHeaders.forEach((h) => {
+        const val = upstream.headers.get(h);
+        if (val) res.setHeader(h, val);
+      });
+      res.setHeader("Access-Control-Allow-Origin", "*");
+
+      if (!upstream.body) {
+        return res.end();
+      }
+
+      const reader = upstream.body.getReader();
+      req.on("close", () => {
+        reader.cancel().catch(() => {});
+      });
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!res.writableEnded) {
+          res.write(Buffer.from(value));
+        } else {
+          break;
+        }
+      }
+      if (!res.writableEnded) {
+        res.end();
+      }
+    } catch (err) {
+      if (!res.headersSent) {
+        res.status(502).send("Stream proxy error");
+      } else if (!res.writableEnded) {
+        res.end();
+      }
+    }
+  })
+);
+
 router.post(
   "/anime/extract",
   handleAsync(async (req: Request, res: Response) => {
@@ -1771,7 +1964,12 @@ router.post(
       return res.status(400).json({ success: false, message: "الرابط مطلوب" });
     }
 
-    const extracted = await extractDirectStream(url);
+    const extractKey = `extract_stream_v4:${url}`;
+    const extracted = await serverCache.getOrFetch(
+      extractKey,
+      () => extractDirectStream(url),
+      5 * 60 * 1000
+    );
 
     res.json({
       success: true,
@@ -1802,10 +2000,11 @@ router.post(
 );
 
 // -------------------------------------------------------------
-// مسارات إدارة ومراقبة التخزين المؤقت (node-cache Caching Engine)
+// مسارات إدارة ومراقبة التخزين المؤقت (node-cache Caching Engine) - محمية بـ Firebase Admin SDK
 // -------------------------------------------------------------
 router.get(
   "/cache/stats",
+  requireServerAdminAuth("moderator", "access_dashboard"),
   handleAsync(async (req: Request, res: Response) => {
     const stats = serverCache.getStats();
     const keys = serverCache.getKeys();
@@ -1821,7 +2020,35 @@ router.get(
 );
 
 router.post(
+  "/cache/mode",
+  requireServerAdminAuth("moderator", "manage_cache_queue"),
+  handleAsync(async (req: Request, res: Response) => {
+    const { mode } = req.body;
+    const targetMode =
+      mode === "zero_live" || mode === "zero_cache_direct"
+        ? "zero_live"
+        : "10k_smart_ram";
+    serverCache.setMode(targetMode);
+    const currentStats = serverCache.getStats();
+    res.json({
+      success: true,
+      mode: targetMode,
+      stats: currentStats,
+      data: {
+        mode: targetMode,
+        stats: currentStats,
+      },
+      message:
+        targetMode === "10k_smart_ram"
+          ? "تم تفعيل محرك الـ 10,000 مستخدم (دمج الطلبات + ذاكرة RAM اللحظية)"
+          : "تم تفعيل وضع البث المباشر النقي (0 ثانية)",
+    });
+  }),
+);
+
+router.post(
   "/cache/clear",
+  requireServerAdminAuth("moderator", "manage_cache_queue"),
   handleAsync(async (req: Request, res: Response) => {
     await serverCache.clear();
     try {
@@ -1837,6 +2064,7 @@ router.post(
 
 router.post(
   "/system/factory-reset",
+  requireServerAdminAuth("owner", "factory_wipe"),
   handleAsync(async (req: Request, res: Response) => {
     await serverCache.clear();
     try {
@@ -1852,10 +2080,11 @@ router.post(
 );
 
 // -------------------------------------------------------------
-// مسارات مجدول المهام التلقائي (node-cron Task Scheduler)
+// مسارات مجدول المهام التلقائي (node-cron Task Scheduler) - محمية بـ Firebase Admin SDK
 // -------------------------------------------------------------
 router.get(
   "/scheduler/status",
+  requireServerAdminAuth("moderator", "access_dashboard"),
   handleAsync(async (req: Request, res: Response) => {
     const jobs = schedulerService.getJobsStatus();
     res.json({
@@ -1870,6 +2099,7 @@ router.get(
 
 router.post(
   "/scheduler/run/:jobId",
+  requireServerAdminAuth("moderator", "manage_cache_queue"),
   handleAsync(async (req: Request, res: Response) => {
     const { jobId } = req.params;
     const result = await schedulerService.triggerJob(jobId);
@@ -1944,20 +2174,13 @@ router.get(
             await serverCache.delete(`dashboard-v5-${d}-auto-${m}`);
           }
         }
-      } else {
-        const cached = await serverCache.get<any>(cacheKey);
-        if (cached !== null) {
-          if (Array.isArray(cached.top5) && cached.top5.length > 0 && Array.isArray(cached.recentEpisodes) && cached.recentEpisodes.length > 0) {
-            return res.json({ success: true, data: cached });
-          } else {
-            console.warn(`[ServerCache] Rejecting empty/corrupted or Jikan-fallback dashboard cache for key: ${cacheKey}`);
-            await serverCache.delete(cacheKey);
-          }
-        }
       }
 
-      // Determine season url to fetch based on custom settings
-      let seasonUrl = "https://api.jikan.moe/v4/seasons/now?limit=25";
+      const dashboardData = await serverCache.getOrFetch<any>(
+        cacheKey,
+        async () => {
+          // Determine season url to fetch based on custom settings
+          let seasonUrl = "https://api.jikan.moe/v4/seasons/now?limit=25";
       if (
         requestedSeason &&
         requestedSeason !== "auto" &&
@@ -2192,20 +2415,17 @@ router.get(
           rating: anime.score || 0,
         }));
 
-      const dashboardData = {
+      return {
         top5: top5.length > 0 ? top5 : getCuratedTop5(),
         recentEpisodes: recentEpisodes.length > 0 ? recentEpisodes : getCuratedRecentEpisodes(),
         popular: popular.length > 0 ? popular : getCuratedSeasonAnime(),
         currentSeason: currentSeason.length > 0 ? currentSeason : getCuratedSeasonAnime(),
         schedule: schedule.length > 0 ? schedule : getCuratedTop5(),
       };
-
-      const containsFallback = (recentList || []).some((item: any) => item.link && item.link.startsWith('/anime/'));
-      if (recentEpisodes.length >= 10 && top5.length > 0 && !containsFallback) {
-        await serverCache.set(cacheKey, dashboardData, 15 * 60 * 1000);
-      } else if (recentEpisodes.length > 0) {
-        await serverCache.set(cacheKey, dashboardData, 5 * 60 * 1000);
-      }
+        },
+        90 * 1000,
+        bypass
+      );
 
       res.json({
         success: true,
@@ -3261,7 +3481,10 @@ router.get(
                 : anime.status === "Currently Airing"
                   ? "مستمر"
                   : "قادم",
-            episodesCount: anime.episodes || 12,
+            type: anime.type || "TV",
+            season: anime.season || null,
+            releaseYear: anime.year ? String(anime.year) : null,
+            episodesCount: anime.episodes || null,
           }));
 
           return res.json({
@@ -3307,6 +3530,12 @@ router.get(
             : anime.status === "Currently Airing"
               ? "مستمر"
               : "قادم",
+        type: anime.type || "TV",
+        season: anime.season || null,
+        releaseYear: (anime.year || anime.aired?.prop?.from?.year)
+          ? String(anime.year || anime.aired?.prop?.from?.year)
+          : null,
+        episodesCount: anime.episodes || null,
       }));
 
       res.json({ success: true, data: results, pagination: data.pagination });
@@ -3469,9 +3698,10 @@ router.get(
   }),
 );
 
-// --- مسارات نظام قوائم الانتظار لوظائف الـ Scraping والـ Pre-Warm ---
+// --- مسارات نظام قوائم الانتظار لوظائف الـ Scraping والـ Pre-Warm (محمية بـ Firebase Admin SDK) ---
 router.get(
   "/queue/status",
+  requireServerAdminAuth("moderator", "access_dashboard"),
   handleAsync(async (req: Request, res: Response) => {
     const { ScraperQueue } = await import("../services/queueService");
     const status = ScraperQueue.getStatus();
@@ -3481,6 +3711,7 @@ router.get(
 
 router.post(
   "/queue/add",
+  requireServerAdminAuth("moderator", "manage_cache_queue"),
   handleAsync(async (req: Request, res: Response) => {
     const { name, data = {}, maxRetries = 2 } = req.body;
     if (!name) {
@@ -3501,6 +3732,7 @@ router.post(
 
 router.post(
   "/queue/clear",
+  requireServerAdminAuth("moderator", "manage_cache_queue"),
   handleAsync(async (req: Request, res: Response) => {
     const { ScraperQueue } = await import("../services/queueService");
     ScraperQueue.clearJobs();
@@ -3508,6 +3740,177 @@ router.post(
       success: true,
       message: "تم تصفية سجل صفوف العمل المكتملة والمعلقة.",
     });
+  }),
+);
+
+router.get(
+  "/anime/characters",
+  handleAsync(async (req: Request, res: Response) => {
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const searchQuery = ((req.query.q as string) || "").trim();
+    const cacheKey = `top_characters_v1_p${page}_q${searchQuery || "all"}`;
+
+    try {
+      const cached = await serverCache.get<any[]>(cacheKey);
+      if (cached && Array.isArray(cached) && cached.length > 0) {
+        return res.json({ success: true, data: cached });
+      }
+
+      const gqlQuery = `
+        query ($page: Int, $search: String) {
+          Page(page: $page, perPage: 24) {
+            characters(sort: [FAVOURITES_DESC], search: $search) {
+              id
+              name {
+                full
+                native
+              }
+              image {
+                large
+              }
+              favourites
+              gender
+              age
+              bloodType
+              description(asHtml: false)
+              media(sort: [POPULARITY_DESC], type: ANIME, perPage: 3) {
+                edges {
+                  characterRole
+                  voiceActors(language: JAPANESE, sort: [FAVOURITES_DESC]) {
+                    id
+                    name {
+                      full
+                      native
+                    }
+                    image {
+                      large
+                    }
+                  }
+                  node {
+                    id
+                    idMal
+                    title {
+                      english
+                      romaji
+                    }
+                    coverImage {
+                      extraLarge
+                      large
+                    }
+                    averageScore
+                    format
+                    seasonYear
+                  }
+                }
+              }
+            }
+          }
+        }
+      `;
+
+      const variables: Record<string, any> = { page };
+      if (searchQuery) {
+        variables.search = searchQuery;
+      }
+
+      const aniRes = await fetch("https://graphql.anilist.co", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({ query: gqlQuery, variables }),
+      });
+
+      if (aniRes.ok) {
+        const json = await aniRes.json();
+        const chars = json?.data?.Page?.characters || [];
+        if (chars.length > 0) {
+          const mapped = chars.map((ch: any, idx: number) => {
+            const topEdge = ch.media?.edges?.[0];
+            const primaryAnime = topEdge?.node;
+            const primaryVA = topEdge?.voiceActors?.[0];
+            const cleanDesc = (ch.description || "")
+              .replace(/~!.*?!~/gs, "")
+              .replace(/__+/g, "")
+              .replace(/\*\*+/g, "")
+              .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+              .trim();
+
+            return {
+              id: String(ch.id),
+              rank: (page - 1) * 24 + idx + 1,
+              name: ch.name?.full || "Unknown",
+              nativeName: ch.name?.native || "",
+              imageUrl: ch.image?.large || "",
+              favorites: ch.favourites || 0,
+              gender: ch.gender || "",
+              age: ch.age || "",
+              role: topEdge?.characterRole === "MAIN" ? "بطل رئيسي" : "شخصية محورية",
+              about: cleanDesc.slice(0, 420),
+              voiceActor: primaryVA
+                ? {
+                    name: primaryVA.name?.full || "",
+                    nativeName: primaryVA.name?.native || "",
+                    imageUrl: primaryVA.image?.large || "",
+                  }
+                : null,
+              anime: primaryAnime
+                ? {
+                    id: String(primaryAnime.idMal || primaryAnime.id),
+                    title: primaryAnime.title?.english || primaryAnime.title?.romaji || "",
+                    posterUrl: primaryAnime.coverImage?.extraLarge || primaryAnime.coverImage?.large || "",
+                    rating: primaryAnime.averageScore ? Number((primaryAnime.averageScore / 10).toFixed(1)) : 0,
+                    type: primaryAnime.format || "TV",
+                    year: primaryAnime.seasonYear || null,
+                  }
+                : null,
+              appearances: (ch.media?.edges || [])
+                .filter((e: any) => e?.node?.idMal)
+                .map((e: any) => ({
+                  id: String(e.node.idMal),
+                  title: e.node.title?.english || e.node.title?.romaji || "",
+                  posterUrl: e.node.coverImage?.large || "",
+                  rating: e.node.averageScore ? Number((e.node.averageScore / 10).toFixed(1)) : 0,
+                })),
+            };
+          });
+
+          await serverCache.set(cacheKey, mapped, 6 * 60 * 60 * 1000);
+          return res.json({ success: true, data: mapped });
+        }
+      }
+
+      // Jikan fallback
+      const jikanUrl = searchQuery
+        ? `https://api.jikan.moe/v4/characters?q=${encodeURIComponent(searchQuery)}&order_by=favorites&sort=desc&limit=24&page=${page}`
+        : `https://api.jikan.moe/v4/top/characters?page=${page}&limit=24`;
+      const jikanData = await fetchJikan(jikanUrl);
+      const fallbackChars = (jikanData?.data || []).map((ch: any, idx: number) => ({
+        id: String(ch.mal_id),
+        rank: (page - 1) * 24 + idx + 1,
+        name: ch.name || "Unknown",
+        nativeName: ch.name_kanji || "",
+        imageUrl: ch.images?.jpg?.image_url || "",
+        favorites: ch.favorites || 0,
+        gender: "",
+        age: "",
+        role: "بطل رئيسي",
+        about: (ch.about || "").slice(0, 420),
+        voiceActor: null,
+        anime: null,
+        appearances: [],
+      }));
+
+      if (fallbackChars.length > 0) {
+        await serverCache.set(cacheKey, fallbackChars, 6 * 60 * 60 * 1000);
+      }
+
+      return res.json({ success: true, data: fallbackChars });
+    } catch (error) {
+      console.warn("Characters API warning:", error);
+      return res.json({ success: true, data: [] });
+    }
   }),
 );
 

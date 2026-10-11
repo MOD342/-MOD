@@ -41,12 +41,16 @@ export default function LevelPerksView({ onBack, onNavigateToStore }: LevelPerks
       // Otaku Arcade & Creative Lab milestones
       if (lvl === 1) perks.push({ text: 'فتح أطوار أركيد الأوتاكو الـ 6 (مبارزة البطاقات، المحقق، عين الشارينغان، البرق، المصفوفة، وغارة الزعيم)', icon: Gamepad2, color: 'text-purple-400' });
       if (lvl === 5) perks.push({ text: 'فتح متجر الأوتاكو الفاخر وميزة التعليق في غرف المشاهدة', icon: ShoppingCart, color: 'text-emerald-400' });
-      if (lvl === 10) perks.push({ text: 'مكافأة ترقية: شارة صياد محترف مرخص في ساحة الأركيد', icon: Zap, color: 'text-amber-400' });
+      if (lvl === 7) perks.push({ text: 'فتح الدردشة الخاصة مع "السينباي المخضرم" (الذكاء الاصطناعي)', icon: Bot, color: 'text-purple-400' });
+      if (lvl === 10) {
+        perks.push({ text: 'فتح زر المساعد الذكي السريع في الشريط العلوي', icon: Bot, color: 'text-pink-400' });
+        perks.push({ text: 'مكافأة ترقية: شارة صياد محترف مرخص في ساحة الأركيد', icon: Zap, color: 'text-amber-400' });
+      }
       if (lvl === 20) perks.push({ text: 'فتح مضاعف نقاط البطولات الأسبوعية والموسمية', icon: Ticket, color: 'text-rose-400' });
       if (lvl === 30) perks.push({ text: 'رتبة سياف النخبة الملكي في حلبات التصويت والمناظرات', icon: Crown, color: 'text-indigo-400' });
       if (lvl === 50) perks.push({ text: 'وسام قائد الفيلق الأسطوري في غارة الزعيم التعاوني', icon: Star, color: 'text-yellow-400' });
 
-      const isUnlockLevel = [5, 10, 20, 25, 30, 40, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100].includes(lvl);
+      const isUnlockLevel = [5, 7, 10, 20, 25, 30, 40, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100].includes(lvl);
 
       if (perks.length > 0) {
         roadmap.push({ level: lvl, perks, isMilestone: (lvl % 10 === 0 || isUnlockLevel) });

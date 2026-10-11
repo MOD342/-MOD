@@ -712,16 +712,32 @@ export class ScraperService {
         if (!serverUrl || !serverUrl.startsWith('http')) return;
         const lowerUrl = serverUrl.toLowerCase();
 
-        // تنظيف الروابط في RistoAnime
+        // تنظيف الروابط في RistoAnime واستبعاد السيرفرات المعطلة أو المحمية بجدار Sandbox غير قابل للاستخراج
+        if (lowerUrl.includes('upns.online')) {
+          return;
+        }
         if (lowerUrl.includes('mega.nz') && serverUrl.endsWith('.html')) {
           serverUrl = serverUrl.replace(/\.html$/i, '');
         }
-        if (lowerUrl.includes('uqload.') && serverUrl.includes('?')) {
-          serverUrl = serverUrl.split('?')[0];
-          if (!serverUrl.endsWith('.html')) serverUrl += '.html';
+        if (lowerUrl.includes('sendvid.com') && serverUrl.endsWith('.html')) {
+          serverUrl = serverUrl.replace(/\.html$/i, '');
         }
-        if (lowerUrl.includes('uqload.') && serverUrl.includes('/e/')) {
-          serverUrl = serverUrl.replace('/e/', '/embed-');
+        if (lowerUrl.includes('uqload.')) {
+          if (serverUrl.includes('?')) {
+            serverUrl = serverUrl.split('?')[0];
+          }
+          if (serverUrl.includes('/e/')) {
+            serverUrl = serverUrl.replace('/e/', '/embed-');
+          }
+          if (!serverUrl.endsWith('.html')) {
+            serverUrl += '.html';
+          }
+        }
+        if ((lowerUrl.includes('hgcloud.') || lowerUrl.includes('dhcplay.')) && serverUrl.includes('/e/')) {
+          const m = serverUrl.match(/\/e\/([A-Za-z0-9_-]+)/);
+          if (m) {
+            serverUrl = `https://asnwish.com/e/${m[1]}`;
+          }
         }
 
         let serverName = `Server ${idx + 1}`;
@@ -736,9 +752,6 @@ export class ScraperService {
           serverName = 'Mega';
           quality = '1080p';
           derivedDownloadUrl = serverUrl.replace('/embed/', '/file/');
-        } else if (lowerUrl.includes('upns.online') || lowerUrl.includes('risto')) {
-          serverName = 'Risto';
-          quality = '1080p';
         } else if (lowerUrl.includes('sendvid')) {
           serverName = 'Sendvid';
           quality = '720p';
@@ -751,9 +764,9 @@ export class ScraperService {
           serverName = 'Uqload';
           quality = '720p';
           derivedDownloadUrl = serverUrl.replace('/embed-', '/');
-        } else if (lowerUrl.includes('streamwish') || lowerUrl.includes('asnwish') || lowerUrl.includes('awish') || lowerUrl.includes('swish')) {
+        } else if (lowerUrl.includes('streamwish') || lowerUrl.includes('asnwish') || lowerUrl.includes('awish') || lowerUrl.includes('swish') || lowerUrl.includes('hgcloud') || lowerUrl.includes('dhcplay')) {
           serverName = 'Streamwish';
-          quality = '720p';
+          quality = '1080p';
           derivedDownloadUrl = serverUrl.replace('/e/', '/f/');
         } else if (lowerUrl.includes('filemoon')) {
           serverName = 'Filemoon';
@@ -953,12 +966,12 @@ export class ScraperService {
       if (safePage === 1) {
         await serverCache.delete('recent_episodes');
       }
-    } else {
-      const cached = await this.getCached<AnimeItem[]>(cacheKey);
-      if (cached && Array.isArray(cached) && cached.length > 0) return cached;
     }
 
-    try {
+    return serverCache.getOrFetch<AnimeItem[]>(
+      cacheKey,
+      async () => {
+        try {
       // 1. الجلب المباشر من الموقع الأساسي #1 (animedar.net) للصفحة المطلوبة (/ أو /page/N/)
       const targetDarPath = safePage > 1 ? `/page/${safePage}/` : '/';
       const darHtml = await this.fetchAnimedarHtml(targetDarPath, 5500).catch(() => '');
@@ -1056,9 +1069,8 @@ export class ScraperService {
       }
 
       if (validItems.length > 0) {
-        await this.setCache(cacheKey, validItems, 15 * 60 * 1000);
         if (safePage === 1) {
-          await this.setCache('recent_episodes', validItems, 15 * 60 * 1000);
+          await this.setCache('recent_episodes', validItems, 90 * 1000);
         }
         return validItems;
       }
@@ -1075,6 +1087,10 @@ export class ScraperService {
         rating: anime.rating
       }));
     }
+      },
+      90 * 1000,
+      forceBypass
+    );
   }
 
   /**
@@ -1466,11 +1482,11 @@ export class ScraperService {
       }
     }
 
-    const cacheKey = `servers_animedar_risto_v3:${episodeId}:${jikanId}:${explicitSeason || 1}:${epNum}`;
-    const cached = await this.getCached<EpisodeServer[]>(cacheKey);
-    if (cached && cached.length > 0) return cached;
-
-    try {
+    const cacheKey = `servers_animedar_risto_v4:${episodeId}:${jikanId}:${explicitSeason || 1}:${epNum}`;
+    return serverCache.getOrFetch<EpisodeServer[]>(
+      cacheKey,
+      async () => {
+        try {
       let resolvedAnimedarSlug = '';
       let resolvedRistoEpSlug = '';
 
@@ -1628,59 +1644,17 @@ export class ScraperService {
         }
       }
 
-      const activeJikanId = jikanId || '21';
-      const activeAnilistId = resolvedAnilistId || activeJikanId;
-      const activeEpNum = epNum || '1';
-
-      // 4. سيرفر البث العالمي الإضافي (VidLink) الفعال فقط (بدون السيرفرات المعطلة مثل VidSrc/2Embed)
-      const globalBackupWatch: EpisodeServer[] = [
-        {
-          serverName: 'VidLink',
-          url: `https://vidlink.pro/anime/${activeAnilistId}/${activeEpNum}/sub`,
-          type: 'iframe',
-          quality: '1080p',
-          category: 'watch'
-        }
-      ];
-
-      const globalBackupDownload: EpisodeServer[] = [
-        {
-          serverName: 'VidLink',
-          url: `https://vidlink.pro/anime/${activeAnilistId}/${activeEpNum}/sub`,
-          type: 'direct',
-          quality: '1080p',
-          category: 'download'
-        }
-      ];
-
       const finalServers: EpisodeServer[] = [
         ...watchServers,
-        ...globalBackupWatch,
-        ...downloadServers,
-        ...(downloadServers.length === 0 ? globalBackupDownload : [])
+        ...downloadServers
       ];
 
-      await this.setCache(cacheKey, finalServers, 2 * 60 * 60 * 1000);
       return finalServers;
     } catch {
-      const activeJikanId = jikanId || '21';
-      const activeEpNum = epNum || '1';
-      return [
-        {
-          serverName: 'VidLink',
-          url: `https://vidlink.pro/anime/${activeJikanId}/${activeEpNum}/sub`,
-          type: 'iframe',
-          quality: '1080p',
-          category: 'watch'
-        },
-        {
-          serverName: 'VidLink',
-          url: `https://vidlink.pro/anime/${activeJikanId}/${activeEpNum}/sub`,
-          type: 'direct',
-          quality: '1080p',
-          category: 'download'
-        }
-      ];
+      return [];
     }
+      },
+      5 * 60 * 1000
+    );
   }
 }

@@ -1,6 +1,13 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { ChevronRight, CalendarDays, Loader2, Clock, Search, Filter, Globe, Sparkles, AlertCircle, RefreshCw } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import { ChevronRight, Loader2, Clock, Search, AlertCircle, Star, Tv, Calendar, Layers } from 'lucide-react';
+import { cleanAnimeTitle } from '../utils/animeTitleCleaner';
+import {
+  useGlobalLayoutMode,
+  LayoutModeToggleButton,
+  getLayoutGridClasses,
+  getShortTypeCode,
+  getArabicSeasonLabel,
+} from '../utils/useViewLayoutMode';
 
 interface ScheduleViewProps {
   onBack: () => void;
@@ -18,42 +25,47 @@ const DAYS = [
   { id: 'friday', label: 'الجمعة' },
 ];
 
-// Helper to convert JST Broadcast to user's Local timezone with details
-function getLocalBroadcastInfo(jstTimeStr: string, dayId: string) {
+const GENRE_AR_SCHEDULE_MAP: Record<string, string> = {
+  Action: 'أكشن ⚔️',
+  Adventure: 'مغامرات 🗺️',
+  Comedy: 'كوميديا 🎭',
+  Drama: 'دراما 😭',
+  Fantasy: 'خيالي 🦄',
+  Romance: 'رومانسي 💕',
+  'Sci-Fi': 'خيال علمي 🚀',
+  'Slice of Life': 'شريحة من الحياة 🌸',
+  Supernatural: 'قوى خارقة 🔮',
+  Suspense: 'إثارة ⏳',
+  Mystery: 'غموض 🔍',
+  Sports: 'رياضة ⚽',
+  Horror: 'رعب 👻',
+  Psychological: 'نفسي 🧠',
+  Thriller: 'إثارة 🔥',
+  Mecha: 'آليات 🤖',
+  Music: 'موسيقى 🎵',
+  Historical: 'تاريخي 📜',
+};
+
+// Helper to convert JST Broadcast to user's Local timezone
+function getLocalBroadcastTime(jstTimeStr?: string, dayId?: string): string {
   try {
     if (!jstTimeStr || !jstTimeStr.includes(':')) {
-      return { localTime: 'غير معروف', shiftedDayName: '', countdown: '', isLive: false };
+      return '';
     }
 
     const [jstHour, jstMin] = jstTimeStr.split(':').map(Number);
     if (isNaN(jstHour) || isNaN(jstMin)) {
-      return { localTime: jstTimeStr, shiftedDayName: '', countdown: '', isLive: false };
+      return jstTimeStr;
     }
 
     const daysOrder = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-    const daysArabic: Record<string, string> = {
-      sunday: 'الأحد',
-      monday: 'الإثنين',
-      tuesday: 'الثلاثاء',
-      wednesday: 'الأربعاء',
-      thursday: 'الخميس',
-      friday: 'الجمعة',
-      saturday: 'السبت'
-    };
-
-    const targetDayIndex = daysOrder.indexOf(dayId);
-    if (targetDayIndex === -1) {
-      return { localTime: jstTimeStr, shiftedDayName: '', countdown: '', isLive: false };
-    }
+    const targetDayIndex = dayId ? daysOrder.indexOf(dayId) : -1;
 
     const now = new Date();
     const currentDayIndex = now.getDay();
-    
-    // Day offset calculation
-    const dayDiff = targetDayIndex - currentDayIndex;
+    const dayDiff = targetDayIndex !== -1 ? targetDayIndex - currentDayIndex : 0;
     const jstDate = new Date(now.getTime() + dayDiff * 24 * 60 * 60 * 1000);
-    
-    // Set time in Japan Time Zone (UTC+9)
+
     // UTC Hour = JST Hour - 9
     let utcHour = jstHour - 9;
     let dayShift = 0;
@@ -64,49 +76,19 @@ function getLocalBroadcastInfo(jstTimeStr: string, dayId: string) {
       utcHour -= 24;
       dayShift = 1;
     }
-    
+
     jstDate.setUTCHours(utcHour, jstMin, 0, 0);
     if (dayShift !== 0) {
       jstDate.setUTCDate(jstDate.getUTCDate() + dayShift);
     }
 
-    // Capture User's Local properties
-    const localDayIndex = jstDate.getDay();
-    const shiftedDayName = daysArabic[daysOrder[localDayIndex]] || '';
-    
-    // Format local time nicely
-    const localTimeFormatted = jstDate.toLocaleTimeString([], {
+    return jstDate.toLocaleTimeString([], {
       hour: '2-digit',
       minute: '2-digit',
       hour12: true
     });
-
-    // Compute relative state
-    const diffMs = jstDate.getTime() - now.getTime();
-    const diffHours = diffMs / (1000 * 60 * 60);
-
-    let countdown = '';
-    let isLive = false;
-
-    if (Math.abs(diffHours) < 1.0) {
-      countdown = 'يعرض الآن 🔴';
-      isLive = true;
-    } else if (diffHours > 0 && diffHours < 18) {
-      const h = Math.floor(diffHours);
-      const m = Math.round((diffHours - h) * 60);
-      countdown = h > 0 ? `بعد ${h} ساعة و ${m} د` : `بعد ${m} دقيقة`;
-    } else if (diffHours < 0 && diffHours > -18) {
-      countdown = `عُرض اليوم (منذ ${Math.ceil(Math.abs(diffHours))} س)`;
-    }
-
-    return {
-      localTime: localTimeFormatted,
-      shiftedDayName,
-      countdown,
-      isLive
-    };
-  } catch (e) {
-    return { localTime: jstTimeStr, shiftedDayName: '', countdown: '', isLive: false };
+  } catch {
+    return jstTimeStr || '';
   }
 }
 
@@ -117,17 +99,15 @@ export default function ScheduleView({ onBack, onAnimeClick, initialDay }: Sched
     const map = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
     return map[d];
   });
-  
+
   const [schedule, setSchedule] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedGenre, setSelectedGenre] = useState('ALL');
-  const [showLocalTimeOnly, setShowLocalTimeOnly] = useState(true);
   const [viewMode, setViewMode] = useState<'daily' | 'all-week'>('daily');
   const [allWeekData, setAllWeekData] = useState<Record<string, any[]>>({});
   const [weekLoading, setWeekLoading] = useState(false);
+  const [layoutMode, cycleLayoutMode] = useGlobalLayoutMode();
 
-  // Fetch target day schedule directly (Zero-Storage Live Mode)
   useEffect(() => {
     let active = true;
     const fetchSchedule = async () => {
@@ -137,10 +117,8 @@ export default function ScheduleView({ onBack, onAnimeClick, initialDay }: Sched
           cache: 'no-store'
         });
         const json = await res.json();
-        if (json.success && json.data) {
-          if (active) {
-            setSchedule(json.data);
-          }
+        if (json.success && json.data && active) {
+          setSchedule(json.data);
         }
       } catch (e) {
         console.error(e);
@@ -156,7 +134,6 @@ export default function ScheduleView({ onBack, onAnimeClick, initialDay }: Sched
     };
   }, [selectedDay, viewMode]);
 
-  // Fetch full week schedule for "All Week" dashboard directly
   useEffect(() => {
     let active = true;
     if (viewMode === 'all-week' && Object.keys(allWeekData).length === 0) {
@@ -171,13 +148,8 @@ export default function ScheduleView({ onBack, onAnimeClick, initialDay }: Sched
                   cache: 'no-store'
                 });
                 const json = await res.json();
-                if (json.success && json.data) {
-                  dataMap[day.id] = json.data;
-                } else {
-                  dataMap[day.id] = [];
-                }
-              } catch (err) {
-                console.error(`Error loading ${day.id}:`, err);
+                dataMap[day.id] = json.success && json.data ? json.data : [];
+              } catch {
                 dataMap[day.id] = [];
               }
             })
@@ -186,7 +158,7 @@ export default function ScheduleView({ onBack, onAnimeClick, initialDay }: Sched
             setAllWeekData(dataMap);
           }
         } catch (e) {
-          console.error("Failed loading full week", e);
+          console.error('Failed loading full week', e);
         } finally {
           if (active) setWeekLoading(false);
         }
@@ -198,319 +170,300 @@ export default function ScheduleView({ onBack, onAnimeClick, initialDay }: Sched
     };
   }, [viewMode]);
 
-  // Dynamic filter lists
-  const availableGenres = useMemo(() => {
-    const genresSet = new Set<string>();
-    const list = viewMode === 'daily' ? schedule : Object.values(allWeekData).flat();
-    list.forEach((anime: any) => {
-      anime.genres?.forEach((g: any) => {
-        if (g.name) genresSet.add(g.name);
-      });
-    });
-    return Array.from(genresSet);
-  }, [schedule, allWeekData, viewMode]);
-
   const filteredSchedule = useMemo(() => {
-    let list = schedule;
-    if (viewMode === 'all-week') {
-      list = Object.values(allWeekData).flat();
-    }
-    return list.filter((anime: any) => {
-      const matchQuery = anime.title?.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                         anime.title_english?.toLowerCase().includes(searchQuery.toLowerCase());
-      const matchGenre = selectedGenre === 'ALL' || anime.genres?.some((g: any) => g.name === selectedGenre);
-      return matchQuery && matchGenre;
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return schedule;
+    return schedule.filter((anime: any) => {
+      return (
+        anime.title?.toLowerCase().includes(q) ||
+        anime.title_english?.toLowerCase().includes(q)
+      );
     });
-  }, [schedule, allWeekData, searchQuery, selectedGenre, viewMode]);
+  }, [schedule, searchQuery]);
 
-  // Local Timezone info string
-  const timeZoneName = useMemo(() => {
-    try {
-      return Intl.DateTimeFormat().resolvedOptions().timeZone || 'توقيتك المحلي';
-    } catch {
-      return 'توقيتك المحلي';
+  const isListMode = layoutMode === 'list';
+  const isLargeGrid = layoutMode === 'grid2';
+
+  const renderAnimeItem = (anime: any, idx: number, dayId: string, keyPrefix: string) => {
+    const localTime = getLocalBroadcastTime(anime.broadcast?.time, dayId);
+    const cleanTitle = cleanAnimeTitle(anime.title_english || anime.title || 'Anime');
+    const poster =
+      anime.images?.jpg?.large_image_url ||
+      anime.images?.jpg?.image_url ||
+      anime.posterUrl ||
+      'https://via.placeholder.com/200x300?text=Anime';
+    const dayLabel = DAYS.find((d) => d.id === dayId)?.label || '';
+    const score = anime.score && Number(anime.score) > 0 ? Number(anime.score).toFixed(1) : null;
+    const shortType = getShortTypeCode(anime.type || 'TV');
+    const seasonLabel = getArabicSeasonLabel(anime.season, anime.year || anime.aired?.prop?.from?.year);
+    const episodesCount = anime.episodes ? `${anime.episodes} حلقة` : null;
+    const genresList = Array.isArray(anime.genres)
+      ? anime.genres
+          .slice(0, 3)
+          .map((g: any) => {
+            const gName = typeof g === 'string' ? g : g?.name || '';
+            return GENRE_AR_SCHEDULE_MAP[gName] || gName;
+          })
+          .filter(Boolean)
+      : [];
+
+    if (isListMode) {
+      return (
+        <div
+          key={`${keyPrefix}-${anime.mal_id || idx}-${idx}`}
+          onClick={() => onAnimeClick(String(anime.mal_id || anime._id))}
+          className="cursor-pointer group flex items-stretch bg-neutral-900/95 border border-neutral-800/90 hover:border-blue-500/60 rounded-xl transition-all overflow-hidden shadow-md min-h-[124px] sm:min-h-[132px]"
+        >
+          <div className="w-24 sm:w-28 shrink-0 bg-neutral-950 relative border-l border-white/10 overflow-hidden">
+            <img
+              src={poster}
+              loading="lazy"
+              referrerPolicy="no-referrer"
+              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+              alt={cleanTitle}
+            />
+          </div>
+
+          <div className="flex-1 min-w-0 flex flex-col justify-center items-start text-right gap-1.5 p-2.5 sm:p-3">
+            <h3
+              className="w-full font-black text-sm sm:text-base text-white group-hover:text-blue-400 transition-colors line-clamp-1 leading-snug text-right"
+              dir="auto"
+            >
+              {cleanTitle}
+            </h3>
+
+            <div className="flex flex-wrap items-center justify-start gap-1.5 text-[10px] sm:text-xs font-bold">
+              {score && (
+                <span className="bg-yellow-500/15 border border-yellow-500/30 text-yellow-400 px-2 py-0.5 rounded-lg flex items-center gap-1" dir="ltr">
+                  <Star size={10} fill="currentColor" />
+                  <span>{score}</span>
+                </span>
+              )}
+              <span className="bg-neutral-800 text-neutral-200 px-2 py-0.5 rounded-lg flex items-center gap-1" dir="ltr">
+                <Tv size={10} className="text-neutral-400" />
+                <span>{shortType}</span>
+              </span>
+              {localTime && (
+                <span className="bg-blue-600/20 border border-blue-500/30 text-blue-300 px-2 py-0.5 rounded-lg flex items-center gap-1">
+                  <Clock size={10} />
+                  <span>{localTime}</span>
+                </span>
+              )}
+              {dayLabel && (
+                <span className="bg-neutral-800 text-neutral-300 px-2 py-0.5 rounded-lg">
+                  {dayLabel}
+                </span>
+              )}
+              {seasonLabel && (
+                <span className="flex items-center gap-1 bg-neutral-950/90 border border-white/10 text-neutral-300 px-2 py-0.5 rounded-lg">
+                  <Calendar size={10} className="text-neutral-400" />
+                  <span>{seasonLabel}</span>
+                </span>
+              )}
+              {episodesCount && (
+                <span className="flex items-center gap-1 bg-neutral-950/90 border border-white/10 text-neutral-300 px-2 py-0.5 rounded-lg">
+                  <Layers size={10} className="text-neutral-400" />
+                  <span>{episodesCount}</span>
+                </span>
+              )}
+            </div>
+
+            {genresList.length > 0 && (
+              <div className="flex flex-wrap items-center justify-start gap-1 overflow-hidden pt-0.5">
+                {genresList.map((g: string, i: number) => (
+                  <span
+                    key={i}
+                    className="text-[10px] text-neutral-300 bg-neutral-950/80 px-2 py-0.5 rounded-md border border-white/5 truncate"
+                  >
+                    {g}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      );
     }
-  }, []);
+
+    // عرض الشبكة بدون فراغات + الاسم على البوستر + التقييم والنوع باختصار إنجليزي 3 حروف
+    return (
+      <div
+        key={`${keyPrefix}-${anime.mal_id || idx}-${idx}`}
+        onClick={() => onAnimeClick(String(anime.mal_id || anime._id))}
+        className="cursor-pointer group relative aspect-[3/4] overflow-hidden bg-neutral-950 border-b border-l border-white/10"
+      >
+        <img
+          src={poster}
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+          alt={cleanTitle}
+        />
+
+        <div className="absolute top-1.5 inset-x-1.5 z-10 flex items-center justify-between gap-1 pointer-events-none" dir="ltr">
+          <div className="flex items-center gap-1">
+            <span className="bg-black/80 backdrop-blur-md text-white px-1.5 py-0.5 rounded text-[9px] sm:text-[10px] font-black border border-white/15 uppercase tracking-tight">
+              {shortType}
+            </span>
+            {score && (
+              <span className="bg-black/80 backdrop-blur-md text-yellow-400 px-1.5 py-0.5 rounded flex items-center gap-0.5 text-[9px] sm:text-[10px] font-black border border-white/15">
+                <Star size={8} fill="currentColor" />
+                <span>{score}</span>
+              </span>
+            )}
+          </div>
+
+          {localTime && (
+            <span className="bg-blue-600/95 backdrop-blur-md text-white px-1.5 py-0.5 rounded text-[9px] sm:text-[10px] font-black shadow flex items-center gap-0.5">
+              <Clock size={8} />
+              <span>{localTime}</span>
+            </span>
+          )}
+        </div>
+
+        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 via-black/70 to-transparent pt-8 pb-2 px-2 pointer-events-none flex flex-col justify-end">
+          <h3
+            className={`font-black ${
+              isLargeGrid ? 'text-xs sm:text-sm' : 'text-[10px] sm:text-xs'
+            } text-white group-hover:text-blue-400 transition-colors line-clamp-2 text-center leading-tight drop-shadow`}
+            dir="ltr"
+          >
+            {cleanTitle}
+          </h3>
+        </div>
+      </div>
+    );
+  };
 
   return (
-    <div className="min-h-screen bg-black flex flex-col pt-12 md:pt-4 font-sans text-white pb-10" dir="rtl">
-      {/* Title Header */}
-      <div className="flex flex-col gap-4 p-4 sticky top-0 bg-black/90 backdrop-blur-md z-30 border-b border-neutral-900">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <button onClick={onBack} className="p-2 bg-neutral-900 rounded-full hover:bg-neutral-800 transition text-neutral-300">
-              <ChevronRight size={20} />
-            </button>
-            <h1 className="font-black text-xl md:text-2xl flex items-center gap-2 bg-gradient-to-r from-blue-400 to-indigo-500 bg-clip-text text-transparent">
-              <CalendarDays size={24} className="text-blue-500 animate-pulse" /> جدول العرض ومواعيد الحلقات
-            </h1>
-          </div>
-          
-          <div className="flex bg-neutral-900 p-1 rounded-xl text-xs font-bold shadow-inner">
-            <button 
-              onClick={() => setViewMode('daily')}
-              className={`px-3 py-1.5 rounded-lg transition-all duration-300 ${viewMode === 'daily' ? 'bg-blue-600 text-white' : 'text-neutral-400 hover:text-white'}`}
-            >
-              عرض يومي
-            </button>
-            <button 
-              onClick={() => setViewMode('all-week')}
-              className={`px-3 py-1.5 rounded-lg transition-all duration-300 ${viewMode === 'all-week' ? 'bg-blue-600 text-white' : 'text-neutral-400 hover:text-white'}`}
-            >
-              جدول الأسبوع بالكامل
-            </button>
-          </div>
+    <div className="min-h-screen bg-black flex flex-col font-sans text-white pb-20" dir="rtl">
+      <div className="bg-black border-b border-white/5 px-4 py-3 flex items-center justify-between max-w-7xl w-full mx-auto">
+        <div className="flex items-center gap-2.5">
+          <button
+            onClick={onBack}
+            className="p-2 bg-neutral-900 rounded-xl hover:bg-neutral-800 transition text-neutral-300 hover:text-white cursor-pointer"
+            aria-label="الرجوع"
+          >
+            <ChevronRight size={18} />
+          </button>
+          <h1 className="font-black text-base md:text-lg text-white">
+            جدول البث
+          </h1>
         </div>
 
-        {/* Timezone Indicator Info */}
-        <div className="flex flex-wrap items-center justify-between gap-2 px-1 text-xs text-neutral-400">
-          <div className="flex items-center gap-1.5 bg-neutral-900/60 border border-white/5 py-1 px-3 rounded-full">
-            <Globe size={13} className="text-emerald-400" />
-            <span>منطقة التوقيت المكتشفة: </span>
-            <span className="font-mono text-emerald-300 font-bold">{timeZoneName}</span>
+        <div className="flex items-center gap-2">
+          <LayoutModeToggleButton mode={layoutMode} onToggle={cycleLayoutMode} />
+          <div className="flex bg-neutral-900 p-1 rounded-xl text-xs font-bold">
+            <button
+              onClick={() => setViewMode('daily')}
+              className={`px-3 py-1 rounded-lg transition cursor-pointer ${
+                viewMode === 'daily'
+                  ? 'bg-blue-600 text-white'
+                  : 'text-neutral-400 hover:text-white'
+              }`}
+            >
+              يومي
+            </button>
+            <button
+              onClick={() => setViewMode('all-week')}
+              className={`px-3 py-1 rounded-lg transition cursor-pointer ${
+                viewMode === 'all-week'
+                  ? 'bg-blue-600 text-white'
+                  : 'text-neutral-400 hover:text-white'
+              }`}
+            >
+              الأسبوع
+            </button>
           </div>
-
-          <button 
-            onClick={() => setShowLocalTimeOnly(!showLocalTimeOnly)}
-            className="flex items-center gap-1 bg-blue-500/10 border border-blue-500/20 text-blue-400 py-1 px-3 rounded-full hover:bg-blue-500/20 transition text-[11px] font-bold"
-          >
-            <Sparkles size={12} />
-            <span>{showLocalTimeOnly ? 'إظهار التوقيت الياباني الافتراضي (JST)' : 'عرض التوقيت المحلي الذكي فقط'}</span>
-          </button>
         </div>
       </div>
 
-      {/* Daily Switcher Tab Bar */}
-      {viewMode === 'daily' && (
-        <div className="flex overflow-x-auto hide-scrollbar gap-2 px-4 py-3 sticky top-[130px] bg-black/95 backdrop-blur-md z-20 border-b border-neutral-900">
-          {DAYS.map(day => (
-            <button
-              key={day.id}
-              onClick={() => {
-                setSelectedDay(day.id);
-                setSelectedGenre('ALL');
-              }}
-              className={`px-5 py-2 font-bold text-sm rounded-xl whitespace-nowrap transition-all duration-300 flex items-center gap-1.5 ${selectedDay === day.id ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-[0_0_15px_rgba(59,130,246,0.35)] scale-105' : 'bg-neutral-900/80 text-neutral-400 hover:bg-neutral-850 hover:text-neutral-200'}`}
-            >
-              <span className={`w-1.5 h-1.5 rounded-full ${selectedDay === day.id ? 'bg-white animate-ping' : 'bg-neutral-600'}`}></span>
-              {day.label}
-            </button>
-          ))}
-        </div>
-      )}
+      <div className="max-w-7xl w-full mx-auto px-4 pt-3 pb-2 space-y-2.5">
+        {viewMode === 'daily' && (
+          <div className="flex overflow-x-auto hide-scrollbar gap-2 pb-1">
+            {DAYS.map((day) => (
+              <button
+                key={day.id}
+                onClick={() => setSelectedDay(day.id)}
+                className={`px-4 py-1.5 font-bold text-xs rounded-xl whitespace-nowrap transition cursor-pointer ${
+                  selectedDay === day.id
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-neutral-900 text-neutral-400 hover:text-white'
+                }`}
+              >
+                {day.label}
+              </button>
+            ))}
+          </div>
+        )}
 
-      {/* Filter and Search Box Section */}
-      <div className="p-4 flex flex-col md:flex-row gap-3 bg-neutral-950/40 border-b border-neutral-900">
-        <div className="flex-1 relative">
-          <Search size={18} className="absolute right-3.5 top-1/2 -translate-y-1/2 text-neutral-500" />
+        <div className="relative">
+          <Search size={15} className="absolute right-3.5 top-1/2 -translate-y-1/2 text-neutral-500" />
           <input
             type="text"
-            placeholder="بحث في جدول العرض..."
+            placeholder="ابحث عن أنمي في الجدول..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full bg-neutral-900/90 border border-neutral-800 rounded-xl pr-10 pl-4 py-2.5 text-sm font-bold text-white placeholder-neutral-500 focus:outline-none focus:border-blue-500 transition-all duration-300"
+            className="w-full bg-neutral-900/90 border border-neutral-800 rounded-xl pr-9 pl-3 py-2 text-xs font-bold text-white placeholder-neutral-500 focus:outline-none focus:border-blue-500 transition"
           />
         </div>
-
-        <div className="flex items-center gap-2 overflow-x-auto hide-scrollbar">
-          <Filter size={16} className="text-blue-500 shrink-0" />
-          <button
-            onClick={() => setSelectedGenre('ALL')}
-            className={`px-3 py-1.5 text-xs font-bold rounded-lg shrink-0 transition ${selectedGenre === 'ALL' ? 'bg-blue-600 text-white' : 'bg-neutral-900 text-neutral-400 hover:text-white'}`}
-          >
-            كل التصانيف
-          </button>
-          {availableGenres.map(genre => (
-            <button
-              key={genre}
-              onClick={() => setSelectedGenre(genre)}
-              className={`px-3 py-1.5 text-xs font-bold rounded-lg shrink-0 transition-all ${selectedGenre === genre ? 'bg-blue-600 text-white' : 'bg-neutral-900 text-neutral-400 hover:text-white'}`}
-            >
-              {genre}
-            </button>
-          ))}
-        </div>
       </div>
 
-      {/* Main Stream Area */}
-      <div className="flex-1 p-4">
+      <div className={`flex-1 ${isListMode ? 'p-3 md:p-5' : 'p-0 md:p-4'} max-w-7xl w-full mx-auto`}>
         {(loading && viewMode === 'daily') || (weekLoading && viewMode === 'all-week') ? (
-          <div className="flex flex-col items-center justify-center py-24 gap-4">
-            <Loader2 className="animate-spin text-blue-500" size={36} />
-            <span className="text-sm font-bold text-neutral-400">جاري تحميل جدول المواعيد وتحديثها...</span>
+          <div className="flex flex-col items-center justify-center py-24 gap-3">
+            <Loader2 className="animate-spin text-blue-500" size={30} />
+            <span className="text-xs font-bold text-neutral-400">جاري تحميل الجدول...</span>
+          </div>
+        ) : viewMode === 'all-week' ? (
+          <div className="space-y-6">
+            {DAYS.map((day) => {
+              const dayItems = allWeekData[day.id] || [];
+              const q = searchQuery.trim().toLowerCase();
+              const filteredDayItems = !q
+                ? dayItems
+                : dayItems.filter(
+                    (anime: any) =>
+                      anime.title?.toLowerCase().includes(q) ||
+                      anime.title_english?.toLowerCase().includes(q)
+                  );
+
+              if (filteredDayItems.length === 0) return null;
+
+              return (
+                <div key={day.id} className="space-y-2.5">
+                  <h2 className="text-sm font-black text-white border-r-4 border-blue-500 pr-2 mr-3 md:mr-0">
+                    {day.label}
+                  </h2>
+
+                  <div className={getLayoutGridClasses(layoutMode)}>
+                    {filteredDayItems.map((anime: any, idx: number) =>
+                      renderAnimeItem(anime, idx, day.id, day.id)
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+
+            {Object.keys(allWeekData).length > 0 &&
+              Object.values(allWeekData).flat().length === 0 && (
+                <div className="text-center py-20 text-neutral-500 text-xs font-bold">
+                  لا توجد بيانات متاحة حالياً.
+                </div>
+              )}
+          </div>
+        ) : filteredSchedule.length > 0 ? (
+          <div className={getLayoutGridClasses(layoutMode)}>
+            {filteredSchedule.map((anime: any, idx: number) =>
+              renderAnimeItem(anime, idx, selectedDay, 'daily')
+            )}
           </div>
         ) : (
-          <>
-            {viewMode === 'all-week' ? (
-              // All week grouping layout (Bento Grid Group style)
-              <div className="space-y-8">
-                {DAYS.map(day => {
-                  const dayItems = allWeekData[day.id] || [];
-                  const filteredDayItems = dayItems.filter((anime: any) => {
-                    const matchQuery = anime.title?.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                                       anime.title_english?.toLowerCase().includes(searchQuery.toLowerCase());
-                    const matchGenre = selectedGenre === 'ALL' || anime.genres?.some((g: any) => g.name === selectedGenre);
-                    return matchQuery && matchGenre;
-                  });
-
-                  if (filteredDayItems.length === 0) return null;
-
-                  return (
-                    <div key={day.id} className="bg-neutral-950/40 border border-neutral-900 rounded-2xl p-5">
-                      <div className="flex items-center justify-between mb-4 pb-2 border-b border-neutral-800">
-                        <h2 className="text-lg font-black text-white flex items-center gap-2">
-                          <span className="w-2.5 h-2.5 rounded-full bg-blue-500 shadow-[0_0_8px_#3b82f6]"></span>
-                          جدول يوم {day.label}
-                        </h2>
-                        <span className="text-xs text-neutral-500 font-mono font-bold">({filteredDayItems.length} أنمي)</span>
-                      </div>
-
-                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-                        {filteredDayItems.map((anime: any, idx: number) => {
-                          const timeInfo = getLocalBroadcastInfo(anime.broadcast?.time, day.id);
-                          return (
-                            <div 
-                              onClick={() => onAnimeClick(anime.mal_id.toString())}
-                              key={`${day.id}-${anime.mal_id}-${idx}`}
-                              className="group cursor-pointer bg-neutral-900 border border-neutral-800 rounded-xl overflow-hidden hover:border-blue-500/40 transition duration-300 flex flex-col"
-                            >
-                              <div className="relative aspect-[3/4] overflow-hidden">
-                                <img 
-                                  src={anime.images?.jpg?.large_image_url || anime.images?.jpg?.image_url} 
-                                  loading="lazy" 
-                                  className="w-full h-full object-cover opacity-85 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500" 
-                                  alt={anime.title} 
-                                />
-                                <div className="absolute top-2 right-2 flex flex-col gap-1 items-end">
-                                  <span className="bg-blue-600 text-white px-2 py-0.5 rounded text-[10px] font-bold shadow-lg flex items-center gap-1">
-                                    <Clock size={10} />
-                                    <span>{timeInfo.localTime}</span>
-                                  </span>
-                                  {!showLocalTimeOnly && anime.broadcast?.time && (
-                                    <span className="bg-purple-600/90 text-white px-2 py-0.5 rounded text-[9px] font-bold shadow-lg">
-                                      JST: {anime.broadcast.time}
-                                    </span>
-                                  )}
-                                </div>
-                                {timeInfo.countdown && (
-                                  <div className="absolute bottom-2 right-2 left-2 bg-black/80 backdrop-blur-sm border border-white/5 px-2 py-1 rounded text-[10px] text-center font-bold text-emerald-400 truncate">
-                                    {timeInfo.countdown}
-                                  </div>
-                                )}
-                              </div>
-                              <div className="p-2 flex flex-col gap-1 justify-center items-center text-center">
-                                <h3 className="font-bold text-xs text-neutral-200 line-clamp-1 group-hover:text-blue-400 transition">
-                                  {anime.title}
-                                </h3>
-                                {anime.score && (
-                                  <span className="text-[10px] text-amber-500 font-bold">★ {anime.score}</span>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  );
-                })}
-
-                {Object.keys(allWeekData).length > 0 && Object.values(allWeekData).flat().length === 0 && (
-                  <div className="text-center py-20 text-neutral-500 font-bold">لا توجد بيانات متاحة لهذا الأسبوع حالياً.</div>
-                )}
-              </div>
-            ) : (
-              // Daily View Layout
-              <>
-                {filteredSchedule.length > 0 ? (
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-                    {filteredSchedule.map((anime: any, idx) => {
-                      const timeInfo = getLocalBroadcastInfo(anime.broadcast?.time, selectedDay);
-                      return (
-                        <motion.div
-                          initial={{ opacity: 0, y: 15 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          transition={{ delay: Math.min(idx * 0.04, 0.4) }}
-                          key={`${anime.mal_id}-${idx}`}
-                          onClick={() => onAnimeClick(anime.mal_id.toString())}
-                          className="cursor-pointer group flex flex-col relative rounded-2xl overflow-hidden border border-neutral-800 hover:border-blue-500/50 hover:shadow-[0_0_20px_rgba(59,130,246,0.15)] bg-neutral-900 transition-all duration-300"
-                        >
-                          <div className="relative aspect-[3/4] overflow-hidden">
-                            <img 
-                              src={anime.images?.jpg?.large_image_url || anime.images?.jpg?.image_url} 
-                              loading="lazy" 
-                              className="w-full h-full object-cover opacity-80 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500" 
-                              alt={anime.title} 
-                            />
-                            
-                            {/* Broadcast Badges */}
-                            <div className="absolute top-2 right-2 flex flex-col gap-1 items-end z-10">
-                              <span className="bg-blue-600 text-white px-2.5 py-0.5 rounded-md text-[10px] font-black shadow-lg flex items-center gap-1.5 border border-white/10">
-                                <Clock size={11} />
-                                <span>{timeInfo.localTime}</span>
-                              </span>
-                              {!showLocalTimeOnly && anime.broadcast?.time && (
-                                <span className="bg-purple-600/90 text-white px-2 py-0.5 rounded text-[9px] font-bold shadow-lg">
-                                  بث طوكيو JST: {anime.broadcast.time}
-                                </span>
-                              )}
-                            </div>
-
-                            {/* Live Countdown Overlay */}
-                            {timeInfo.countdown && (
-                              <div className={`absolute bottom-3 right-3 left-3 px-2.5 py-1.5 rounded-xl text-center text-[10px] font-bold shadow-lg border backdrop-blur-md flex items-center justify-center gap-1.5 transition duration-300 ${timeInfo.isLive ? 'bg-red-500/25 border-red-500/40 text-red-400 animate-pulse' : 'bg-black/85 border-white/5 text-emerald-400'}`}>
-                                <span className={`w-2 h-2 rounded-full ${timeInfo.isLive ? 'bg-red-500 animate-ping' : 'bg-emerald-500'}`}></span>
-                                <span className="truncate">{timeInfo.countdown}</span>
-                              </div>
-                            )}
-                          </div>
-
-                          {/* Content Panel */}
-                          <div className="p-3 flex flex-col gap-2">
-                            <h3 className="font-bold text-xs md:text-sm text-neutral-100 line-clamp-1 group-hover:text-blue-400 transition" title={anime.title}>
-                              {anime.title}
-                            </h3>
-                            
-                            <div className="flex items-center justify-between text-[11px] text-neutral-400">
-                              <span className="bg-neutral-800 text-neutral-300 px-1.5 py-0.5 rounded font-medium truncate max-w-[80px]">
-                                {anime.genres?.[0]?.name || 'أنمي'}
-                              </span>
-                              {anime.score && (
-                                <span className="text-amber-500 font-bold flex items-center gap-0.5">
-                                  ★ {anime.score}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </motion.div>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center justify-center py-28 text-center text-neutral-500 border border-dashed border-neutral-800 rounded-3xl p-6 bg-neutral-900/10">
-                    <AlertCircle className="text-neutral-600 mb-3" size={36} />
-                    <h4 className="font-bold text-base text-neutral-400">لا توجد لمطابقات الأنميات تحت محددات التصفية هذه.</h4>
-                    <p className="text-xs text-neutral-600 max-w-sm mt-1">حاول كتابة مصطلح بحث مختلف أو حدّد يوماً آخر لرؤية الأنميات المقررة لعرضها.</p>
-                  </div>
-                )}
-              </>
-            )}
-          </>
+          <div className="flex flex-col items-center justify-center py-24 text-center text-neutral-500">
+            <AlertCircle className="text-neutral-600 mb-2" size={32} />
+            <h4 className="font-bold text-sm text-neutral-400">لا توجد نتائج مطابقة</h4>
+          </div>
         )}
-      </div>
-
-      {/* Helpful Tips Bottom */}
-      <div className="px-4 mt-6">
-        <div className="bg-gradient-to-l from-neutral-950 via-neutral-900 to-neutral-950 border border-neutral-900 rounded-2xl p-4 flex flex-col sm:flex-row items-center gap-3.5 max-w-4xl mx-auto shadow-xl">
-          <div className="p-3 bg-blue-600/10 border border-blue-500/20 text-blue-400 rounded-xl">
-            <Clock size={18} />
-          </div>
-          <div className="flex-1 text-center sm:text-right gap-1 flex flex-col">
-            <h5 className="font-bold text-xs text-blue-400">تحويل ذكي لمنطقة التوقيت!</h5>
-            <p className="text-[11px] leading-relaxed text-neutral-400">
-              يقوم نظام السيرفرات الذكي باكتشاف موقعك وتحويل مواعيد العرض من التوقيت الياباني القياسي (JST) وتعديلها تلقائياً لتناسب منطقتك السكنية الحالية حتى لا تفوّت موعد البث المباشر لأي حلقة جديدة!
-            </p>
-          </div>
-        </div>
       </div>
     </div>
   );
