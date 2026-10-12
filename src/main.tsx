@@ -72,47 +72,57 @@ function resolveAbsoluteUrl(input: any): any {
   return input;
 }
 
-// معترض الشبكة الذكي ثنائي المسار (Cloud Server + Live Direct AniList/Jikan Engine for APK)
+// معترض الشبكة الذكي ثنائي المسار (Cloud Server + Live Direct Animedar/AniList Engine for APK & External Sites)
 async function smartFetch(input: any, init?: any): Promise<Response> {
   const urlString = typeof input === 'string' ? input : input && input.url ? input.url : '';
 
   if (urlString && urlString.includes('/api/')) {
-    const isExternalOrAPK = isRunningInAPKOrExternalShell();
     const resolvedInput = resolveAbsoluteUrl(input);
 
-    // مهلة سريعة (4.5 ثانية في APK) حتى لا يتجمد التطبيق أو يصبح ثقيلاً إذا كان الخادم السحابي في وضع السكون
-    const timeoutMs = isExternalOrAPK ? 4500 : 10000;
+    // منح الخادم السحابي مهلة كافية (12 ثانية) للاستيقاظ من وضع السكون وجلب بيانات انمي دار الحية المطابقة للمعاينة
+    const timeoutMs = 12000;
 
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-      const fetchOptions = init ? { ...init } : {};
-      if (!fetchOptions.signal) {
-        fetchOptions.signal = controller.signal;
+        const fetchOptions = init ? { ...init } : {};
+        // إزالة الترويسات التي قد تسبب رفض CORS preflight في المتصفحات الصارمة
+        if (fetchOptions.headers && typeof fetchOptions.headers === 'object' && !(fetchOptions.headers instanceof Headers)) {
+          const cleanHeaders: Record<string, string> = {};
+          for (const [k, v] of Object.entries(fetchOptions.headers)) {
+            const lowerK = k.toLowerCase();
+            if (lowerK !== 'cache-control' && lowerK !== 'pragma') {
+              cleanHeaders[k] = String(v);
+            }
+          }
+          fetchOptions.headers = cleanHeaders;
+        }
+        if (!fetchOptions.signal) {
+          fetchOptions.signal = controller.signal;
+        }
+
+        const res = await originalFetch(resolvedInput, fetchOptions);
+        clearTimeout(timeoutId);
+
+        const contentType = res.headers.get('content-type') || '';
+        if (res.ok && contentType.includes('application/json')) {
+          return res;
+        }
+        break;
+      } catch (err) {
+        if (attempt === 2) {
+          break;
+        }
       }
-
-      const res = await originalFetch(resolvedInput, fetchOptions);
-      clearTimeout(timeoutId);
-
-      // التحقق من أن الاستجابة فعلاً JSON وليست صفحة HTML أو خطأ بوابة
-      const contentType = res.headers.get('content-type') || '';
-      if (res.ok && contentType.includes('application/json')) {
-        return res;
-      }
-
-      // إذا أعاد السيرفر خطأ أو صفحة HTML غير متوقعة في الـ APK، ننتقل فوراً للجسر المباشر الحي
-      const fbRes = await handleFrontendFallback(urlString, init);
-      if (fbRes) return fbRes;
-
-      return res;
-    } catch (err) {
-      // في حال تعذر الوصول للخادم السحابي من داخل الـ APK، يتولى محرك الجلب المباشر (Direct AniList/Jikan + Google Translate) المهمة فوراً عبر إنترنت الهاتف!
-      const fbRes = await handleFrontendFallback(urlString, init);
-      if (fbRes) return fbRes;
-
-      return originalFetch(resolvedInput, init);
     }
+
+    // في حال تعذر الوصول للخادم السحابي تماماً، يتولى محرك الجلب المباشر (Direct Animedar Proxy + AniList) المهمة فوراً!
+    const fbRes = await handleFrontendFallback(urlString, init);
+    if (fbRes) return fbRes;
+
+    return originalFetch(resolvedInput, init);
   }
 
   return originalFetch(input, init);
