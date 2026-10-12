@@ -3914,4 +3914,23 @@ router.get(
   }),
 );
 
+router.get(
+  "/store/seasonal",
+  handleAsync(async (req: Request, res: Response) => {
+    try {
+      const season = typeof req.query.season === "string" ? req.query.season : undefined;
+      const year = req.query.year ? Number(req.query.year) : undefined;
+      const feed = await anilistService.getSeasonalStoreFeed(season, year);
+      return res.json({ success: true, data: feed });
+    } catch (err: any) {
+      console.warn("Seasonal store feed warning:", err?.message || err);
+      return res.json({
+        success: false,
+        data: { seasonLabel: "الموسم الحالي", seasonKey: "CURRENT", year: new Date().getFullYear(), banners: [], avatars: [] },
+      });
+    }
+  }),
+);
+
 export default router;
+

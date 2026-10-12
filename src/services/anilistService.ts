@@ -239,6 +239,183 @@ export const anilistService = {
     return (data?.Page?.media || []).map(mapAniListToJikan).filter(Boolean);
   },
 
+  async getSeasonalStoreFeed(season?: string, year?: number): Promise<{
+    seasonLabel: string;
+    seasonKey: string;
+    year: number;
+    banners: any[];
+    avatars: any[];
+  }> {
+    const now = new Date();
+    const curYear = year || now.getFullYear();
+    const month = now.getMonth() + 1;
+    const defaultSeason =
+      month <= 3 ? "WINTER" : month <= 6 ? "SPRING" : month <= 9 ? "SUMMER" : "FALL";
+    const targetSeason = (season || defaultSeason).toUpperCase();
+
+    const seasonNamesAr: Record<string, string> = {
+      WINTER: "شتاء",
+      SPRING: "ربيع",
+      SUMMER: "صيف",
+      FALL: "خريف",
+    };
+
+    const q = `
+      query ($season: MediaSeason, $year: Int) {
+        Page(page: 1, perPage: 18) {
+          media(type: ANIME, season: $season, seasonYear: $year, sort: [POPULARITY_DESC, SCORE_DESC], isAdult: false) {
+            id
+            idMal
+            title {
+              english
+              romaji
+            }
+            coverImage {
+              extraLarge
+              large
+            }
+            bannerImage
+            averageScore
+            meanScore
+            popularity
+            favourites
+            trending
+            season
+            seasonYear
+            characters(sort: [FAVOURITES_DESC, ROLE], perPage: 4) {
+              edges {
+                role
+                node {
+                  id
+                  name {
+                    full
+                  }
+                  image {
+                    large
+                  }
+                  favourites
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    let mediaList: any[] = [];
+    try {
+      const data = await queryAniList(q, { season: targetSeason, year: curYear }, 3 * 60 * 60 * 1000);
+      mediaList = data?.Page?.media || [];
+    } catch {}
+
+    // Fallback to currently releasing popular anime if season query returns empty
+    if (!mediaList || mediaList.length === 0) {
+      const fallbackQ = `
+        query {
+          Page(page: 1, perPage: 18) {
+            media(type: ANIME, status: RELEASING, sort: [POPULARITY_DESC, SCORE_DESC], isAdult: false) {
+              id
+              idMal
+              title {
+                english
+                romaji
+              }
+              coverImage {
+                extraLarge
+                large
+              }
+              bannerImage
+              averageScore
+              meanScore
+              popularity
+              favourites
+              trending
+              season
+              seasonYear
+              characters(sort: [FAVOURITES_DESC, ROLE], perPage: 4) {
+                edges {
+                  role
+                  node {
+                    id
+                    name {
+                      full
+                    }
+                    image {
+                      large
+                    }
+                    favourites
+                  }
+                }
+              }
+            }
+          }
+        }
+      `;
+      try {
+        const fbData = await queryAniList(fallbackQ, {}, 3 * 60 * 60 * 1000);
+        mediaList = fbData?.Page?.media || [];
+      } catch {}
+    }
+
+    const banners: any[] = [];
+    const avatars: any[] = [];
+    const seenCharIds = new Set<number>();
+
+    mediaList.forEach((m: any, mIdx: number) => {
+      const animeTitle = m.title?.english || m.title?.romaji || "Anime";
+      const rawScore = m.averageScore || m.meanScore || 82;
+      const score10 = Number((rawScore / 10).toFixed(1));
+      const popCount = Number(m.popularity || 50000);
+      const favCount = Number(m.favourites || 2500);
+      const bannerImg = m.bannerImage || m.coverImage?.extraLarge || m.coverImage?.large;
+
+      if (bannerImg) {
+        banners.push({
+          id: `season_ban_${m.id}`,
+          name: `${animeTitle}`,
+          animeTitle,
+          img: bannerImg,
+          type: "banner",
+          isSeasonal: true,
+          seasonTag: `${seasonNamesAr[targetSeason] || "موسم"} ${curYear}`,
+          popularityScore: Math.min(99, Math.max(75, Math.round(96 - mIdx * 1.1))),
+          animeScore: score10,
+          favoritesCount: favCount,
+          popularityCount: popCount,
+        });
+      }
+
+      const charEdges = m.characters?.edges || [];
+      charEdges.forEach((edge: any) => {
+        const node = edge?.node;
+        if (!node || !node.id || !node.image?.large || seenCharIds.has(node.id)) return;
+        seenCharIds.add(node.id);
+        const charFavs = Number(node.favourites || 1200);
+        avatars.push({
+          id: `season_av_${node.id}`,
+          name: node.name?.full || "Character",
+          animeTitle,
+          img: node.image.large,
+          type: "avatar",
+          isSeasonal: true,
+          seasonTag: `${seasonNamesAr[targetSeason] || "موسم"} ${curYear}`,
+          favoritesCount: charFavs,
+          animeScore: score10,
+          popularityCount: popCount,
+          role: edge.role || "MAIN",
+        });
+      });
+    });
+
+    return {
+      seasonLabel: `${seasonNamesAr[targetSeason] || "موسم"} ${curYear}`,
+      seasonKey: `${targetSeason}_${curYear}`,
+      year: curYear,
+      banners: banners.slice(0, 16),
+      avatars: avatars.slice(0, 24),
+    };
+  },
+
   async getSliderByMode(mode: string, limit = 10): Promise<any[]> {
     const normalizedMode = (mode || "best_season").toLowerCase();
 

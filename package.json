@@ -9,7 +9,11 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "start": "node dist/server.cjs"
+    "start": "node dist/server.cjs",
+    "apk:init": "npm install @capacitor/core @capacitor/cli @capacitor/android && npx cap add android && node scripts/configure-android-permissions.mjs",
+    "apk:sync": "vite build && npx cap sync android && node scripts/configure-android-permissions.mjs",
+    "apk:permissions": "node scripts/configure-android-permissions.mjs",
+    "apk:open": "npx cap open android"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",

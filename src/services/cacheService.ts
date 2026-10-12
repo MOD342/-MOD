@@ -1,6 +1,3 @@
-import { db } from '../firebase';
-import { doc, deleteDoc, getDocs, collection } from 'firebase/firestore';
-
 export type ServerCacheMode = '10k_smart_ram' | 'zero_live' | 'zero_cache_direct';
 
 export interface CacheEntry<T> {
@@ -183,16 +180,6 @@ class CacheService {
 
   public async clear(): Promise<void> {
     this.ramStore.clear();
-    if (db) {
-      try {
-        const snap = await getDocs(collection(db, 'server_cache'));
-        if (!snap.empty) {
-          await Promise.all(
-            snap.docs.map((d) => deleteDoc(doc(db, 'server_cache', d.id)).catch(() => {}))
-          );
-        }
-      } catch {}
-    }
   }
 
   public getStats(): CacheStatsInfo {

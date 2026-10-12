@@ -112,6 +112,12 @@ export default function AnimeCommentItem({
   const activeFrame = STORE_ITEMS_SORTED.find(
     (i) => i.id === comment.equippedFrame,
   );
+  const activeAura = STORE_ITEMS_SORTED.find(
+    (i) => i.id === comment.equippedAura,
+  );
+  const activeCommentCard = STORE_ITEMS_SORTED.find(
+    (i) => i.id === comment.equippedCommentCard,
+  );
   const activeTitle = STORE_ITEMS_SORTED.find(
     (i) => i.id === comment.equippedTitle,
   );
@@ -298,21 +304,30 @@ export default function AnimeCommentItem({
 
   return (
     <div
-      className="py-4 border-b border-neutral-800/45 font-sans relative"
+      className={`py-4 font-sans relative transition-all ${
+        activeCommentCard
+          ? `my-2.5 p-3.5 rounded-2xl ${activeCommentCard.commentCardStyle || "border border-purple-500/40 bg-purple-950/20"}`
+          : "border-b border-neutral-800/45"
+      }`}
       dir="rtl"
       id={`comment-${comment.id}`}
     >
       {/* Meta Header block: Avatar left, Username next, timestamp right */}
       <div className="flex justify-between items-center mb-2">
         <div className="flex items-center gap-2.5">
-          {/* Custom Circular Avatar with Optional Frame decoration */}
+          {/* Custom Circular Avatar with Optional Frame & Aura decoration */}
           <div
             onClick={() => onUserClick?.(comment.userId)}
             className="relative shrink-0 cursor-pointer hover:opacity-85 active:scale-95 transition-all"
             title="عرض الملف الشخصي"
           >
+            {activeAura && (
+              <div
+                className={`absolute -inset-1.5 rounded-full pointer-events-none z-0 opacity-85 ${activeAura.auraStyle || ""} bg-gradient-to-tr ${activeAura.auraGradient || "from-purple-500/40 to-amber-500/40"} blur-[3px]`}
+              />
+            )}
             <div
-              className={`w-9 h-9 rounded-full overflow-hidden border border-neutral-800/50 bg-neutral-900 flex items-center justify-center`}
+              className={`relative z-10 w-9 h-9 rounded-full overflow-hidden border border-neutral-800/50 bg-neutral-900 flex items-center justify-center`}
             >
               <img
                 src={
@@ -328,7 +343,7 @@ export default function AnimeCommentItem({
             </div>
             {activeFrame && (
               <div
-                className={`absolute inset-0 ${getAvatarShapeClass(activeFrame.avatarShape)} pointer-events-none ${activeFrame.frameStyle}`}
+                className={`absolute inset-0 z-20 ${getAvatarShapeClass(activeFrame.avatarShape)} pointer-events-none ${activeFrame.frameStyle}`}
               />
             )}
           </div>
@@ -379,9 +394,16 @@ export default function AnimeCommentItem({
           </div>
         </div>
 
-        {/* Timestamp aligned on the left */}
-        <div className="text-[11px] text-neutral-500 font-medium">
-          {getArabicRelativeTime()}
+        {/* Timestamp + Comment Card Badge aligned on the left */}
+        <div className="flex items-center gap-1.5">
+          {activeCommentCard?.commentCardBadge && (
+            <span className="text-[8px] font-black px-2 py-0.5 rounded-full bg-black/70 text-amber-300 border border-amber-500/30">
+              {activeCommentCard.commentCardBadge}
+            </span>
+          )}
+          <div className="text-[11px] text-neutral-500 font-medium">
+            {getArabicRelativeTime()}
+          </div>
         </div>
       </div>
 

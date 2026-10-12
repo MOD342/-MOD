@@ -265,6 +265,8 @@ export default function ProfileView({
     const bannerId = showStore ? userData?.equippedBanner : null;
     const avatarId = showStore ? userData?.equippedAvatar : null;
     const frameId = showStore ? userData?.equippedFrame : null;
+    const auraId = showStore ? userData?.equippedAura : null;
+    const commentCardId = showStore ? userData?.equippedCommentCard : null;
     const titleId = showStore ? userData?.equippedTitle : null;
     const badgeId = showStore ? userData?.equippedBadge : null;
 
@@ -272,6 +274,8 @@ export default function ProfileView({
       banner: STORE_ITEMS_SORTED.find(i => i.id === bannerId),
       avatar: STORE_ITEMS_SORTED.find(i => i.id === avatarId),
       frame: STORE_ITEMS_SORTED.find(i => i.id === frameId),
+      aura: STORE_ITEMS_SORTED.find(i => i.id === auraId),
+      commentCard: STORE_ITEMS_SORTED.find(i => i.id === commentCardId),
       title: STORE_ITEMS_SORTED.find(i => i.id === titleId),
       badge: STORE_ITEMS_SORTED.find(i => i.id === badgeId),
     };
@@ -324,6 +328,8 @@ export default function ProfileView({
     if (type === 'banner') updatePayload.equippedBanner = id;
     if (type === 'avatar') updatePayload.equippedAvatar = id;
     if (type === 'frame') updatePayload.equippedFrame = id;
+    if (type === 'aura') updatePayload.equippedAura = id;
+    if (type === 'comment_card') updatePayload.equippedCommentCard = id;
     if (type === 'title') updatePayload.equippedTitle = id;
     if (type === 'badge') updatePayload.equippedBadge = id;
     
@@ -751,15 +757,17 @@ export default function ProfileView({
                   className={`relative cursor-pointer transition-transform duration-200 shrink-0`}
                   onClick={() => isCurrentUser && setShowAdvancedSettings(true)}
                 >
-                  {/* Outer Aura Ring */}
-                  {avatarShape !== 'hexagon' && (
+                  {/* Outer Aura Ring (uses equipped Store Aura if active, otherwise level glow) */}
+                  {equipped.aura ? (
+                    <div className={`absolute -inset-2.5 ${avatarShapeClass} pointer-events-none z-0 opacity-90 ${equipped.aura.auraStyle || ''} bg-gradient-to-tr ${equipped.aura.auraGradient || 'from-purple-500/40 to-amber-500/40'} blur-[4px]`} />
+                  ) : avatarShape !== 'hexagon' ? (
                     <div className={`absolute inset-[-4px] ${avatarShapeClass} blur-[3px] opacity-75 animate-pulse bg-gradient-to-r ${
                       (userData?.level || 1) >= 50 ? 'from-[#ff2e54] to-[#f59e0b]' :
                       (userData?.level || 1) >= 30 ? 'from-[#a855f7] to-[#ec4899]' :
                       (userData?.level || 1) >= 15 ? 'from-[#38bdf8] to-[#10b981]' :
                       'from-[#404040] to-[#525252]'
                     }`} />
-                  )}
+                  ) : null}
 
                   <div className={`w-20 h-20 ${avatarShapeClass} border-4 border-[#000000] bg-[#0c0c0e] overflow-hidden relative z-10 shadow-[0_5px_15px_rgba(0,0,0,0.85)]`}>
                     <img src={avatarImg} alt="Avatar" className={`w-full h-full object-cover transition-transform ${equipped.avatar?.imageStyle || ''}`} />

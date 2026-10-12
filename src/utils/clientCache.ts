@@ -7,57 +7,34 @@ export interface ClientCacheStats {
   inFlightRequestsCount: number;
 }
 
+interface CacheEntry<T> {
+  data: T;
+  expiresAt: number;
+}
+
 /**
- * Direct Zero-Storage Client Manager (وضع الجلب المباشر الفوري بدون أي تخزين محلي أو مؤقت)
- * يقوم بتنظيف وحذف أي بيانات قديمة مخزنة في المتصفح (localStorage / sessionStorage / CacheStorage / ServiceWorker)
- * ويعمل بشكل مباشر 100% من الخادم والإنترنت دون تخزين أي بيانات.
+ * Smart Hybrid Client Cache Manager (محرك الجلب الذكي مع حماية بيانات المستخدم في الويب والـ APK)
+ * يحافظ على جلسات تسجيل الدخول وحساب المستخدم وتقدم الألعاب والإعدادات في localStorage،
+ * مع تخزين مؤقت خفيف في الذاكرة (RAM) لتسريع التنقل الفوري ومنع إعادة الطلبات المكررة.
  */
 class ClientCacheManager {
+  private memoryCache = new Map<string, CacheEntry<any>>();
   private inFlight = new Map<string, Promise<any>>();
-  private directRequests = 0;
+  private hits = 0;
+  private misses = 0;
 
   constructor() {
-    this.purgeAllBrowserStorage();
+    this.cleanLegacyCacheOnly();
   }
 
-  public purgeAllBrowserStorage(): void {
+  /**
+   * ينظف فقط مفاتيح الكاش المؤقتة القديمة دون المساس ببيانات المستخدم أو حساباته أو إعدادات التطبيق
+   */
+  public cleanLegacyCacheOnly(): void {
     try {
       if (typeof window === 'undefined') return;
 
-      // 1. Wipe localStorage completely (except active Firebase auth session if needed, or full wipe of app keys)
-      if (window.localStorage) {
-        const keysToRemove: string[] = [];
-        for (let i = 0; i < localStorage.length; i++) {
-          const k = localStorage.key(i);
-          if (k && !k.startsWith('firebase:authUser:')) {
-            keysToRemove.push(k);
-          }
-        }
-        keysToRemove.forEach((k) => {
-          try {
-            localStorage.removeItem(k);
-          } catch {}
-        });
-      }
-
-      // 2. Wipe sessionStorage completely
-      if (window.sessionStorage) {
-        try {
-          sessionStorage.clear();
-        } catch {}
-      }
-
-      // 3. Wipe Browser CacheStorage API
-      if ('caches' in window) {
-        caches
-          .keys()
-          .then((names) => {
-            names.forEach((name) => caches.delete(name));
-          })
-          .catch(() => {});
-      }
-
-      // 4. Unregister any old Service Workers so they never serve cached responses
+      // Unregister old legacy service workers that might serve stale HTML
       if ('serviceWorker' in navigator) {
         navigator.serviceWorker
           .getRegistrations()
@@ -71,43 +48,102 @@ class ClientCacheManager {
     } catch {}
   }
 
-  get<T>(_key: string): T | null {
-    return null;
+  public purgeAllBrowserStorage(): void {
+    this.memoryCache.clear();
+    try {
+      if (typeof window === 'undefined' || !window.localStorage) return;
+      const keysToRemove: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        // Only remove temporary API cache keys, NEVER remove user/auth/game/settings keys
+        if (
+          k &&
+          (k.startsWith('client_') ||
+            k.startsWith('direct_') ||
+            k.startsWith('servers_v') ||
+            k.startsWith('elite_'))
+        ) {
+          keysToRemove.push(k);
+        }
+      }
+      keysToRemove.forEach((k) => {
+        try {
+          localStorage.removeItem(k);
+        } catch {}
+      });
+    } catch {}
   }
 
-  set<T>(_key: string, _data: T, _ttlMs?: number): void {
-    // No-op: Direct live mode does not store any cache in memory or localStorage
+  get<T>(key: string): T | null {
+    const entry = this.memoryCache.get(key);
+    if (!entry) return null;
+    if (Date.now() > entry.expiresAt) {
+      this.memoryCache.delete(key);
+      return null;
+    }
+    this.hits++;
+    return entry.data as T;
   }
 
-  delete(_key: string): void {
-    // No-op
+  set<T>(key: string, data: T, ttlMs: number = 10 * 60 * 1000): void {
+    if (this.memoryCache.size > 200) {
+      const oldestKey = this.memoryCache.keys().next().value;
+      if (oldestKey) this.memoryCache.delete(oldestKey);
+    }
+    this.memoryCache.set(key, {
+      data,
+      expiresAt: Date.now() + ttlMs,
+    });
   }
 
-  prefetchDetails(_id: string | number): void {
-    // No-op in zero-storage direct mode
+  delete(key: string): void {
+    this.memoryCache.delete(key);
   }
 
-  clearPrefix(_prefix: string): void {
-    this.purgeAllBrowserStorage();
+  prefetchDetails(id: string | number): void {
+    if (!id || id === 'random' || id === 'unknown') return;
+    const cacheKey = `client_anime_details_v8_${id}`;
+    if (this.memoryCache.has(cacheKey) || this.inFlight.has(`/api/anime/details/${id}`)) return;
+    this.fetchWithRevalidate(cacheKey, `/api/anime/details/${id}`, () => {}, 10 * 60 * 1000).catch(() => {});
+  }
+
+  clearPrefix(prefix: string): void {
+    for (const k of this.memoryCache.keys()) {
+      if (k.startsWith(prefix)) {
+        this.memoryCache.delete(k);
+      }
+    }
   }
 
   clearExpired(): void {
-    this.purgeAllBrowserStorage();
+    const now = Date.now();
+    for (const [k, v] of this.memoryCache.entries()) {
+      if (now > v.expiresAt) {
+        this.memoryCache.delete(k);
+      }
+    }
   }
 
   clear(): void {
     this.inFlight.clear();
-    this.directRequests = 0;
+    this.memoryCache.clear();
+    this.hits = 0;
+    this.misses = 0;
     this.purgeAllBrowserStorage();
   }
 
   async fetchWithRevalidate<T>(
-    _key: string,
+    key: string,
     url: string,
     onSuccess: (data: T) => void,
-    _ttlMs?: number
+    ttlMs: number = 10 * 60 * 1000
   ): Promise<T | null> {
-    this.directRequests++;
+    const cached = this.get<T>(key);
+    if (cached !== null) {
+      onSuccess(cached);
+    } else {
+      this.misses++;
+    }
 
     let fetchPromise = this.inFlight.get(url);
     if (!fetchPromise) {
@@ -125,6 +161,7 @@ class ClientCacheManager {
           if (!res.ok) throw new Error(`HTTP error ${res.status}`);
           const json = await res.json();
           if (json && json.success && json.data !== undefined) {
+            this.set(key, json.data, ttlMs);
             onSuccess(json.data);
             return json.data;
           }
@@ -133,7 +170,7 @@ class ClientCacheManager {
         } finally {
           this.inFlight.delete(url);
         }
-        return null;
+        return cached;
       })();
 
       this.inFlight.set(url, fetchPromise);
@@ -146,16 +183,17 @@ class ClientCacheManager {
     }
 
     const result = await fetchPromise;
-    return result !== undefined ? result : null;
+    return result !== undefined ? result : cached;
   }
 
   getStats(): ClientCacheStats {
+    const total = this.hits + this.misses;
     return {
-      memoryItemsCount: 0,
-      localStorageKeysCount: 0,
-      hits: 0,
-      misses: this.directRequests,
-      hitRatioPercent: 0,
+      memoryItemsCount: this.memoryCache.size,
+      localStorageKeysCount: typeof localStorage !== 'undefined' ? localStorage.length : 0,
+      hits: this.hits,
+      misses: this.misses,
+      hitRatioPercent: total > 0 ? Math.round((this.hits / total) * 100) : 0,
       inFlightRequestsCount: this.inFlight.size,
     };
   }

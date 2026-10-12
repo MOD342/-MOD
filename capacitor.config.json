@@ -14,7 +14,10 @@
       "*.firebaseio.com",
       "*.vidlink.pro",
       "*.autoembed.cc",
-      "*.2embed.cc"
+      "*.2embed.cc",
+      "*.vidsrc.cc",
+      "*.vidsrc.icu",
+      "*.superembed.stream"
     ]
   },
   "android": {

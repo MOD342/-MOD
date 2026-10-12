@@ -177,6 +177,7 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
       items: [
         { id: 'support_help', label: 'الدعم', icon: HelpCircle, color: 'text-red-400', bg: 'bg-[#FF1744]/15' },
         { id: 'diagnostics', label: 'الشبكة', icon: LayoutGrid, color: 'text-amber-400', bg: 'bg-amber-500/10' },
+        { id: 'app_permissions', label: 'الأذونات', icon: Bell, color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
         { id: 'pwa_install', label: 'تثبيت التطبيق', icon: Smartphone, color: 'text-violet-400', bg: 'bg-violet-500/10' },
         ...(isAdmin || isDirectStaff || isStaffEmail(user?.email) || userRole === 'admin' || userRole === 'owner' || userRole === 'moderator'
           ? [{ id: 'admin', label: 'الإدارة', icon: Shield, color: 'text-red-500', bg: 'bg-red-500/10' }]
@@ -367,6 +368,8 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
                     onClick={() => {
                       if (item.id === 'pwa_install') {
                         setShowInstallModal(true);
+                      } else if (item.id === 'app_permissions') {
+                        window.dispatchEvent(new CustomEvent('open-permissions-modal'));
                       } else if (item.id === 'account_settings') {
                         onNavigate('profile', { openSettingsInitially: true });
                       } else {

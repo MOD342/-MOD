@@ -306,7 +306,12 @@ export default function App() {
     const handleOpenChat = () => {
       setViewStack(prev => [...prev, { name: 'ai_chat' }]);
     };
+    const handleOpenPermissions = () => {
+      localStorage.removeItem('mod_permissions_prompted');
+      setAskPermissions(true);
+    };
     window.addEventListener('open-ai-chat', handleOpenChat);
+    window.addEventListener('open-permissions-modal', handleOpenPermissions);
 
     // Prompt for permissions on mount (since splash loading is removed)
     if (typeof window !== 'undefined') {
@@ -317,12 +322,16 @@ export default function App() {
         }, 800);
         return () => {
           window.removeEventListener('open-ai-chat', handleOpenChat);
+          window.removeEventListener('open-permissions-modal', handleOpenPermissions);
           clearTimeout(timer);
         };
       }
     }
 
-    return () => window.removeEventListener('open-ai-chat', handleOpenChat);
+    return () => {
+      window.removeEventListener('open-ai-chat', handleOpenChat);
+      window.removeEventListener('open-permissions-modal', handleOpenPermissions);
+    };
   }, []);
 
   const currentView = viewStack[viewStack.length - 1];
@@ -436,7 +445,7 @@ export default function App() {
   }
 
   if (askPermissions) {
-    return <PermissionPromptModal onComplete={() => setAskPermissions(false)} />;
+    return <PermissionPromptModal forceOpen={true} onComplete={() => setAskPermissions(false)} />;
   }
 
   if (banInfo && banInfo.isBanned) {

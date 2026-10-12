@@ -532,12 +532,12 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
       targetStatus = 'watching';
     }
     const rawWatched = updateData.watchedEpisodes !== undefined ? updateData.watchedEpisodes : (userEntry?.watchedEpisodes || []);
-    const targetWatched = Array.from(new Set(rawWatched.map((n: any) => Number(n)).filter((n: number) => !isNaN(n) && n > 0))).sort((a, b) => a - b);
+    const targetWatched = Array.from(new Set<number>(rawWatched.map((n: any) => Number(n)).filter((n: number) => !isNaN(n) && n > 0))).sort((a, b) => a - b);
     const allEpisodeNums = activeSeasonEpisodes.length > 0
       ? activeSeasonEpisodes.map((ep: any, i: number) => normalizeEpisodeNum(ep.num, i + 1, ep.title))
       : Array.from({ length: animeTotalEpisodes }, (_, i) => i + 1);
     const finalWatched = targetStatus === 'completed' && allEpisodeNums.length > 0
-      ? Array.from(new Set([...targetWatched, ...allEpisodeNums])).sort((a, b) => a - b)
+      ? Array.from(new Set<number>([...targetWatched, ...allEpisodeNums])).sort((a, b) => a - b)
       : targetWatched;
     const progressToSave = targetStatus === 'completed' && animeTotalEpisodes > 0 
       ? animeTotalEpisodes 

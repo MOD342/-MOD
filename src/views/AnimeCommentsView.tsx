@@ -149,6 +149,8 @@ export default function AnimeCommentsView({ animeId, focusCommentId, onBack, onA
         dislikes: 0,
         equippedAvatar: userData?.equippedAvatar || null,
         equippedFrame: userData?.equippedFrame || null,
+        equippedAura: userData?.equippedAura || null,
+        equippedCommentCard: userData?.equippedCommentCard || null,
         equippedTitle: userData?.equippedTitle || null,
         equippedBadge: userData?.equippedBadge || null
       };
