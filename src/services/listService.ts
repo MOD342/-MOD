@@ -1,6 +1,27 @@
-import { db } from '../firebase';
+import { db, auth } from '../firebase';
 import { collection, doc, getDocs, getDoc, setDoc, updateDoc, deleteDoc, query, serverTimestamp, increment } from 'firebase/firestore';
 import { handleFirestoreError, OperationType } from '../firebaseUtils';
+
+function isAuthenticatedOwner(id: string): boolean {
+  return Boolean(auth.currentUser && auth.currentUser.uid === id);
+}
+
+function readLocalJson<T>(key: string, fallback: T): T {
+  try {
+    if (typeof localStorage === 'undefined') return fallback;
+    const raw = localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeLocalJson<T>(key: string, value: T): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {}
+}
 
 export interface CustomList {
   id: string;
@@ -67,6 +88,10 @@ const appRatingPromises = new Map<string, Promise<{ score: number; count: number
 
 export const listService = {
   getCustomLists: async (id: string): Promise<CustomList[]> => {
+    if (!isAuthenticatedOwner(id)) {
+      return readLocalJson<CustomList[]>(`local_custom_lists_${id}`, []);
+    }
+
     const now = Date.now();
     const cached = customListsCache.get(id);
     if (cached && now < cached.expireAt) {
@@ -95,6 +120,15 @@ export const listService = {
   },
 
   createCustomList: async (id: string, name: string): Promise<string> => {
+    if (!isAuthenticatedOwner(id)) {
+      const listId = 'list_' + Date.now();
+      const lists = readLocalJson<CustomList[]>(`local_custom_lists_${id}`, []);
+      lists.push({ id: listId, name, createdAt: new Date().toISOString() });
+      writeLocalJson(`local_custom_lists_${id}`, lists);
+      customListsCache.delete(id);
+      return listId;
+    }
+
     try {
       const listId = 'list_' + Date.now();
       const ref = doc(db, 'users', id, 'customLists', listId);
@@ -112,6 +146,13 @@ export const listService = {
   },
 
   deleteCustomList: async (id: string, listId: string): Promise<void> => {
+    if (!isAuthenticatedOwner(id)) {
+      const lists = readLocalJson<CustomList[]>(`local_custom_lists_${id}`, []);
+      writeLocalJson(`local_custom_lists_${id}`, lists.filter(l => l.id !== listId));
+      customListsCache.delete(id);
+      return;
+    }
+
     try {
       await deleteDoc(doc(db, 'users', id, 'customLists', listId));
       // Invalidate cache
@@ -123,6 +164,10 @@ export const listService = {
   },
 
   getAnimeEntries: async (id: string): Promise<AnimeEntry[]> => {
+    if (!isAuthenticatedOwner(id)) {
+      return readLocalJson<AnimeEntry[]>(`local_anime_entries_${id}`, []);
+    }
+
     const now = Date.now();
     const cached = animeEntriesCache.get(id);
     if (cached && now < cached.expireAt) {
@@ -209,6 +254,36 @@ export const listService = {
       extraCoins?: number
     }
   ): Promise<void> => {
+    if (!isAuthenticatedOwner(id)) {
+      const entries = readLocalJson<AnimeEntry[]>(`local_anime_entries_${id}`, []);
+      const idx = entries.findIndex(e => e.id === animeId);
+      const existing = idx >= 0 ? entries[idx] : null;
+      const nowIso = new Date().toISOString();
+      const updatedEntry: AnimeEntry = {
+        id: animeId,
+        title: data.title || existing?.title || 'Unknown Title',
+        posterUrl: data.posterUrl || existing?.posterUrl || '',
+        releaseYear: data.releaseYear || existing?.releaseYear || '',
+        status: data.status || existing?.status || 'none',
+        customLists: data.customLists || existing?.customLists || {},
+        score: data.score !== undefined ? data.score : existing?.score,
+        isFavorite: data.isFavorite !== undefined ? data.isFavorite : existing?.isFavorite,
+        watchedEpisodes: data.watchedEpisodes !== undefined ? data.watchedEpisodes : existing?.watchedEpisodes,
+        episodesCount: data.episodesCount !== undefined ? data.episodesCount : existing?.episodesCount,
+        progress: data.progress !== undefined ? data.progress : existing?.progress,
+        addedAt: existing?.addedAt || nowIso,
+        updatedAt: nowIso
+      };
+      if (idx >= 0) {
+        entries[idx] = updatedEntry;
+      } else {
+        entries.push(updatedEntry);
+      }
+      writeLocalJson(`local_anime_entries_${id}`, entries);
+      animeEntriesCache.delete(id);
+      return;
+    }
+
     try {
       const ref = doc(db, 'users', id, 'animeEntries', animeId);
       const snap = await getDoc(ref);
@@ -318,6 +393,13 @@ export const listService = {
   },
 
   removeAnimeEntry: async (id: string, animeId: string): Promise<void> => {
+    if (!isAuthenticatedOwner(id)) {
+      const entries = readLocalJson<AnimeEntry[]>(`local_anime_entries_${id}`, []);
+      writeLocalJson(`local_anime_entries_${id}`, entries.filter(e => e.id !== animeId));
+      animeEntriesCache.delete(id);
+      return;
+    }
+
     try {
       await deleteDoc(doc(db, 'users', id, 'animeEntries', animeId));
       try {

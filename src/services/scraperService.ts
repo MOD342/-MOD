@@ -322,11 +322,15 @@ export class ScraperService {
   // 1. الموقع الأساسي الأول (#1 Primary): https://animedar.net
   private readonly primaryOrigin = 'https://animedar.net';
 
-  // 2. الموقع الثانوي الاحتياطي (#2 Secondary): https://ristoanime.me (ومرآته ristoanime.co)
+  // 2. الموقع الثانوي الاحتياطي (#2 Secondary): https://ristoanime.cc (ومراياه)
   private readonly secondaryMirrors = [
+    'https://ristoanime.cc',
     'https://ristoanime.me',
     'https://ristoanime.co'
   ];
+
+  // 3. مصدر المشاهدة والتحميل المباشر الإضافي (#3 OkAnime): https://ww3.okanime.xyz
+  private readonly okanimeOrigin = 'https://ww3.okanime.xyz';
 
   private readonly defaultHeaders = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
@@ -337,7 +341,7 @@ export class ScraperService {
   /**
    * جلب HTML من الموقع الأساسي animedar.net
    */
-  private async fetchAnimedarHtml(path: string, timeoutMs = 5500): Promise<string> {
+  private async fetchAnimedarHtml(path: string, timeoutMs = 9000): Promise<string> {
     if (IS_EXTERNAL_FETCH_DISABLED) {
       throw new Error('External web scraping is paused.');
     }
@@ -390,6 +394,213 @@ export class ScraperService {
     }
 
     throw new Error(`RistoAnime secondary mirrors failed: ${lastError?.message || lastError}`);
+  }
+
+  /**
+   * جلب HTML من مصدر OkAnime (ww3.okanime.xyz)
+   */
+  private async fetchOkanimeHtml(path: string, timeoutMs = 4500): Promise<string> {
+    if (IS_EXTERNAL_FETCH_DISABLED) {
+      throw new Error('External web scraping is paused.');
+    }
+    const cleanPath = path.startsWith('http')
+      ? path
+      : `${this.okanimeOrigin}${path.startsWith('/') ? path : '/' + path}`;
+
+    const res = await fetch(cleanPath, {
+      headers: this.defaultHeaders,
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+    if (!res.ok) {
+      throw new Error(`OkAnime HTTP ${res.status}`);
+    }
+    const text = await res.text();
+    if (text.length < 3000) {
+      throw new Error('OkAnime response too short');
+    }
+    return text;
+  }
+
+  private mapOkanimeQuality(raw: string): '1080p' | '720p' | '480p' | 'auto' {
+    const q = (raw || '').toUpperCase();
+    if (q.includes('FHD') || q.includes('1080')) return '1080p';
+    if (q.includes('SD') || q.includes('480') || q.includes('360')) return '480p';
+    if (q.includes('HD') || q.includes('720')) return '720p';
+    return '720p';
+  }
+
+  private normalizeOkanimeHostName(raw: string, url: string): string {
+    const h = `${raw} ${url}`.toLowerCase();
+    if (h.includes('mega.nz') || h === 'mega' || h.includes('meganz')) return 'Mega';
+    if (h.includes('mp4upload')) return 'MP4Upload';
+    if (h.includes('vk.com') || h.includes('vkvideo') || h === 'vk') return 'VK Video';
+    if (h.includes('drive.google')) return 'Google Drive';
+    if (h.includes('mediafire')) return 'MediaFire';
+    if (h.includes('sendvid')) return 'Sendvid';
+    if (h.includes('uqload')) return 'Uqload';
+    if (h.includes('4shared')) return '4Shared';
+    if (h.includes('videa')) return 'Videa';
+    if (h.includes('ok.ru')) return 'Ok.ru';
+    if (h.includes('vidmoly')) return 'Vidmoly';
+    if (h.includes('streamwish') || h.includes('asnwish')) return 'Streamwish';
+    if (h.includes('share4max') || h.includes('megamax')) return 'MegaMax';
+    return raw ? raw.trim() : 'Direct Server';
+  }
+
+  private async searchOkanimeSlug(query: string): Promise<string | null> {
+    const cleanQ = (query || '').trim();
+    if (!cleanQ) return null;
+    return serverCache.getOrFetch<string | null>(
+      `okanime_search_v1:${cleanQ.toLowerCase()}`,
+      async () => {
+        try {
+          const html = await this.fetchOkanimeHtml(`/search?q=${encodeURIComponent(cleanQ)}`, 4000);
+          const $ = cheerio.load(html);
+          const qTokens = cleanQ.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(t => t.length > 2);
+          let bestSlug: string | null = null;
+          let bestScore = -1;
+
+          $('a[href*="/anime/"]').each((_, el) => {
+            const href = ($(el).attr('href') || '').trim();
+            const m = href.match(/\/anime\/([^/?#]+)/i);
+            if (!m) return;
+            const slug = m[1];
+            const slugLower = slug.toLowerCase();
+            let score = 0;
+            for (const tok of qTokens) {
+              if (slugLower.includes(tok)) score += 10;
+            }
+            if (slugLower === cleanQ.toLowerCase().replace(/[^a-z0-9]+/g, '-')) score += 50;
+            if (score > bestScore) {
+              bestScore = score;
+              bestSlug = slug;
+            }
+          });
+          return bestSlug;
+        } catch {
+          return null;
+        }
+      },
+      2 * 60 * 60 * 1000
+    );
+  }
+
+  private async extractOkanimeEpisodeServers(
+    animeSlug: string,
+    epNum: string | number,
+    candidateTitles: string[]
+  ): Promise<{ watch: EpisodeServer[]; download: EpisodeServer[] }> {
+    const watch: EpisodeServer[] = [];
+    const download: EpisodeServer[] = [];
+    if (IS_EXTERNAL_FETCH_DISABLED) return { watch, download };
+
+    const epStr = String(epNum).trim();
+    let html = '';
+
+    // 1. محاولة سريعة ومباشرة عبر بنية الرابط القياسية في okanime: /episode/<slug>-episode-<num>
+    const slugsToTry: string[] = [];
+    if (animeSlug) {
+      slugsToTry.push(animeSlug);
+    }
+    for (const t of candidateTitles) {
+      const normalized = t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+      if (normalized && !slugsToTry.includes(normalized)) {
+        slugsToTry.push(normalized);
+      }
+    }
+
+    for (const slug of slugsToTry.slice(0, 2)) {
+      try {
+        html = await this.fetchOkanimeHtml(`/episode/${slug}-episode-${epStr}`, 4000);
+        if (html && (html.includes('setServer(') || html.includes('ep-link'))) break;
+        html = '';
+      } catch {}
+    }
+
+    // 2. إن لم ينجح المسار المباشر، نبحث عن الأنمي داخل okanime.xyz ونجلب رابط الحلقة الفعلي
+    if (!html) {
+      for (const titleCand of candidateTitles.slice(0, 2)) {
+        const foundSlug = await this.searchOkanimeSlug(titleCand);
+        if (!foundSlug) continue;
+        try {
+          html = await this.fetchOkanimeHtml(`/episode/${foundSlug}-episode-${epStr}`, 4000);
+          if (html && (html.includes('setServer(') || html.includes('ep-link'))) break;
+          html = '';
+        } catch {}
+        try {
+          const animePageHtml = await this.fetchOkanimeHtml(`/anime/${foundSlug}`, 4000);
+          const $a = cheerio.load(animePageHtml);
+          let matchedEpHref = '';
+          $a('a[href*="/episode/"]').each((_, el) => {
+            if (matchedEpHref) return;
+            const href = ($a(el).attr('href') || '').trim();
+            if (new RegExp(`-episode-${epStr}(?:$|\\?|#|/)`, 'i').test(href)) {
+              matchedEpHref = href;
+            }
+          });
+          if (matchedEpHref) {
+            html = await this.fetchOkanimeHtml(matchedEpHref, 4000);
+            if (html) break;
+          }
+        } catch {}
+      }
+    }
+
+    if (!html) return { watch, download };
+
+    const $ = cheerio.load(html);
+
+    // أ. استخراج سيرفرات المشاهدة من [data-server] و @click="setServer('...')"
+    $('[data-server]').each((_, el) => {
+      const rawServer = ($(el).attr('data-server') || '').trim();
+      const clickAttr = $(el).attr('@click') || '';
+      const urlMatch = clickAttr.match(/setServer\(['"]([^'"]+)['"]\)/i);
+      if (!urlMatch || !urlMatch[1]) return;
+
+      const embedUrl = urlMatch[1]
+        .replace(/\\u0026/g, '&')
+        .replace(/&amp;/g, '&')
+        .trim();
+      if (!embedUrl.startsWith('http')) return;
+      // تجاهل روابط share4max المشفرة إذا كانت غير مباشرة للمشغل، مع إبقاء السيرفرات الموثوقة
+      if (embedUrl.includes('share4max.com/iframe/')) return;
+
+      const qText = $(el).find('span').first().text().trim() || $(el).text().trim();
+      const quality = this.mapOkanimeQuality(qText);
+      const serverName = this.normalizeOkanimeHostName(rawServer, embedUrl);
+
+      if (!watch.some(s => s.url === embedUrl)) {
+        watch.push({
+          serverName,
+          url: embedUrl,
+          type: 'iframe',
+          quality,
+          category: 'watch'
+        });
+      }
+    });
+
+    // ب. استخراج روابط التحميل الحقيقية المرفقة بالحلقة (Mega / MP4Upload / Google Drive / MediaFire...)
+    $('a.ep-link[href^="http"], a[data-umami-event-host][href^="http"]').each((_, el) => {
+      const href = ($(el).attr('href') || '').trim();
+      if (!href || href.includes('okanime.xyz')) return;
+      const hostAttr = ($(el).attr('data-umami-event-host') || '').trim();
+      const spanQual = $(el).find('span').first().text().trim() || $(el).text().trim();
+      const quality = this.mapOkanimeQuality(spanQual);
+      const serverName = this.normalizeOkanimeHostName(hostAttr, href);
+
+      if (!download.some(s => s.url === href)) {
+        download.push({
+          serverName,
+          url: href,
+          type: 'direct',
+          quality,
+          category: 'download'
+        });
+      }
+    });
+
+    return { watch, download };
   }
 
   private jikanQueuePromise: Promise<void> = Promise.resolve();
@@ -961,20 +1172,20 @@ export class ScraperService {
     }
 
     const cacheKey = `recent_episodes_animedar_isolated_v3_page_${safePage}`;
-    if (forceBypass) {
+    if (!forceBypass) {
+      const cached = await this.getCached<AnimeItem[]>(cacheKey);
+      if (cached && cached.length > 0) return cached;
+    } else {
       await serverCache.delete(cacheKey);
       if (safePage === 1) {
         await serverCache.delete('recent_episodes');
       }
     }
 
-    return serverCache.getOrFetch<AnimeItem[]>(
-      cacheKey,
-      async () => {
-        try {
+    try {
       // 1. الجلب المباشر من الموقع الأساسي #1 (animedar.net) للصفحة المطلوبة (/ أو /page/N/)
       const targetDarPath = safePage > 1 ? `/page/${safePage}/` : '/';
-      const darHtml = await this.fetchAnimedarHtml(targetDarPath, 5500).catch(() => '');
+      const darHtml = await this.fetchAnimedarHtml(targetDarPath, 8500).catch(() => '');
       const validItems: AnimeItem[] = [];
       const seenSlugs = new Set<string>();
 
@@ -1024,7 +1235,7 @@ export class ScraperService {
       // 2. إذا تعذر الوصول للموقع الأساسي فقط، نستخدم الموقع الثانوي الاحتياطي #2 (ristoanime.me)
       if (validItems.length === 0) {
         const targetRistoPath = safePage > 1 ? `/page/${safePage}/` : '/';
-        const ristoHome = await this.fetchRistoHtml(targetRistoPath, 5000);
+        const ristoHome = await this.fetchRistoHtml(targetRistoPath, 6000);
         const $r = cheerio.load(ristoHome.html);
         $r('.MovieItem a').each((_, el) => {
           const link = ($r(el).attr('href') || '').trim();
@@ -1069,6 +1280,7 @@ export class ScraperService {
       }
 
       if (validItems.length > 0) {
+        await this.setCache(cacheKey, validItems, 90 * 1000);
         if (safePage === 1) {
           await this.setCache('recent_episodes', validItems, 90 * 1000);
         }
@@ -1077,20 +1289,15 @@ export class ScraperService {
 
       throw new Error('No recent episodes found from Animedar or RistoAnime');
     } catch (error: any) {
+      const stale = await serverCache.get<AnimeItem[]>(cacheKey, true);
+      if (stale && stale.length > 0) return stale;
+      if (safePage === 1) {
+        const stalePage1 = await serverCache.get<AnimeItem[]>('recent_episodes', true);
+        if (stalePage1 && stalePage1.length > 0) return stalePage1;
+      }
       if (safePage > 1) return [];
-      return CURATED_ANIME_LIST.map((anime) => ({
-        id: String(anime.mal_id),
-        title: anime.title_english || anime.title,
-        episode: String(anime.latestEpisode),
-        link: `/anime/${anime.mal_id}/episode/${anime.latestEpisode}`,
-        imageUrl: anime.posterUrl,
-        rating: anime.rating
-      }));
+      return [];
     }
-      },
-      90 * 1000,
-      forceBypass
-    );
   }
 
   /**
@@ -1482,7 +1689,7 @@ export class ScraperService {
       }
     }
 
-    const cacheKey = `servers_animedar_risto_v4:${episodeId}:${jikanId}:${explicitSeason || 1}:${epNum}`;
+    const cacheKey = `servers_v5_okanime:${episodeId}:${jikanId}:${explicitSeason || 1}:${epNum}`;
     return serverCache.getOrFetch<EpisodeServer[]>(
       cacheKey,
       async () => {
@@ -1589,7 +1796,21 @@ export class ScraperService {
         }
       }
 
-      // 2. الدمج التكميلي من الموقع الثانوي #2: RistoAnime إذا كان عدد سيرفرات المشاهدة أو التحميل قليلاً (< 5)
+      // 2. الجلب المتوازي من OkAnime (ww3.okanime.xyz) للحصول على سيرفرات المشاهدة وروابط التحميل الحقيقية المنفصلة (FHD/HD/SD)
+      const okanimeResult = await this.extractOkanimeEpisodeServers(
+        resolvedAnimedarSlug,
+        epNum,
+        candidateTitles
+      ).catch(() => ({ watch: [], download: [] }));
+
+      for (const w of okanimeResult.watch) {
+        if (!watchServers.some(s => s.url === w.url)) watchServers.push(w);
+      }
+      for (const d of okanimeResult.download) {
+        if (!downloadServers.some(s => s.url === d.url)) downloadServers.push(d);
+      }
+
+      // 3. الدمج التكميلي من الموقع الاحتياطي RistoAnime إذا كان عدد سيرفرات المشاهدة أو التحميل قليلاً
       if (watchServers.length < 5 || downloadServers.length < 3 || resolvedRistoEpSlug) {
         if (!resolvedRistoEpSlug && candidateTitles.length > 0) {
           for (const titleCand of candidateTitles) {
@@ -1615,6 +1836,57 @@ export class ScraperService {
           }
         }
       }
+
+      // دالة استبعاد روابط اختصار الإعلانات الخبيثة المزعجة
+      const isAdShortenerUrl = (u: string): boolean => {
+        if (!u) return true;
+        const lower = u.toLowerCase();
+        return (
+          lower.includes('cuty.io') ||
+          lower.includes('ouo.io') ||
+          lower.includes('ouo.press') ||
+          lower.includes('shrinkme.') ||
+          lower.includes('exe.io') ||
+          lower.includes('linkvertise.') ||
+          lower.includes('adfly') ||
+          lower.includes('adf.ly') ||
+          lower.includes('shortner') ||
+          lower.includes('shortlink') ||
+          lower.includes('earn') ||
+          lower.includes('clicksfly') ||
+          lower.includes('upns.online') ||
+          lower.includes('sh.st')
+        );
+      };
+
+      // دالة ترتيب السيرفرات بحسب الاستقرار والموثوقية وعدم وجود إعلانات معطلة
+      const getServerReliabilityScore = (server: EpisodeServer): number => {
+        const lowerName = (server.serverName || '').toLowerCase();
+        const lowerUrl = (server.url || '').toLowerCase();
+
+        // 1. Mega: السيرفر السحابي الأقوى، بث نظيف وخالٍ من الإعلانات المنبثقة
+        if (lowerName.includes('mega') || lowerUrl.includes('mega.nz')) return 100;
+        // 2. Sendvid: استخراج فوري لملف MP4 المباشر وتشغيله على مشغل التطبيق
+        if (lowerName.includes('sendvid') || lowerUrl.includes('sendvid.com')) return 95;
+        // 3. MP4Upload: استخراج مباشر عبر البروكسي فائق السرعة
+        if (lowerName.includes('mp4upload') || lowerUrl.includes('mp4upload.com')) return 90;
+        // 4. Google Drive: سحابي سريع
+        if (lowerName.includes('drive') || lowerUrl.includes('drive.google')) return 85;
+        // 5. Ok.ru: مستقر ويدعم جودات متعددة
+        if (lowerName.includes('ok.ru') || lowerUrl.includes('ok.ru')) return 80;
+        // 6. Uqload: يعمل كـ Embed
+        if (lowerName.includes('uqload') || lowerUrl.includes('uqload.')) return 75;
+        // 7. Streamwish / Asnwish / Filemoon: سيرفرات شائعة
+        if (lowerName.includes('streamwish') || lowerUrl.includes('asnwish') || lowerUrl.includes('filemoon')) return 70;
+        // 8. Videa / Dailymotion / 4Shared
+        if (lowerName.includes('videa') || lowerName.includes('dailymotion') || lowerUrl.includes('videa.hu')) return 65;
+        // 9. Vidmoly (كثير الأعطال والملفات المحذوفة 404 - يوضع في الأسفل)
+        if (lowerName.includes('vidmoly') || lowerUrl.includes('vidmoly')) return 20;
+        // 10. Sibnet (محظور جغرافياً 403 - يوضع في الأسفل)
+        if (lowerName.includes('sibnet') || lowerUrl.includes('sibnet')) return 10;
+
+        return 50;
+      };
 
       // 3. ضمان توليد رابط تحميل لكل سيرفر مشاهدة إذا لم يكن مضافاً بعد في قائمة التحميل
       for (const w of watchServers) {
@@ -1644,9 +1916,53 @@ export class ScraperService {
         }
       }
 
+      // فرز سيرفرات المشاهدة بحسب درجة الاستقرار والموثوقية
+      watchServers.sort((a, b) => getServerReliabilityScore(b) - getServerReliabilityScore(a));
+
+      // تصفية سيرفرات التحميل من روابط اختصار الإعلانات والفرز
+      const cleanDownloadServers = downloadServers
+        .filter(d => !isAdShortenerUrl(d.url))
+        .sort((a, b) => getServerReliabilityScore(b) - getServerReliabilityScore(a));
+
+      // إضافة سيرفر التحميل المباشر الذكي في صدارة روابط التحميل مع تفضيل السيرفرات الداعمة للاستخراج المباشر (MP4)
+      const isDirectMp4Host = (u: string) => {
+        const l = u.toLowerCase();
+        return (
+          l.includes('sendvid') ||
+          l.includes('videa') ||
+          l.includes('mp4upload') ||
+          l.includes('mega.nz') ||
+          l.includes('ok.ru') ||
+          l.includes('yourupload') ||
+          l.includes('uqload') ||
+          l.includes('4shared') ||
+          l.includes('drive.google') ||
+          l.includes('streamtape') ||
+          l.includes('dood') ||
+          l.includes('d000d') ||
+          l.includes('vidoza') ||
+          l.includes('sibnet') ||
+          l.includes('mixdrop')
+        );
+      };
+      const bestDirectWatch =
+        watchServers.find(s => isDirectMp4Host(s.url))?.url ||
+        cleanDownloadServers.find(s => isDirectMp4Host(s.url))?.url ||
+        watchServers[0]?.url ||
+        '';
+      const safeTitle = (animeTitle || candidateTitles[0] || 'Anime').replace(/["'<>]/g, '').trim();
+      const inAppDownloadServer: EpisodeServer = {
+        serverName: 'تحميل مباشر (MOD Fast)',
+        url: `/api/anime/download?url=${encodeURIComponent(bestDirectWatch)}&title=${encodeURIComponent(safeTitle)}&ep=${epNum}`,
+        type: 'direct',
+        quality: '1080p',
+        category: 'download'
+      };
+
       const finalServers: EpisodeServer[] = [
         ...watchServers,
-        ...downloadServers
+        inAppDownloadServer,
+        ...cleanDownloadServers
       ];
 
       return finalServers;

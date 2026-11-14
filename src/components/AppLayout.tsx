@@ -3,7 +3,7 @@ import { ReactNode, useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { notificationsService } from '../services/notificationsService';
 import NotificationsModal from './NotificationsModal';
-import { db } from '../firebase';
+import { db, auth } from '../firebase';
 import { collection, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
 
 export function AppLayout({ children, activeTab, setActiveTab, onNavigateTo }: { children: ReactNode; activeTab: string; setActiveTab: (tab: string) => void; onNavigateTo: (view: string, props?: any) => void }) {
@@ -14,7 +14,10 @@ export function AppLayout({ children, activeTab, setActiveTab, onNavigateTo }: {
   const [unreadNotifsCount, setUnreadNotifsCount] = useState(0);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || !auth.currentUser || auth.currentUser.uid !== user.id) {
+      setUnreadNotifsCount(0);
+      return;
+    }
     
     // Listen to user notifications in real-time for updated unread badgecount
     const q = query(collection(db, 'users', user.id, 'notifications'));

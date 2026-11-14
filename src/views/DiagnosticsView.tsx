@@ -73,27 +73,54 @@ export default function DiagnosticsView({ onBack }: DiagnosticsViewProps) {
     { name: 'مجدول المهام الآلي (node-cron Task Scheduler)', category: 'api', status: 'idle', desc: 'التحقق من جاهزية مجدول مهام جلب الأنميات (24h) وتحديث الروابط (12h).' },
   ]);
 
-  const defaultApiHost = import.meta.env.VITE_API_URL || 'https://ais-pre-n66z4zqpsskq4rqmdhuz4r-358090555339.europe-west2.run.app';
+  const rawEnvHost = (import.meta.env.VITE_API_URL || '').trim();
+  const validEnvHost =
+    rawEnvHost.startsWith('http') &&
+    !rawEnvHost.includes('your-public-deployed') &&
+    !rawEnvHost.includes('example.com') &&
+    !rawEnvHost.includes('ais-dev-')
+      ? rawEnvHost.replace(/\/+$/, '')
+      : '';
+
+  const isWebOrigin =
+    typeof window !== 'undefined' &&
+    window.location.protocol.startsWith('http') &&
+    !(window.location.hostname === 'localhost' && !window.location.port);
+
+  const defaultApiHost =
+    (isWebOrigin ? window.location.origin : '') || validEnvHost || '';
 
   useEffect(() => {
-    // Load saved custom host if any
-    const stored = localStorage.getItem('custom_api_host') || defaultApiHost;
+    const rawStored = localStorage.getItem('custom_api_host') || '';
+    const isApkShell =
+      window.location.protocol === 'file:' ||
+      window.location.protocol === 'capacitor:' ||
+      Boolean((window as any).Capacitor) ||
+      Boolean((window as any).cordova) ||
+      (window.location.hostname === 'localhost' && !window.location.port);
+    const isLegacyHost =
+      rawStored.includes('ais-dev-') ||
+      rawStored.includes('your-public-deployed') ||
+      rawStored.includes('example.com') ||
+      (!isApkShell && (rawStored.includes('ais-pre-') || rawStored.includes('.run.app')));
+    if (isLegacyHost) {
+      localStorage.removeItem('custom_api_host');
+    }
+    const stored = (!isLegacyHost && rawStored) || defaultApiHost;
     setCustomHost(stored);
     setSavedHost(stored);
     runAllTests();
   }, [defaultApiHost]);
 
   const saveCustomHostHandler = () => {
-    const trimmed = customHost.trim();
-    if (!trimmed) {
+    const trimmed = customHost.trim().replace(/\/+$/, '');
+    if (!trimmed || trimmed === defaultApiHost) {
       localStorage.removeItem('custom_api_host');
       setSavedHost(defaultApiHost);
-      localStorage.setItem('custom_api_host', defaultApiHost);
     } else {
       localStorage.setItem('custom_api_host', trimmed);
       setSavedHost(trimmed);
     }
-    // Refresh tests
     runAllTests();
   };
 
@@ -586,7 +613,7 @@ export default function DiagnosticsView({ onBack }: DiagnosticsViewProps) {
             type="text" 
             value={customHost} 
             onChange={(e) => setCustomHost(e.target.value)} 
-            placeholder="مثال: https://ais-pre-n66z4zqpsskq4rqmdhuz4r-...europe-west2.run.app" 
+            placeholder="مثال: https://your-api-server.com" 
             className="flex-1 bg-zinc-950 border border-zinc-800 hover:border-zinc-700 focus:border-rose-500 focus:ring-1 focus:ring-rose-500/30 rounded-xl px-4 py-2.5 text-xs font-mono text-zinc-300 outline-none text-left"
             dir="ltr"
           />

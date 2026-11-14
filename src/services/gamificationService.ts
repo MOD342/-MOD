@@ -1,8 +1,13 @@
-import { db } from '../firebase';
+import { db, auth } from '../firebase';
 import { doc, getDoc, updateDoc, setDoc, increment, serverTimestamp } from 'firebase/firestore';
 import { notificationsService } from './notificationsService';
 
+function isAuthenticatedOwner(userId: string): boolean {
+  return Boolean(auth.currentUser && auth.currentUser.uid === userId);
+}
+
 export const updateDailyStreak = async (userId: string) => {
+  if (!isAuthenticatedOwner(userId)) return;
   try {
     const userRef = doc(db, 'users', userId);
     const snap = await getDoc(userRef);
@@ -49,6 +54,7 @@ export const updateDailyStreak = async (userId: string) => {
 };
 
 export const awardXP = async (userId: string, xpAmount: number, giveCoins: boolean | number = false, additionalFields?: Record<string, any>) => {
+  if (!isAuthenticatedOwner(userId)) return;
   try {
     const userRef = doc(db, 'users', userId);
     const snap = await getDoc(userRef);
@@ -138,6 +144,7 @@ export const awardXP = async (userId: string, xpAmount: number, giveCoins: boole
 };
 
 export const awardModPoints = async (userId: string, pointsAmount: number) => {
+  if (!isAuthenticatedOwner(userId)) return;
   try {
     const userRef = doc(db, 'users', userId);
     await updateDoc(userRef, { modPoints: increment(pointsAmount) });
@@ -147,6 +154,7 @@ export const awardModPoints = async (userId: string, pointsAmount: number) => {
 };
 
 export const incrementInteraction = async (userId: string, type: 'like' | 'comment' | 'recommendation' | 'rating' | 'chat') => {
+  if (!isAuthenticatedOwner(userId)) return;
   try {
     const fieldMap: Record<string, string> = {
       like: 'likesReceived',
@@ -203,6 +211,29 @@ export const recordEpisodeWatch = async (
   anime?: { _id: string; title: string; posterUrl: string; releaseYear: string; episodes?: any[]; episodesCount?: number }, 
   episodeNum?: number
 ) => {
+  if (!isAuthenticatedOwner(userId)) {
+    if (anime && episodeNum !== undefined) {
+      try {
+        const { listService } = await import('./listService');
+        const entries = await listService.getAnimeEntries(userId);
+        const existing = entries.find(e => e.id === anime._id);
+        const watched = Array.isArray(existing?.watchedEpisodes) ? [...existing.watchedEpisodes] : [];
+        if (!watched.some(w => Number(w) === Number(episodeNum))) {
+          watched.push(Number(episodeNum));
+          await listService.saveAnimeEntry(userId, anime._id, {
+            title: anime.title,
+            posterUrl: anime.posterUrl,
+            releaseYear: anime.releaseYear || '',
+            status: (!existing?.status || existing.status === 'none') ? 'watching' : existing.status,
+            watchedEpisodes: watched,
+            progress: watched.length
+          });
+        }
+      } catch {}
+    }
+    return;
+  }
+
   try {
     const userRef = doc(db, 'users', userId);
     const snap = await getDoc(userRef);
@@ -317,6 +348,7 @@ export const recordEpisodeWatch = async (
 };
 
 export const awardAiGamePoints = async (userId: string, score: number) => {
+  if (!isAuthenticatedOwner(userId)) return;
   try {
     const userRef = doc(db, 'users', userId);
     const snap = await getDoc(userRef);

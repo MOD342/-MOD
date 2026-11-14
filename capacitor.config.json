@@ -7,17 +7,15 @@
     "androidScheme": "https",
     "cleartext": true,
     "allowNavigation": [
-      "*.run.app",
+      "*",
       "*.anilist.co",
       "*.myanimelist.net",
       "*.googleapis.com",
       "*.firebaseio.com",
-      "*.vidlink.pro",
-      "*.autoembed.cc",
-      "*.2embed.cc",
-      "*.vidsrc.cc",
-      "*.vidsrc.icu",
-      "*.superembed.stream"
+      "*.firebaseapp.com",
+      "*.okanime.xyz",
+      "*.ristoanime.cc",
+      "*.animedar.net"
     ]
   },
   "android": {

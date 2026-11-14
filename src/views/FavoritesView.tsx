@@ -1,9 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { ChevronRight, Heart } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { db } from '../firebase';
-import { collection, query, where, getDocs } from 'firebase/firestore';
-import { AnimeEntry } from '../services/listService';
+import { AnimeEntry, listService } from '../services/listService';
 import { clientCache } from '../utils/clientCache';
 
 export default function FavoritesView({ onBack, onAnimeClick }: { onBack: () => void, onAnimeClick: (id: string) => void }) {
@@ -15,10 +13,8 @@ export default function FavoritesView({ onBack, onAnimeClick }: { onBack: () => 
     if (user) {
        const fetchFavs = async () => {
          try {
-           const q = query(collection(db, 'users', user.id, 'animeEntries'), where('isFavorite', '==', true));
-           const snap = await getDocs(q);
-           const favs = snap.docs.map(d => ({id: d.id, ...d.data()} as AnimeEntry));
-           setFavorites(favs);
+           const allEntries = await listService.getAnimeEntries(user.id);
+           setFavorites(allEntries.filter(e => e.isFavorite === true));
          } catch(e) {
            console.error(e);
          } finally {

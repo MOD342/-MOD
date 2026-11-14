@@ -4,16 +4,16 @@ import { createRoot } from 'react-dom/client';
 import App from './App.tsx';
 import './index.css';
 import { AuthProvider } from './contexts/AuthContext';
-import { handleFrontendFallback, isFallbackActive, setFallbackActive } from './utils/frontendFallback';
+import { clientCache } from './utils/clientCache';
+import { handleFrontendFallback, setFallbackActive } from './utils/frontendFallback';
 
 const originalFetch = window.fetch.bind(window);
 
-// الكشف الدقيق عما إذا كان التطبيق يعمل داخل حزمة APK / Capacitor / Cordova / WebView
+// الكشف الدقيق عما إذا كان التطبيق يعمل داخل حزمة APK / Capacitor / Cordova محلية بدون خادم ويب مستضيف
 export function isRunningInAPKOrExternalShell(): boolean {
   if (typeof window === 'undefined') return false;
   const protocol = window.location.protocol;
   const host = window.location.hostname;
-  const ua = navigator.userAgent || '';
 
   if (
     protocol === 'file:' ||
@@ -23,64 +23,91 @@ export function isRunningInAPKOrExternalShell(): boolean {
     Boolean((window as any).Capacitor) ||
     Boolean((window as any).cordova) ||
     Boolean((window as any).AndroidInterface) ||
-    Boolean((window as any).ReactNativeWebView) ||
-    /; wv\)/i.test(ua)
+    Boolean((window as any).ReactNativeWebView)
   ) {
     return true;
   }
 
-  // في Capacitor على أندرويد يكون النطاق غالباً https://localhost بدون منفذ 3000
-  if (host === 'localhost' && window.location.port !== '3000') {
-    return true;
-  }
-
-  // أي نطاق خارج حاوية Cloud Run / Localhost:3000 (مثل Vercel أو APK)
-  if (!host.includes('run.app') && !(host === 'localhost' && window.location.port === '3000')) {
+  // في Capacitor على أندرويد يُفتح التطبيق محلياً عبر https://localhost بدون منفذ خادم
+  if (host === 'localhost' && !window.location.port) {
     return true;
   }
 
   return false;
 }
 
-// تصفير أي حالة تعطل قديمة عند فتح التطبيق لضمان الاتصال الفوري بالإنترنت
+// تنظيف أي حالة تعطل أو كاش قديم فور بدء التشغيل
 try {
+  clientCache.cleanLegacyCacheOnly();
   localStorage.removeItem('is_api_unreachable');
   setFallbackActive(false);
 } catch {}
 
+function isValidRemoteApiHost(rawUrl: string | null | undefined): boolean {
+  if (!rawUrl) return false;
+  const trimmed = rawUrl.trim();
+  if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) return false;
+  const lower = trimmed.toLowerCase();
+  if (
+    lower.includes('your-public-deployed') ||
+    lower.includes('example.com') ||
+    lower.includes('your-domain') ||
+    lower.includes('ais-dev-')
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function resolveApiBaseHost(): string {
+  const isApk = isRunningInAPKOrExternalShell();
+  try {
+    const storedHost = localStorage.getItem('custom_api_host');
+    if (isValidRemoteApiHost(storedHost)) {
+      const clean = storedHost!.trim().replace(/\/+$/, '');
+      if (isApk || (!clean.includes('.run.app') && !clean.includes('ais-pre-'))) {
+        return clean;
+      }
+    }
+  } catch {}
+
+  if (isApk) {
+    const envUrl = (import.meta.env.VITE_API_URL || '').trim();
+    if (isValidRemoteApiHost(envUrl)) {
+      return envUrl.replace(/\/+$/, '');
+    }
+  }
+
+  return '';
+}
+
 function resolveAbsoluteUrl(input: any): any {
   if (typeof input === 'string' && input.startsWith('/api')) {
-    const isExternalOrAPK = isRunningInAPKOrExternalShell();
-
-    if (isExternalOrAPK) {
-      const defaultHost =
-        import.meta.env.VITE_API_URL ||
-        'https://ais-pre-n66z4zqpsskq4rqmdhuz4r-358090555339.europe-west2.run.app';
-      let absoluteHost = defaultHost;
-      try {
-        const storedHost = localStorage.getItem('custom_api_host');
-        if (storedHost && storedHost.trim() && storedHost.startsWith('http')) {
-          absoluteHost = storedHost.trim();
-        }
-      } catch {}
-
-      const cleanHost = absoluteHost.endsWith('/') ? absoluteHost.slice(0, -1) : absoluteHost;
+    const configuredHost = resolveApiBaseHost();
+    if (configuredHost) {
       const cleanInput = input.startsWith('/') ? input : `/${input}`;
-      return `${cleanHost}${cleanInput}`;
+      return `${configuredHost}${cleanInput}`;
     }
   }
   return input;
 }
 
-// معترض الشبكة الذكي ثنائي المسار (Cloud Server + Live Direct Animedar/AniList Engine for APK & External Sites)
+// معترض الشبكة الذكي ثنائي المسار (Same-Origin / Configured API Server + Direct Client Engine)
 async function smartFetch(input: any, init?: any): Promise<Response> {
   const urlString = typeof input === 'string' ? input : input && input.url ? input.url : '';
 
   if (urlString && urlString.includes('/api/')) {
-    const resolvedInput = resolveAbsoluteUrl(input);
+    const isApkLocalShell = isRunningInAPKOrExternalShell();
+    const configuredHost = resolveApiBaseHost();
 
-    // منح الخادم السحابي مهلة كافية (12 ثانية) للاستيقاظ من وضع السكون وجلب بيانات انمي دار الحية المطابقة للمعاينة
-    const timeoutMs = 12000;
+    // داخل حزمة APK محلية بدون خادم مهيأ، استخدم محرك الجلب المباشر فوراً دون انتظار
+    if (isApkLocalShell && !configuredHost && typeof input === 'string' && input.startsWith('/api/')) {
+      const fbRes = await handleFrontendFallback(urlString, init);
+      if (fbRes) return fbRes;
+    }
+
+    const resolvedInput = resolveAbsoluteUrl(input);
+    const timeoutMs = 20000;
 
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
@@ -88,8 +115,11 @@ async function smartFetch(input: any, init?: any): Promise<Response> {
         const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
         const fetchOptions = init ? { ...init } : {};
-        // إزالة الترويسات التي قد تسبب رفض CORS preflight في المتصفحات الصارمة
-        if (fetchOptions.headers && typeof fetchOptions.headers === 'object' && !(fetchOptions.headers instanceof Headers)) {
+        if (
+          fetchOptions.headers &&
+          typeof fetchOptions.headers === 'object' &&
+          !(fetchOptions.headers instanceof Headers)
+        ) {
           const cleanHeaders: Record<string, string> = {};
           for (const [k, v] of Object.entries(fetchOptions.headers)) {
             const lowerK = k.toLowerCase();
@@ -107,18 +137,21 @@ async function smartFetch(input: any, init?: any): Promise<Response> {
         clearTimeout(timeoutId);
 
         const contentType = res.headers.get('content-type') || '';
+        if (contentType.includes('application/json') && res.status < 500) {
+          return res;
+        }
         if (res.ok && contentType.includes('application/json')) {
           return res;
         }
         break;
-      } catch (err) {
+      } catch {
         if (attempt === 2) {
           break;
         }
       }
     }
 
-    // في حال تعذر الوصول للخادم السحابي تماماً، يتولى محرك الجلب المباشر (Direct Animedar Proxy + AniList) المهمة فوراً!
+    // في حال تعذر الوصول للخادم، يتولى محرك الجلب المباشر المهمة
     const fbRes = await handleFrontendFallback(urlString, init);
     if (fbRes) return fbRes;
 

@@ -121,26 +121,28 @@ export default function App() {
     };
 
     // 1. Listen to real-time User Specific Notifications
-    const unsubUserNotifs = onSnapshot(
-      query(collection(db, 'users', user.id, 'notifications'), orderBy('createdAt', 'desc'), limit(1)),
-      (snapshot) => {
-        snapshot.docChanges().forEach((change) => {
-          if (change.type === 'added') {
-            const data = change.doc.data();
-            const id = change.doc.id;
+    const unsubUserNotifs = (auth.currentUser && auth.currentUser.uid === user.id)
+      ? onSnapshot(
+          query(collection(db, 'users', user.id, 'notifications'), orderBy('createdAt', 'desc'), limit(1)),
+          (snapshot) => {
+            snapshot.docChanges().forEach((change) => {
+              if (change.type === 'added') {
+                const data = change.doc.data();
+                const id = change.doc.id;
 
-            const createdTime = getDocCreatedTime(data);
+                const createdTime = getDocCreatedTime(data);
 
-            // Only alert if it's after session load, is unread, and hasn't been shown in this window session
-            if (createdTime >= sessionStartTime - 4000 && !data.read && !seenIds.has(id)) {
-              seenIds.add(id);
-              triggerToast({ id, ...data });
-            }
-          }
-        });
-      },
-      (err) => console.warn("Real-time toast error:", err)
-    );
+                // Only alert if it's after session load, is unread, and hasn't been shown in this window session
+                if (createdTime >= sessionStartTime - 4000 && !data.read && !seenIds.has(id)) {
+                  seenIds.add(id);
+                  triggerToast({ id, ...data });
+                }
+              }
+            });
+          },
+          (err) => console.warn("Real-time toast error:", err)
+        )
+      : () => {};
 
     // 2. Listen to real-time Global Notifications
     const unsubGlobalNotifs = onSnapshot(
@@ -479,7 +481,7 @@ export default function App() {
   const renderView = () => {
     switch (currentView.name) {
       case 'home':
-        return <HomeView onAnimeClick={(id, epNum) => navigateTo('anime_details', { id, autoplayEpisode: epNum })} onNavigateToGames={() => navigateTo('games')} onSearchCategory={(cat) => { setActiveTab('watch'); navigateTo('watch', { initialQuery: cat }); }} onNavigateToSchedule={(day) => navigateTo('schedule', { initialDay: day })} onNavigateToRecent={() => navigateTo('recent_episodes')} onNavigateToSeason={() => navigateTo('current_season')} />;
+        return <HomeView onAnimeClick={(id, epNum) => navigateTo('anime_details', { id, autoplayEpisode: epNum })} onSearchCategory={(cat) => { setActiveTab('watch'); navigateTo('watch', { initialQuery: cat }); }} onNavigateToSchedule={(day) => navigateTo('schedule', { initialDay: day })} onNavigateToRecent={() => navigateTo('recent_episodes')} onNavigateToSeason={() => navigateTo('current_season')} />;
       case 'watch': 
         return <ExploreView onAnimeClick={(id) => navigateTo('anime_details', { id })} initialQuery={currentView.props?.initialQuery} />;
       case 'community':
@@ -607,7 +609,7 @@ export default function App() {
       case 'support_news':
         return <SupportPortalView onBack={goBack} initialTab="news" />;
       default:
-        return <HomeView onAnimeClick={(id) => navigateTo('anime_details', { id })} onNavigateToGames={() => navigateTo('games')} onNavigateToSchedule={(day) => navigateTo('schedule', { initialDay: day })} onNavigateToRecent={() => navigateTo('recent_episodes')} onNavigateToSeason={() => navigateTo('current_season')} />;
+        return <HomeView onAnimeClick={(id) => navigateTo('anime_details', { id })} onNavigateToSchedule={(day) => navigateTo('schedule', { initialDay: day })} onNavigateToRecent={() => navigateTo('recent_episodes')} onNavigateToSeason={() => navigateTo('current_season')} />;
     }
   };
 

@@ -2,8 +2,6 @@ import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import {
   initializeFirestore,
-  persistentLocalCache,
-  persistentMultipleTabManager,
   memoryLocalCache,
   getFirestore
 } from 'firebase/firestore';
@@ -40,8 +38,7 @@ if (isIframe) {
   } catch {
     dbInstance = getFirestore(app, dbId);
   }
-} else if (isWebView) {
-  // في بيئة APK، نستخدم الكاش الخفيف في الذاكرة (memoryLocalCache) لتجنب ثقل IndexedDB وتجميد شاشة البداية
+} else if (isWebView || isBrowser) {
   try {
     dbInstance = initializeFirestore(app, {
       experimentalAutoDetectLongPolling: true,
@@ -49,24 +46,6 @@ if (isIframe) {
     }, dbId);
   } catch {
     dbInstance = getFirestore(app, dbId);
-  }
-} else if (isBrowser) {
-  try {
-    dbInstance = initializeFirestore(app, {
-      experimentalAutoDetectLongPolling: true,
-      localCache: persistentLocalCache({
-        tabManager: persistentMultipleTabManager()
-      })
-    }, dbId);
-  } catch {
-    try {
-      dbInstance = initializeFirestore(app, {
-        experimentalAutoDetectLongPolling: true,
-        localCache: memoryLocalCache()
-      }, dbId);
-    } catch {
-      dbInstance = getFirestore(app, dbId);
-    }
   }
 } else {
   dbInstance = getFirestore(app, dbId);

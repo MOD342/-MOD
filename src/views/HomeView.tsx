@@ -4,12 +4,9 @@ import {
   RefreshCw,
   ChevronLeft,
   Quote,
-  Dices,
   Tv,
   Sparkles,
   X,
-  Swords,
-  Trophy,
   Flame,
   CalendarDays,
   Trash2,
@@ -21,23 +18,10 @@ import { clientCache } from '../utils/clientCache';
 import { db } from '../firebase';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { handleFirestoreError, OperationType } from '../firebaseUtils';
-import {
-  CURATED_ANIME_LIST,
-  getCuratedTop5,
-  getCuratedRecentEpisodes,
-  getCuratedSeasonAnime
-} from '../data/curatedAnimeDatabase';
 import { cleanAnimeTitle } from '../utils/animeTitleCleaner';
-import { getActiveNonOverlappingEvent } from '../services/arenaCalendarEngine';
-import ThreeHeaderTrophyEmblem from '../components/ThreeHeaderTrophyEmblem';
-import {
-  ANIME_WORLD_BACKGROUNDS,
-  VISUAL_ANIME_GAMES
-} from '../components/VisualAnimeGamesSpace';
 
 interface HomeViewProps {
   onAnimeClick?: (animeId: string, epNum?: string) => void;
-  onNavigateToGames?: () => void;
   onSearchCategory?: (category: string) => void;
   onNavigateToSchedule?: (targetDay?: string) => void;
   onNavigateToRecent?: () => void;
@@ -116,15 +100,12 @@ const WEEK_DAYS = [
 
 export default function HomeView({
   onAnimeClick,
-  onNavigateToGames,
   onSearchCategory,
   onNavigateToSchedule,
   onNavigateToRecent,
   onNavigateToSeason
 }: HomeViewProps) {
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [activeUsersCount] = useState(14208);
-  const activeArenaEvent = useMemo(() => getActiveNonOverlappingEvent(), []);
 
   // Selected schedule day on Home View (defaults to today)
   const todayKey = WEEK_DAYS[new Date().getDay()].key;
@@ -225,18 +206,68 @@ export default function HomeView({
       const clientDay = daysMap[new Date().getDay()];
       const activeSeason = customSeason || sliderSettings.season || 'auto';
       const activeMode = customSliderMode || sliderSettings.sliderMode || 'best_season';
+      const cacheKey = `direct_dashboard_v3_${activeSeason}_${activeMode}_${clientDay}`;
+
+      const applyDashboardData = async (data: any) => {
+        if (!data) return;
+        const hasAnyContent =
+          data.top5?.length > 0 ||
+          data.recentEpisodes?.length > 0 ||
+          data.popular?.length > 0 ||
+          data.currentSeason?.length > 0 ||
+          data.schedule?.length > 0;
+        if (hasAnyContent) {
+          setDashboard(data);
+        }
+
+        if (!Array.isArray(data.recentEpisodes) || data.recentEpisodes.length === 0) {
+          try {
+            const recentRes = await fetch(`/api/anime/recent?_t=${Date.now()}`, { cache: 'no-store' }).then((r) => r.json());
+            if (recentRes?.success && Array.isArray(recentRes.data) && recentRes.data.length > 0) {
+              const mappedRecent = recentRes.data.map((ep: any, idx: number) => {
+                const rawTitle = ep.title || '';
+                const cleanedTitle = rawTitle.includes(' S') ? rawTitle : cleanAnimeTitle(rawTitle);
+                const extractedEp = ep.episodeNumber || ep.episode || rawTitle.match(/الحلقة\s*(\d+)/)?.[1] || '1';
+                const posterImg = ep.posterUrl || ep.imageUrl || ep.thumbnailUrl;
+                return {
+                  _id: ep.id || `recent-${idx}`,
+                  episodeNumber: extractedEp,
+                  title: cleanedTitle,
+                  link: ep.link || '',
+                  animeId: {
+                    _id: typeof ep.animeId === 'string' ? ep.animeId : ep.animeId?._id || `search-${cleanedTitle}`,
+                    title: cleanedTitle,
+                    titleAr: cleanedTitle,
+                    posterUrl: posterImg,
+                    thumbnailUrl: posterImg,
+                    episodeLink: ep.link || ''
+                  }
+                };
+              });
+              const nextData = { ...data, recentEpisodes: mappedRecent };
+              clientCache.set(cacheKey, nextData, 10 * 60 * 1000);
+              setDashboard(nextData);
+            }
+          } catch {}
+        }
+      };
+
+      let lastAppliedRef: any = null;
+      const safeApply = async (data: any) => {
+        if (!data || data === lastAppliedRef) return;
+        lastAppliedRef = data;
+        await applyDashboardData(data);
+      };
 
       const freshData = await clientCache.fetchWithRevalidate<any>(
-        `direct_dashboard_${activeSeason}_${activeMode}_${clientDay}`,
+        cacheKey,
         `/api/dashboard?day=${clientDay}&season=${activeSeason}&sliderMode=${activeMode}`,
         (data) => {
-          if (data && (data.top5?.length > 0 || data.recentEpisodes?.length > 0)) {
-            setDashboard(data);
-          }
+          void safeApply(data);
         }
       );
-      if (freshData && (freshData.top5?.length > 0 || freshData.recentEpisodes?.length > 0)) {
-        setDashboard(freshData);
+      if (freshData) {
+        await safeApply(freshData);
       }
     } catch (e) {
       console.warn('Direct dashboard fetch notice:', e);
@@ -253,6 +284,7 @@ export default function HomeView({
       const clientDay = daysMap[new Date().getDay()];
       const activeSeason = sliderSettings.season || 'auto';
       const activeMode = sliderSettings.sliderMode || 'best_season';
+      const cacheKey = `direct_dashboard_v3_${activeSeason}_${activeMode}_${clientDay}`;
 
       const ts = Date.now();
       const [dashRes, recentRes] = await Promise.all([
@@ -304,9 +336,14 @@ export default function HomeView({
           recentEpisodes:
             freshRecent.length > 0 ? freshRecent : dashRes.data.recentEpisodes || []
         };
+        clientCache.set(cacheKey, updatedDashboard, 10 * 60 * 1000);
         setDashboard(updatedDashboard);
       } else if (freshRecent.length > 0) {
-        setDashboard((prev) => ({ ...prev, recentEpisodes: freshRecent }));
+        setDashboard((prev) => {
+          const next = { ...prev, recentEpisodes: freshRecent };
+          clientCache.set(cacheKey, next, 10 * 60 * 1000);
+          return next;
+        });
       }
     } catch (e) {
       console.warn('On-demand refresh fallback:', e);
@@ -345,20 +382,28 @@ export default function HomeView({
   };
 
   useEffect(() => {
+    // Load dashboard immediately without waiting for Firestore round-trip
+    void fetchDashboard('auto', 'best_season');
+
+    let lastFetchedConfigKey = 'auto|best_season';
+
     const unsub = onSnapshot(
       doc(db, 'globalSettings', 'slider'),
       (snap) => {
         if (snap.exists()) {
           const fireConfigs = snap.data() as any;
           setSliderSettings((prev) => ({ ...prev, ...fireConfigs }));
-          fetchDashboard(fireConfigs.season || 'auto', fireConfigs.sliderMode || 'best_season');
-        } else {
-          fetchDashboard('auto', 'best_season');
+          const nextSeason = fireConfigs.season || 'auto';
+          const nextMode = fireConfigs.sliderMode || 'best_season';
+          const nextKey = `${nextSeason}|${nextMode}`;
+          if (nextKey !== lastFetchedConfigKey) {
+            lastFetchedConfigKey = nextKey;
+            void fetchDashboard(nextSeason, nextMode);
+          }
         }
       },
       (err) => {
-        console.warn('Failed to query real-time slider configs, using direct fetch:', err);
-        fetchDashboard();
+        console.warn('Failed to query real-time slider configs:', err);
         try {
           handleFirestoreError(err, OperationType.GET, 'globalSettings/slider');
         } catch {}
@@ -438,7 +483,7 @@ export default function HomeView({
   const rawRecentEpisodes =
     dashboard.recentEpisodes && dashboard.recentEpisodes.length > 0
       ? dashboard.recentEpisodes
-      : getCuratedRecentEpisodes();
+      : [];
 
   const displayRecentEpisodes = useMemo(() => {
     const filtered = rawRecentEpisodes.filter((ep: any) => !isHiddenByAdmin(ep));
@@ -467,7 +512,7 @@ export default function HomeView({
     const list =
       dashboard.popular && dashboard.popular.length > 0
         ? dashboard.popular
-        : getCuratedSeasonAnime().slice(0, 10);
+        : [];
     return list.filter((a: any) => !isHiddenByAdmin(a));
   }, [dashboard.popular, animeCuration]);
 
@@ -475,7 +520,7 @@ export default function HomeView({
     const list =
       dashboard.currentSeason && dashboard.currentSeason.length > 0
         ? dashboard.currentSeason
-        : getCuratedSeasonAnime();
+        : [];
     return list.filter((a: any) => !isHiddenByAdmin(a));
   }, [dashboard.currentSeason, animeCuration]);
 
@@ -487,16 +532,7 @@ export default function HomeView({
     if (customDaySchedule[selectedScheduleDay] && customDaySchedule[selectedScheduleDay].length > 0) {
       return customDaySchedule[selectedScheduleDay];
     }
-    const dayFiltered = CURATED_ANIME_LIST.filter(
-      (a) => a.broadcastDay.toLowerCase() === selectedScheduleDay.toLowerCase()
-    ).map((anime) => ({
-      _id: String(anime.mal_id),
-      title: anime.title_english || anime.title,
-      posterUrl: anime.posterUrl,
-      rating: anime.rating,
-      genres: anime.genres
-    }));
-    return dayFiltered.length > 0 ? dayFiltered : getCuratedTop5();
+    return [];
   }, [selectedScheduleDay, todayKey, dashboard.schedule, customDaySchedule]);
 
   return (
@@ -801,6 +837,7 @@ export default function HomeView({
               (cleanTitle ? `search-${cleanTitle}` : 'unknown');
             const epPoster =
               ep.animeId?.posterUrl ||
+              ep.posterUrl ||
               ep.thumbnailUrl ||
               ep.animeId?.thumbnailUrl ||
               'https://via.placeholder.com/200x300?text=Anime';
@@ -852,95 +889,7 @@ export default function HomeView({
         </div>
       </section>
 
-      {/* 5. Live 3D Arena & Standalone 2D Games Portal (Elevated Showcase) */}
-      <section className="px-4 md:px-8 max-w-7xl mx-auto">
-        <div
-          onClick={() => onNavigateToGames?.()}
-          className="relative rounded-3xl overflow-hidden border border-white/15 hover:border-[#FF1744]/70 transition-all duration-500 cursor-pointer shadow-2xl group"
-        >
-          {/* Custom Anime Colosseum World Artwork Background */}
-          <img
-            src={ANIME_WORLD_BACKGROUNDS.colosseum}
-            alt="Otaku Colosseum World"
-            className="absolute inset-0 w-full h-full object-cover opacity-45 group-hover:scale-105 group-hover:opacity-60 transition-all duration-700 pointer-events-none"
-          />
-          <div className="absolute inset-0 bg-gradient-to-l from-black/95 via-black/80 to-black/65 pointer-events-none" />
-
-          <div className="relative z-10 p-5 md:p-7 flex flex-col lg:flex-row items-center justify-between gap-6">
-            {/* Right Side: Event Info + Standalone 2D Games Preview */}
-            <div className="flex flex-col sm:flex-row items-center sm:items-start text-center sm:text-right gap-4 flex-1 min-w-0">
-              {/* Interactive 3D Low-Poly Rotating Trophy Emblem */}
-              <div
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onNavigateToGames?.();
-                }}
-                className="relative shrink-0 rounded-2xl bg-black/65 border border-amber-400/35 p-1.5 shadow-[0_0_30px_rgba(255,23,68,0.28)]"
-              >
-                <ThreeHeaderTrophyEmblem mode="tournaments" size={76} />
-              </div>
-
-              <div className="space-y-2 min-w-0 flex-1">
-                <div className="flex items-center justify-center sm:justify-start gap-2 flex-wrap">
-                  <span className="bg-[#FF1744] text-white text-[10px] md:text-xs font-black px-3 py-0.5 rounded-full shadow-lg flex items-center gap-1">
-                    <Flame size={12} />
-                    {activeArenaEvent.tierBadgeAr}
-                  </span>
-                  <span className="bg-amber-500/15 text-amber-300 border border-amber-400/30 text-[10px] md:text-xs font-black px-3 py-0.5 rounded-full">
-                    الجائزة الكبرى {activeArenaEvent.prizePoolCoins.toLocaleString()} كوينز • مضاعف ×
-                    {activeArenaEvent.rewardMultiplier}
-                  </span>
-                  <span className="bg-purple-500/20 text-purple-200 border border-purple-400/30 text-[10px] font-black px-2.5 py-0.5 rounded-full">
-                    8 ألعاب 2D مستقلة
-                  </span>
-                </div>
-
-                <h3 className="text-white text-lg md:text-2xl font-black tracking-tight">
-                  {activeArenaEvent.titleAr} — حلبة الأوتاكو وعوالم الألعاب 2D
-                </h3>
-                <p className="text-xs md:text-sm text-neutral-300 max-w-2xl leading-relaxed">
-                  {activeArenaEvent.subtitleAr} • اختر مقاتلك وادخل عوالم الألعاب الحركية المستقلة مع
-                  الضربات القاضية، الجسيمات ثلاثية الأبعاد، ومكافآت الكوينز الفورية!
-                </p>
-
-                {/* Quick Mini Game World Chips */}
-                <div className="flex items-center justify-center sm:justify-start gap-2 pt-1 flex-wrap">
-                  {VISUAL_ANIME_GAMES.slice(0, 4).map((g) => (
-                    <span
-                      key={g.id}
-                      className="text-[10px] font-bold px-2.5 py-1 rounded-xl bg-white/5 border border-white/10 text-neutral-200 flex items-center gap-1.5"
-                    >
-                      <span
-                        className="w-2 h-2 rounded-full"
-                        style={{ backgroundColor: g.accentColor }}
-                      />
-                      {g.titleAr}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {/* Left CTA Button */}
-            <motion.button
-              type="button"
-              whileHover={{ scale: 1.04 }}
-              whileTap={{ scale: 0.96 }}
-              onClick={(e) => {
-                e.stopPropagation();
-                onNavigateToGames?.();
-              }}
-              className="w-full lg:w-auto bg-gradient-to-r from-[#FF1744] via-rose-600 to-amber-500 text-white font-black text-xs md:text-sm px-6 py-3.5 rounded-2xl flex items-center justify-center gap-2 shrink-0 shadow-[0_10px_28px_rgba(255,23,68,0.4)] cursor-pointer border border-white/20"
-            >
-              <Swords size={16} />
-              <span>دخول الحلبة والألعاب 2D</span>
-              <ChevronLeft size={16} />
-            </motion.button>
-          </div>
-        </div>
-      </section>
-
-      {/* 6. Daily Trending Today — رائج اليوم */}
+      {/* 5. Daily Trending Today — رائج اليوم */}
       <section className="px-4 md:px-8">
         <div className="flex justify-between items-end mb-3 max-w-7xl mx-auto">
           <div className="flex items-center gap-2">
@@ -1158,15 +1107,15 @@ export default function HomeView({
         </div>
       </section>
 
-      {/* 9. Social Indicator Banner */}
+      {/* Community Banner */}
       <section className="px-4 md:px-8 max-w-7xl mx-auto" id="social_indicator_banner">
         <div className="bg-gradient-to-r from-neutral-900 to-zinc-950 border border-neutral-800/80 rounded-3xl p-4 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="text-right">
             <h4 className="text-white text-xs font-black">
-              أكبر مجتمع أوتاكو عربي تفاعلي والسرعة رقم #1 ⚡
+              مجتمع الأوتاكو ومشاهدة الأنمي المباشرة ⚡
             </h4>
             <p className="text-[10px] text-neutral-400 mt-1">
-              تصفّح وشاهد الأنمي وخض البطولات التنافسية مع آلاف المتابعين الآن بأحدث التقنيات.
+              تصفّح أحدث الحلقات، تابع جدول البث، وشارك تقييماتك وآراءك مع مجتمع الأوتاكو من أي جهاز.
             </p>
           </div>
           <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 px-3.5 py-1.5 rounded-2xl flex items-center gap-2 text-xs font-bold leading-none">
@@ -1174,13 +1123,7 @@ export default function HomeView({
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
               <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
             </span>
-            <span>
-              نشط الآن:{' '}
-              <strong className="font-extrabold font-mono text-white">
-                {activeUsersCount.toLocaleString()}
-              </strong>{' '}
-              أوتاكو متصل
-            </span>
+            <span>تحديث تلقائي مباشر</span>
           </div>
         </div>
       </section>
@@ -1244,15 +1187,6 @@ export default function HomeView({
                       — {currentQuote.animeTitle}
                     </span>
                   </div>
-
-                  <button
-                    type="button"
-                    onClick={() => onNavigateToGames?.()}
-                    className="text-xs md:text-sm bg-neutral-800 hover:bg-neutral-700 text-white font-bold px-3.5 py-2 md:px-4 md:py-2.5 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer border border-white/10"
-                  >
-                    <span>ألعاب الأنمي 2D</span>
-                    <Dices size={14} className="text-purple-400" />
-                  </button>
                 </div>
               </motion.div>
             </AnimatePresence>

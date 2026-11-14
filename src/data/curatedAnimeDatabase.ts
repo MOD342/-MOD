@@ -14,6 +14,7 @@ export interface CuratedAnime {
   releaseYear: string;
   season: string;
   broadcastDay: string;
+  characters?: Array<{ name: string; imageUrl?: string }>;
 }
 
 // وضع الاتصال المباشر الحي 100%: تم تفريغ وحذف جميع قوائم الأنمي الثابتة القديمة من المشروع

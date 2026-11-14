@@ -323,92 +323,176 @@ function extractAnimedarSlugClient(href: string): string {
   }
 }
 
-// جلب أحدث الحلقات الحية مباشرة من صندوق .bixbox.ongoing في animedar.net عبر بروكسي CORS للمتصفح والـ APK
-async function fetchAnimedarRecentClient(page = 1): Promise<any[]> {
-  const safePage = Math.max(1, Number(page) || 1);
-  const targetUrl = safePage > 1 ? `https://animedar.net/page/${safePage}/` : 'https://animedar.net/';
+async function fetchHtmlDirectInClient(targetUrl: string): Promise<string> {
+  // 1. Native CapacitorHttp plugin (bypasses CORS natively in Android APK)
+  try {
+    const capHttp = (typeof window !== 'undefined' && (window as any).Capacitor?.Plugins?.CapacitorHttp) || null;
+    if (capHttp && typeof capHttp.get === 'function') {
+      const capRes = await capHttp.get({
+        url: targetUrl,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'ar-EG,ar;q=0.9,en-US;q=0.8,en;q=0.7'
+        },
+        connectTimeout: 8000,
+        readTimeout: 8000
+      });
+      if (capRes && typeof capRes.data === 'string' && capRes.data.length > 3000) {
+        return capRes.data;
+      }
+    }
+  } catch {}
+
+  // 2. Public CORS proxy fallbacks raced in parallel for fast failure recovery
   const proxyUrls = [
     `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`,
     `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`,
     `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`
   ];
 
-  for (const pUrl of proxyUrls) {
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 5500);
-      const res = await nativeFetch(pUrl, { signal: controller.signal });
-      clearTimeout(timer);
-      if (!res.ok) continue;
-      const html = await res.text();
-      if (!html || html.length < 4000 || !html.includes('bixbox')) continue;
-
-      if (typeof DOMParser !== 'undefined') {
-        const doc = new DOMParser().parseFromString(html, 'text/html');
-        const articles = doc.querySelectorAll('.bixbox.ongoing article.bs');
-        const items: any[] = [];
-        const seen = new Set<string>();
-
-        articles.forEach((el) => {
-          const aEl = el.querySelector('a');
-          const href = aEl?.getAttribute('href') || '';
-          const slug = extractAnimedarSlugClient(href);
-          if (!slug || seen.has(slug)) return;
-
-          const typezEl = el.querySelector('.typez');
-          const dataStatus = (typezEl?.getAttribute('data-status') || '').trim();
-          const btText = (el.querySelector('.bt, .status, .epx')?.textContent || '').trim();
-          const typeText = (typezEl?.textContent || '').trim();
-
-          if (
-            dataStatus.includes('قادم') ||
-            btText.includes('قادم') ||
-            typeText.includes('فيلم') ||
-            typeText.toLowerCase().includes('movie')
-          ) {
-            return;
-          }
-
-          const epSpanText = (el.querySelector('.ep-number span')?.textContent || '').trim();
-          const epMatch = epSpanText.match(/الحلقة\s*(\d+)/) || epSpanText.match(/(\d+)/);
-          if (!epMatch) return;
-
-          const epNum = epMatch[1];
-          const rawTitle = (el.querySelector('h2[itemprop="headline"], .tt h2')?.textContent || '').replace(/\s+/g, ' ').trim();
-          const cleaned = cleanAnimedarTitleClient(rawTitle) || rawTitle;
-          const seasonMatch = rawTitle.match(/(?:الموسم|موسم|Season)\s*(\d+)/i);
-          const displayTitle =
-            seasonMatch && !cleaned.includes('الموسم') && !cleaned.toLowerCase().includes('season')
-              ? `${cleaned} S${seasonMatch[1]}`
-              : cleaned;
-
-          const imgEl = el.querySelector('img');
-          const img = imgEl?.getAttribute('src') || imgEl?.getAttribute('data-src') || '';
-
-          seen.add(slug);
-          items.push({
-            id: `${slug}__ep__${epNum}`,
-            _id: `${slug}__ep__${epNum}`,
-            title: displayTitle,
-            episode: epNum,
-            episodeNumber: epNum,
-            link: `https://animedar.net/anime-p/${slug}/?ep=${epNum}`,
-            imageUrl: img,
-            posterUrl: img,
-            thumbnailUrl: img,
-            rating: 8.5,
-            status: 'يعرض حالياً',
-            type: 'TV',
-            animeId: slug || `search-${cleaned}`
-          });
-        });
-
-        if (items.length > 0) {
-          return items;
+  try {
+    const html = await Promise.any(
+      proxyUrls.map(async (pUrl) => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 4500);
+        try {
+          const res = await nativeFetch(pUrl, { signal: controller.signal });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const text = await res.text();
+          if (!text || text.length <= 3000) throw new Error('Empty HTML');
+          return text;
+        } finally {
+          clearTimeout(timer);
         }
-      }
-    } catch {}
+      })
+    );
+    return html || '';
+  } catch {
+    return '';
   }
+}
+
+// جلب أحدث الحلقات الحية مباشرة من صندوق .bixbox.ongoing في animedar.net أو ristoanime.cc كاحتياطي
+async function fetchAnimedarRecentClient(page = 1): Promise<any[]> {
+  const safePage = Math.max(1, Number(page) || 1);
+  const targetUrl = safePage > 1 ? `https://animedar.net/page/${safePage}/` : 'https://animedar.net/';
+
+  try {
+    const html = await fetchHtmlDirectInClient(targetUrl);
+    if (html && html.includes('bixbox') && typeof DOMParser !== 'undefined') {
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      const articles = doc.querySelectorAll('.bixbox.ongoing article.bs');
+      const items: any[] = [];
+      const seen = new Set<string>();
+
+      articles.forEach((el) => {
+        const aEl = el.querySelector('a');
+        const href = aEl?.getAttribute('href') || '';
+        const slug = extractAnimedarSlugClient(href);
+        if (!slug || seen.has(slug)) return;
+
+        const typezEl = el.querySelector('.typez');
+        const dataStatus = (typezEl?.getAttribute('data-status') || '').trim();
+        const btText = (el.querySelector('.bt, .status, .epx')?.textContent || '').trim();
+        const typeText = (typezEl?.textContent || '').trim();
+
+        if (
+          dataStatus.includes('قادم') ||
+          btText.includes('قادم') ||
+          typeText.includes('فيلم') ||
+          typeText.toLowerCase().includes('movie')
+        ) {
+          return;
+        }
+
+        const epSpanText = (el.querySelector('.ep-number span')?.textContent || '').trim();
+        const epMatch = epSpanText.match(/الحلقة\s*(\d+)/) || epSpanText.match(/(\d+)/);
+        if (!epMatch) return;
+
+        const epNum = epMatch[1];
+        const rawTitle = (el.querySelector('h2[itemprop="headline"], .tt h2')?.textContent || '').replace(/\s+/g, ' ').trim();
+        const cleaned = cleanAnimedarTitleClient(rawTitle) || rawTitle;
+        const seasonMatch = rawTitle.match(/(?:الموسم|موسم|Season)\s*(\d+)/i);
+        const displayTitle =
+          seasonMatch && !cleaned.includes('الموسم') && !cleaned.toLowerCase().includes('season')
+            ? `${cleaned} S${seasonMatch[1]}`
+            : cleaned;
+
+        const imgEl = el.querySelector('img');
+        const img = imgEl?.getAttribute('src') || imgEl?.getAttribute('data-src') || '';
+
+        seen.add(slug);
+        items.push({
+          id: `${slug}__ep__${epNum}`,
+          _id: `${slug}__ep__${epNum}`,
+          title: displayTitle,
+          episode: epNum,
+          episodeNumber: epNum,
+          link: `https://animedar.net/anime-p/${slug}/?ep=${epNum}`,
+          imageUrl: img,
+          posterUrl: img,
+          thumbnailUrl: img,
+          rating: 8.5,
+          status: 'يعرض حالياً',
+          type: 'TV',
+          animeId: slug || `search-${cleaned}`
+        });
+      });
+
+      if (items.length > 0) {
+        return items;
+      }
+    }
+  } catch {}
+
+  // احتياطي RistoAnime المباشر عند تعذر animedar
+  try {
+    const ristoUrl = safePage > 1 ? `https://ristoanime.cc/page/${safePage}/` : 'https://ristoanime.cc/';
+    const ristoHtml = await fetchHtmlDirectInClient(ristoUrl);
+    if (ristoHtml && ristoHtml.includes('MovieItem') && typeof DOMParser !== 'undefined') {
+      const doc = new DOMParser().parseFromString(ristoHtml, 'text/html');
+      const items: any[] = [];
+      const seen = new Set<string>();
+      doc.querySelectorAll('.MovieItem a').forEach((aEl) => {
+        const link = (aEl.getAttribute('href') || '').trim();
+        if (!link || link.includes('/series/') || link.includes('/movies/')) return;
+        const rawTitle =
+          aEl.getAttribute('title') ||
+          aEl.querySelector('h4, h3, .title')?.textContent?.trim() ||
+          '';
+        if (!rawTitle) return;
+        const epMatch = rawTitle.match(/الحلقة\s*(\d+)/) || decodeURIComponent(link).match(/الحلقة-(\d+)/);
+        if (!epMatch) return;
+        const epNum = epMatch[1];
+        const cleaned = cleanAnimedarTitleClient(
+          rawTitle.replace(/^مشاهدة\s*/i, '').replace(/^انمي\s*/i, '').replace(/الحلقة\s*\d+.*$/i, '').trim()
+        );
+        if (!cleaned || cleaned.length < 2) return;
+        const imgEl = aEl.querySelector('img');
+        const img = imgEl?.getAttribute('src') || imgEl?.getAttribute('data-src') || '';
+        const ristoSlug = link.split('/').filter(Boolean).pop() || '';
+        if (!ristoSlug || seen.has(ristoSlug)) return;
+        seen.add(ristoSlug);
+        items.push({
+          id: `risto__${ristoSlug}`,
+          _id: `risto__${ristoSlug}`,
+          title: cleaned,
+          episode: epNum,
+          episodeNumber: epNum,
+          link,
+          imageUrl: img,
+          posterUrl: img,
+          thumbnailUrl: img,
+          rating: 8.4,
+          status: 'يعرض حالياً',
+          type: 'TV',
+          animeId: `search-${cleaned}`
+        });
+      });
+      if (items.length > 0) return items;
+    }
+  } catch {}
 
   return [];
 }
@@ -450,9 +534,7 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
         if (data?.trending?.media?.length > 0 || animedarRecent.length > 0) {
           const top5 = data?.trending?.media?.length > 0 ? data.trending.media.map(mapMediaToCard) : getCuratedTop5();
           const releasingCards = (data?.releasing?.media || []).map(mapMediaToCard);
-          const recentEpisodes = animedarRecent.length > 0
-            ? animedarRecent
-            : (releasingCards.length > 0 ? releasingCards : getCuratedRecentEpisodes());
+          const recentEpisodes = animedarRecent;
           const popular = data?.popular?.media?.length > 0
             ? data.popular.media.map(mapMediaToCard)
             : getCuratedSeasonAnime().slice(0, 10);
@@ -474,7 +556,7 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
         success: true,
         data: {
           top5: getCuratedTop5(),
-          recentEpisodes: getCuratedRecentEpisodes(),
+          recentEpisodes: [],
           popular: getCuratedSeasonAnime().slice(0, 10),
           currentSeason: getCuratedSeasonAnime(),
           schedule: getCuratedTop5()
@@ -525,7 +607,7 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
     if (cleanPath === '/api/anime/recent') {
       const pageParam = Math.max(1, Number(urlObj.searchParams.get('page')) || 1);
       try {
-        // 1. الجلب المباشر من animedar.net أولاً ليتطابق 100% مع المعاينة
+        // الجلب المباشر من animedar.net / ristoanime.cc فقط بدون استبدالها بأنميات مختلفة من AniList
         const animedarItems = await fetchAnimedarRecentClient(pageParam);
         if (animedarItems.length > 0) {
           return createSimulatedResponse({
@@ -536,35 +618,15 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
             data: animedarItems
           });
         }
-
-        // 2. احتياطي من AniList إذا تعذر الوصول لكل البروكسيات
-        const gql = `
-          query ($page: Int) {
-            Page(page: $page, perPage: 24) {
-              media(type: ANIME, status: RELEASING, sort: UPDATED_AT_DESC, isAdult: false) {
-                ${ANILIST_CARD_FRAGMENT}
-              }
-            }
-          }
-        `;
-        const data = await queryAniListDirect(gql, { page: pageParam });
-        if (data?.Page?.media?.length > 0) {
-          return createSimulatedResponse({
-            success: true,
-            page: pageParam,
-            hasNext: true,
-            hasPrev: pageParam > 1,
-            data: data.Page.media.map(mapMediaToCard)
-          });
-        }
       } catch {}
 
       return createSimulatedResponse({
-        success: true,
+        success: false,
         page: pageParam,
         hasNext: false,
         hasPrev: pageParam > 1,
-        data: getCuratedRecentEpisodes()
+        message: 'تعذر جلب أحدث الحلقات حالياً بدون خادم متصل.',
+        data: []
       });
     }
 
@@ -1355,146 +1417,63 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
 
       if (slugCandidate && !slugCandidate.startsWith('search-')) {
         const targetAnimeUrl = `https://animedar.net/anime-p/${slugCandidate.replace(/^\/+|\/+$/g, '')}/`;
-        const proxyUrls = [
-          `https://api.allorigins.win/raw?url=${encodeURIComponent(targetAnimeUrl)}`,
-          `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetAnimeUrl)}`
-        ];
-        for (const pUrl of proxyUrls) {
-          try {
-            const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), 5500);
-            const res = await nativeFetch(pUrl, { signal: controller.signal });
-            clearTimeout(timer);
-            if (!res.ok) continue;
-            const html = await res.text();
-            if (html && html.includes('ServerList1') && typeof DOMParser !== 'undefined') {
-              const doc = new DOMParser().parseFromString(html, 'text/html');
-              const box =
-                doc.querySelector(`#ServerList1 .divv11.e${epNum}`) ||
-                doc.querySelector(`#ServerList1 .divv11[data-ep="${epNum}"]`) ||
-                doc.querySelector('#ServerList1 .divv11');
-              if (box) {
-                const scrapedServers: any[] = [];
-                box.querySelectorAll('li').forEach((li) => {
-                  const sType = (li.getAttribute('type') || li.getAttribute('data-type') || li.textContent || '').trim().toLowerCase();
-                  const sId = (li.getAttribute('data') || li.getAttribute('data-id') || '').trim();
-                  if (!sId) return;
-                  let watchUrl = sId.startsWith('http') ? sId : '';
-                  let serverName = sType.toUpperCase() || 'Server';
-                  if (!watchUrl) {
-                    if (sType.includes('mega')) { serverName = 'Mega'; watchUrl = `https://mega.nz/embed/${sId}`; }
-                    else if (sType.includes('ok')) { serverName = 'Ok.ru'; watchUrl = `https://www.ok.ru/videoembed/${sId}`; }
-                    else if (sType.includes('mp4upload')) { serverName = 'MP4Upload'; watchUrl = `https://www.mp4upload.com/embed-${sId.replace(/^embed-/i, '')}.html`; }
-                    else if (sType.includes('vidmoly')) { serverName = 'Vidmoly'; watchUrl = `https://vidmoly.org/embed-${sId.replace(/^embed-/i, '')}.html`; }
-                    else if (sType.includes('uqload')) { serverName = 'Uqload'; watchUrl = `https://uqload.vc/embed-${sId.replace(/^embed-/i, '')}.html`; }
-                    else if (sType.includes('wish')) { serverName = 'Streamwish'; watchUrl = `https://asnwish.com/e/${sId}`; }
-                    else if (sType.includes('drive') || sType.includes('gdrive')) { serverName = 'Google Drive'; watchUrl = `https://drive.google.com/file/d/${sId.split('/')[0]}/preview`; }
-                  }
-                  if (watchUrl) {
-                    scrapedServers.push({
-                      serverName,
-                      url: watchUrl,
-                      type: 'iframe',
-                      quality: '1080p',
-                      category: 'watch'
-                    });
-                    scrapedServers.push({
-                      serverName,
-                      url: watchUrl,
-                      type: 'direct',
-                      quality: '1080p',
-                      category: 'download'
-                    });
-                  }
-                });
-                if (scrapedServers.length > 0) {
-                  return createSimulatedResponse({
-                    success: true,
-                    data: scrapedServers
+        try {
+          const html = await fetchHtmlDirectInClient(targetAnimeUrl);
+          if (html && html.includes('ServerList1') && typeof DOMParser !== 'undefined') {
+            const doc = new DOMParser().parseFromString(html, 'text/html');
+            const box =
+              doc.querySelector(`#ServerList1 .divv11.e${epNum}`) ||
+              doc.querySelector(`#ServerList1 .divv11[data-ep="${epNum}"]`) ||
+              doc.querySelector('#ServerList1 .divv11');
+            if (box) {
+              const scrapedServers: any[] = [];
+              box.querySelectorAll('li').forEach((li) => {
+                const sType = (li.getAttribute('type') || li.getAttribute('data-type') || li.textContent || '').trim().toLowerCase();
+                const sId = (li.getAttribute('data') || li.getAttribute('data-id') || '').trim();
+                if (!sId) return;
+                let watchUrl = sId.startsWith('http') ? sId : '';
+                let serverName = sType.toUpperCase() || 'Server';
+                if (!watchUrl) {
+                  if (sType.includes('mega')) { serverName = 'Mega'; watchUrl = `https://mega.nz/embed/${sId}`; }
+                  else if (sType.includes('ok')) { serverName = 'Ok.ru'; watchUrl = `https://www.ok.ru/videoembed/${sId}`; }
+                  else if (sType.includes('mp4upload')) { serverName = 'MP4Upload'; watchUrl = `https://www.mp4upload.com/embed-${sId.replace(/^embed-/i, '')}.html`; }
+                  else if (sType.includes('vidmoly')) { serverName = 'Vidmoly'; watchUrl = `https://vidmoly.org/embed-${sId.replace(/^embed-/i, '')}.html`; }
+                  else if (sType.includes('uqload')) { serverName = 'Uqload'; watchUrl = `https://uqload.vc/embed-${sId.replace(/^embed-/i, '')}.html`; }
+                  else if (sType.includes('wish')) { serverName = 'Streamwish'; watchUrl = `https://asnwish.com/e/${sId}`; }
+                  else if (sType.includes('drive') || sType.includes('gdrive')) { serverName = 'Google Drive'; watchUrl = `https://drive.google.com/file/d/${sId.split('/')[0]}/preview`; }
+                }
+                if (watchUrl) {
+                  scrapedServers.push({
+                    serverName,
+                    url: watchUrl,
+                    type: 'iframe',
+                    quality: '1080p',
+                    category: 'watch'
+                  });
+                  scrapedServers.push({
+                    serverName,
+                    url: watchUrl,
+                    type: 'direct',
+                    quality: '1080p',
+                    category: 'download'
                   });
                 }
+              });
+              if (scrapedServers.length > 0) {
+                return createSimulatedResponse({
+                  success: true,
+                  data: scrapedServers
+                });
               }
             }
-          } catch {}
-        }
+          }
+        } catch {}
       }
 
-      const serversList = [
-        {
-          serverName: 'Vidmoly',
-          url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
-          type: 'direct',
-          quality: '1080p',
-          category: 'watch'
-        },
-        {
-          serverName: 'Mega',
-          url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4',
-          type: 'direct',
-          quality: '1080p',
-          category: 'watch'
-        },
-        {
-          serverName: 'Risto',
-          url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
-          type: 'direct',
-          quality: '720p',
-          category: 'watch'
-        },
-        {
-          serverName: 'MP4Upload',
-          url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4',
-          type: 'direct',
-          quality: '720p',
-          category: 'watch'
-        },
-        {
-          serverName: 'Uqload',
-          url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4',
-          type: 'direct',
-          quality: '480p',
-          category: 'watch'
-        },
-        {
-          serverName: 'Sendvid',
-          url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoy.mp4',
-          type: 'direct',
-          quality: '480p',
-          category: 'watch'
-        },
-        {
-          serverName: 'Mega',
-          url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
-          type: 'direct',
-          quality: '1080p',
-          category: 'download'
-        },
-        {
-          serverName: 'MP4Upload',
-          url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4',
-          type: 'direct',
-          quality: '1080p',
-          category: 'download'
-        },
-        {
-          serverName: 'MediaFire',
-          url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
-          type: 'direct',
-          quality: '720p',
-          category: 'download'
-        },
-        {
-          serverName: 'Uqload',
-          url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4',
-          type: 'direct',
-          quality: '480p',
-          category: 'download'
-        }
-      ];
-
       return createSimulatedResponse({
-        success: true,
-        data: serversList
+        success: false,
+        data: [],
+        message: 'تعذر العثور على سيرفرات صالحة حالياً عند غياب الخادم.',
       });
     }
 
@@ -1502,21 +1481,20 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
       const bodyObj = parseRequestBody(options);
       const targetUrl = bodyObj?.url || '';
       const isDirectVideo = targetUrl.includes('.mp4') || targetUrl.includes('.m3u8');
-      const finalStream = isDirectVideo
-        ? targetUrl
-        : 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4';
+      if (isDirectVideo) {
+        return createSimulatedResponse({
+          success: true,
+          data: {
+            directUrl: targetUrl,
+            type: targetUrl.includes('.m3u8') ? 'hls' : 'direct',
+            sources: [{ file: targetUrl, label: 'HD', type: 'mp4' }],
+          },
+        });
+      }
 
       return createSimulatedResponse({
-        success: true,
-        data: {
-          directUrl: finalStream,
-          type: finalStream.includes('.m3u8') ? 'hls' : 'direct',
-          sources: [
-            { file: finalStream, label: 'FHD', type: 'mp4' },
-            { file: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4', label: 'HD', type: 'mp4' },
-            { file: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4', label: 'SD', type: 'mp4' }
-          ]
-        }
+        success: false,
+        message: 'يتطلب فك تشفير هذا السيرفر الاتصال بخادم الاستخراج.',
       });
     }
 

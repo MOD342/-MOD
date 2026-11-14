@@ -1,5 +1,6 @@
 import { Router, Request, Response, NextFunction } from "express";
 import crypto from "crypto";
+import { spawn } from "child_process";
 import * as cheerio from "cheerio";
 import { ScraperService } from "../services/scraperService";
 import geminiRoutes from "./gemini";
@@ -950,62 +951,59 @@ router.post(
 // 1. مفكك حزم جافاسكريبت الشهيرة لفك أكواد Mp4Upload, Streamwish, Filemoon, Vidmoly, Uqload وغيرها بجميع أنظمة العد (Radix 10..62)
 function unpackDeanEdwards(packed: string): string {
   try {
-    const regex =
-      /eval\s*\(\s*function\s*\(\s*p\s*,\s*a\s*,\s*c\s*,\s*k\s*,\s*e\s*,[\s\S]*?\}\s*\(\s*(['"][\s\S]+?['"])\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(['"][\s\S]+?['"])\.split/i;
-    const match = packed.match(regex);
-    if (!match) {
-      const regexAlt =
-        /}\s*\(\s*(['"][\s\S]+?['"])\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(['"][\s\S]+?['"])\.split/i;
-      const matchAlt = packed.match(regexAlt);
-      if (!matchAlt) return "";
-      return runUnpack(
-        matchAlt[1],
-        parseInt(matchAlt[2], 10),
-        parseInt(matchAlt[3], 10),
-        matchAlt[4],
-      );
+    const startIdx = packed.search(/\}\s*\(\s*['"]/);
+    if (startIdx === -1) return "";
+
+    // Locate the first quoted string `p` respecting escaped quotes (e.g. \' or \")
+    let i = packed.indexOf("(", startIdx) + 1;
+    while (i < packed.length && /\s/.test(packed[i])) i++;
+    const pQuote = packed[i];
+    if (pQuote !== "'" && pQuote !== '"') return "";
+    i++;
+    let pRaw = "";
+    while (i < packed.length) {
+      const ch = packed[i];
+      if (ch === "\\" && i + 1 < packed.length) {
+        pRaw += ch + packed[i + 1];
+        i += 2;
+        continue;
+      }
+      if (ch === pQuote) {
+        i++;
+        break;
+      }
+      pRaw += ch;
+      i++;
     }
-    return runUnpack(
-      match[1],
-      parseInt(match[2], 10),
-      parseInt(match[3], 10),
-      match[4],
+
+    const rest = packed.slice(i);
+    const argsMatch = rest.match(
+      /^\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(['"])([\s\S]*?)\3\.split\s*\(\s*['"]\|['"]\s*\)/,
     );
-  } catch (e) {
-    return "";
-  }
+    if (!argsMatch) return "";
 
-  function encodeBase(val: number, radix: number): string {
-    if (radix <= 36) {
-      return val.toString(radix);
-    }
-    const prefix = val < radix ? "" : encodeBase(Math.floor(val / radix), radix);
-    const rem = val % radix;
-    return prefix + (rem > 35 ? String.fromCharCode(rem + 29) : rem.toString(36));
-  }
+    const a = parseInt(argsMatch[1], 10);
+    const c = parseInt(argsMatch[2], 10);
+    const kRawEsc = argsMatch[4];
 
-  function runUnpack(pStr: string, a: number, c: number, kStr: string): string {
-    let p = pStr;
-    if (
-      (p.startsWith("'") && p.endsWith("'")) ||
-      (p.startsWith('"') && p.endsWith('"'))
-    ) {
-      p = p.slice(1, -1);
-    }
-    p = p.replace(/\\'/g, "'").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+    const unescapeJsString = (str: string): string =>
+      str
+        .replace(/\\'/g, "'")
+        .replace(/\\"/g, '"')
+        .replace(/\\n/g, "\n")
+        .replace(/\\r/g, "\r")
+        .replace(/\\t/g, "\t")
+        .replace(/\\\\/g, "\\");
 
-    let kRaw = kStr;
-    if (
-      (kRaw.startsWith("'") && kRaw.endsWith("'")) ||
-      (kRaw.startsWith('"') && kRaw.endsWith('"'))
-    ) {
-      kRaw = kRaw.slice(1, -1);
-    }
-    kRaw = kRaw
-      .replace(/\\'/g, "'")
-      .replace(/\\"/g, '"')
-      .replace(/\\\\/g, "\\");
-    const k = kRaw.split("|");
+    const p = unescapeJsString(pRaw);
+    const k = unescapeJsString(kRawEsc).split("|");
+
+    const encodeBase = (val: number, radix: number): string => {
+      if (radix <= 36) return val.toString(radix);
+      const prefix = val < radix ? "" : encodeBase(Math.floor(val / radix), radix);
+      const rem = val % radix;
+      return prefix + (rem > 35 ? String.fromCharCode(rem + 29) : rem.toString(36));
+    };
 
     const dict: Record<string, string> = {};
     let count = c;
@@ -1014,9 +1012,11 @@ function unpackDeanEdwards(packed: string): string {
       dict[key] = k[count] || key;
     }
 
-    return p.replace(/\b(\w+)\b/g, (word) => {
-      return Object.prototype.hasOwnProperty.call(dict, word) ? dict[word] : word;
-    });
+    return p.replace(/\b(\w+)\b/g, (word) =>
+      Object.prototype.hasOwnProperty.call(dict, word) ? dict[word] : word,
+    );
+  } catch {
+    return "";
   }
 }
 
@@ -1111,6 +1111,143 @@ async function extractDoodstreamLink(
     // Quietly ignore Doodstream sub-resolver failures
   }
   return null;
+}
+
+function videaRc4(data: Buffer, key: Buffer): Buffer {
+  const S = Array.from({ length: 256 }, (_, i) => i);
+  let j = 0;
+  for (let i = 0; i < 256; i++) {
+    j = (j + S[i] + key[i % key.length]) & 255;
+    const tmp = S[i];
+    S[i] = S[j];
+    S[j] = tmp;
+  }
+  const out = Buffer.alloc(data.length);
+  let i = 0;
+  j = 0;
+  for (let k = 0; k < data.length; k++) {
+    i = (i + 1) & 255;
+    j = (j + S[i]) & 255;
+    const tmp = S[i];
+    S[i] = S[j];
+    S[j] = tmp;
+    out[k] = data[k] ^ S[(S[i] + S[j]) & 255];
+  }
+  return out;
+}
+
+async function extractVideaDirectSources(
+  videaUrl: string,
+): Promise<{ file: string; label: string; type: string; mimeType: string }[]> {
+  try {
+    const vMatch =
+      videaUrl.match(/[?&]v=([A-Za-z0-9_-]+)/) ||
+      videaUrl.match(/videa\.hu\/(?:player|videok\/[^/]+)\/([A-Za-z0-9_-]+)/i);
+    if (!vMatch) return [];
+    const vcode = vMatch[1];
+
+    const playerResp = await fetchWithTimeout(
+      `https://videa.hu/player?v=${encodeURIComponent(vcode)}`,
+      { headers: { "User-Agent": STREAM_UA } },
+      5000,
+    );
+    if (!playerResp.ok) return [];
+    const html = await playerResp.text();
+    const xtMatch = html.match(/var\s+_xt\s*=\s*["']([^"']+)["']/);
+    if (!xtMatch || xtMatch[1].length < 64) return [];
+    const xt = xtMatch[1];
+
+    const staticSecret = await serverCache.getOrFetch<string>(
+      "videa_player_secret_v1",
+      async () => {
+        try {
+          const jsPath = html.match(/src=["'](\/static\/uis\/player\/js\/VideaPlayerClasses\.min\.js[^"']*)["']/)?.[1];
+          if (jsPath) {
+            const jr = await fetchWithTimeout(`https://videa.hu${jsPath}`, { headers: { "User-Agent": STREAM_UA } }, 4500);
+            if (jr.ok) {
+              const jt = await jr.text();
+              const sec = jt.match(/processEmbedParams\([^,]+,[^,]+,[^,]+,\s*["']([A-Za-z0-9_-]{64})["']\)/)?.[1];
+              if (sec) return sec;
+            }
+          }
+        } catch (_) {}
+        return "xHb0ZvME5q8CBcoQi6AngerDu3FGO9fkUlwPmLVY_RTzj2hJIS4NasXWKy1td7p";
+      },
+      12 * 60 * 60 * 1000,
+    );
+
+    const seed = crypto.randomBytes(6).toString("base64url").slice(0, 8);
+    let rKeys = ["e", "a", "g", "j", "d", "c", "h", "i", "b", "f"];
+    const c: Record<string, string> = {};
+    for (let i = 0; i < xt.length; i++) {
+      const k = rKeys[Math.floor(i / 8) + 1];
+      if (i % 8 === 0) c[k] = "";
+      c[k] += xt[i];
+    }
+    c.e = seed;
+
+    const d = (c.a || "") + (c.g || "") + (c.j || "") + (c.d || "");
+    const u = (c.c || "") + (c.h || "") + (c.i || "") + (c.b || "");
+    let mixed = "";
+    for (let i = 0; i < d.length; i++) {
+      const idx = i - (staticSecret.indexOf(d.charAt(i)) - 31);
+      mixed += u.charAt(idx);
+    }
+    rKeys = ["f", "h", "c", "b", "i"];
+    for (let i = 0; i < mixed.length; i++) {
+      const k = rKeys[Math.floor(i / 8) + 1];
+      if (i % 8 === 0) c[k] = "";
+      c[k] += mixed.charAt(i);
+    }
+
+    const xmlUrl = `https://videa.hu/player/xml?v=${encodeURIComponent(vcode)}&_s=${encodeURIComponent(c.e)}&_t=${encodeURIComponent((c.h || "") + (c.c || ""))}`;
+    const xmlResp = await fetchWithTimeout(
+      xmlUrl,
+      { headers: { "User-Agent": STREAM_UA, Referer: `https://videa.hu/player?v=${vcode}` } },
+      5000,
+    );
+    if (!xmlResp.ok) return [];
+    const xs = xmlResp.headers.get("x-videa-xs") || "";
+    const rawBody = await xmlResp.text();
+    let plainXml = rawBody;
+    if (!rawBody.trim().startsWith("<") && xs) {
+      c.f = xs;
+      const rc4Key = Buffer.from((c.b || "") + (c.i || "") + (c.e || "") + c.f, "utf8");
+      plainXml = videaRc4(Buffer.from(rawBody, "base64"), rc4Key).toString("utf8");
+    }
+
+    const results: { file: string; label: string; type: string; mimeType: string; resScore: number }[] = [];
+    const srcRegex = /<video_source([^>]*)>([^<]+)<\/video_source>/gi;
+    let m: RegExpExecArray | null;
+    while ((m = srcRegex.exec(plainXml)) !== null) {
+      const attrs = m[1];
+      let srcPath = m[2].trim().replace(/&amp;/g, "&");
+      const name = attrs.match(/name=["']([^"']+)["']/i)?.[1] || "360p";
+      const exp = attrs.match(/exp=["']([^"']+)["']/i)?.[1] || "";
+      const mimeType = attrs.match(/mimetype=["']([^"']+)["']/i)?.[1] || "video/mp4";
+      const hashMatch = plainXml.match(new RegExp(`<hash_value_${name}>([^<]+)</hash_value_${name}>`, "i"));
+      const md5 = hashMatch?.[1]?.trim() || "";
+      if (srcPath.startsWith("//")) srcPath = `https:${srcPath}`;
+      else if (srcPath.startsWith("/")) srcPath = `https://videa.hu${srcPath}`;
+      const sep = srcPath.includes("?") ? "&" : "?";
+      const finalUrl = md5 && exp ? `${srcPath}${sep}md5=${encodeURIComponent(md5)}&expires=${encodeURIComponent(exp)}` : srcPath;
+
+      const numRes = parseInt(name.replace(/\D+/g, "") || "360", 10);
+      const mp4Bonus = mimeType.includes("mp4") ? 1000 : 0;
+      results.push({
+        file: finalUrl,
+        label: name,
+        type: "mp4",
+        mimeType,
+        resScore: mp4Bonus + numRes,
+      });
+    }
+
+    results.sort((a, b) => b.resScore - a.resScore);
+    return results.map(({ file, label, type, mimeType }) => ({ file, label, type, mimeType }));
+  } catch {
+    return [];
+  }
 }
 
 // دالة متطورة لتتبع السيرفرات واستخراج الروابط المباشرة (M3U8 / MP4) مع نظام حماية فوري للخادم
@@ -1217,20 +1354,16 @@ async function extractDirectStream(
         };
       }
     } catch (_) {
-      const lowercaseUrl = targetUrl.toLowerCase();
-      if (
-        lowercaseUrl.includes(".mp4") ||
-        lowercaseUrl.includes(".m3u8") ||
-        lowercaseUrl.includes(".mkv")
-      ) {
+      if (/\.(?:mp4|m3u8|mkv)(?:$|[?#])/i.test(targetUrl)) {
+        const isHls = /\.m3u8(?:$|[?#])/i.test(targetUrl);
         return {
           directUrl: targetUrl,
-          type: lowercaseUrl.includes(".m3u8") ? "hls" : "direct",
+          type: isHls ? "hls" : "direct",
           sources: [
             {
               file: targetUrl,
               label: "سيرفر البث المباشر (HD)",
-              type: lowercaseUrl.includes(".m3u8") ? "hls" : "mp4",
+              type: isHls ? "hls" : "mp4",
             },
           ],
         };
@@ -1240,7 +1373,7 @@ async function extractDirectStream(
     const response = await fetchWithTimeout(
       targetUrl,
       { headers, method: "GET" },
-      1500,
+      4500,
     );
     if (!response.ok) {
       return {
@@ -1329,7 +1462,7 @@ async function extractDirectStream(
             const nextResp = await fetchWithTimeout(
               iframeSrc,
               { headers, method: "GET" },
-              1500,
+              4500,
             );
             if (nextResp.ok) {
               const nextContentType =
@@ -1427,6 +1560,14 @@ async function extractDirectStream(
             });
           }
         } catch (_) {}
+      }
+    }
+
+    // 2.5. دعم سيرفر Videa.hu واستخراج روابط MP4/WebM المباشرة (بدون Referer أو إعلانات)
+    if (currentUrl.includes("videa.hu")) {
+      const videaSrcs = await extractVideaDirectSources(currentUrl);
+      for (const vs of videaSrcs) {
+        sources.push({ file: vs.file, label: vs.label, type: vs.type });
       }
     }
 
@@ -1573,19 +1714,26 @@ async function extractDirectStream(
       }
     }
 
-    // Sendvid Direct MP4 Extraction
+    // Sendvid Direct MP4 Extraction (supports /embed/ and standard page)
     if (currentUrl.includes("sendvid")) {
       const svMatch =
         html.match(/var\s+video_source\s*=\s*["'](https?:[^"']+\.mp4[^"']*)["']/i) ||
-        html.match(/<source\s+src=["'](https?:[^"']+\.mp4[^"']*)["']/i);
+        html.match(/<source[^>]+src=["'](https?:[^"']+\.mp4[^"']*)["']/i) ||
+        combinedCodeToScan.match(/(https?:\/\/[^\s"'<>]*sendvid\.com\/[^\s"'<>]*\.mp4[^\s"'<>]*)/i);
       if (svMatch && svMatch[1]) {
+        const proxiedUrl = `/api/anime/stream-proxy?url=${encodeURIComponent(svMatch[1])}&referer=${encodeURIComponent("https://sendvid.com/")}`;
         return {
-          directUrl: svMatch[1],
+          directUrl: proxiedUrl,
           type: "direct",
           sources: [
             {
-              file: svMatch[1],
+              file: proxiedUrl,
               label: "HD",
+              type: "mp4",
+            },
+            {
+              file: svMatch[1],
+              label: "Direct",
               type: "mp4",
             },
           ],
@@ -1617,8 +1765,9 @@ async function extractDirectStream(
     // MP4Upload Direct MP4 Extraction via Server Stream Proxy (لتمرير Referer وتخطي الإعلانات)
     if (currentUrl.includes("mp4upload.com")) {
       const mp4uMatch =
-        html.match(/src\s*:\s*["'](https?:\/\/[^"']+mp4upload\.com[^"']+\.mp4[^"']*)["']/i) ||
-        combinedCodeToScan.match(/(https?:\/\/[a-z0-9]+\.mp4upload\.com(?::\d+)?\/d\/[^"'\s]+\/video\.mp4)/i);
+        combinedCodeToScan.match(/player\.src\s*\(\s*\{[^}]*src\s*:\s*["'](https?:\/\/[^"']+\.mp4[^"']*)["']/i) ||
+        combinedCodeToScan.match(/src\s*:\s*["'](https?:\/\/[^"']+mp4upload\.com[^"']+\.mp4[^"']*)["']/i) ||
+        combinedCodeToScan.match(/(https?:\/\/[a-z0-9]+\.mp4upload\.com(?::\d+)?\/d\/[^"'\s]+\/[^"'\s]+\.mp4)/i);
       if (mp4uMatch && mp4uMatch[1]) {
         const proxiedUrl = `/api/anime/stream-proxy?url=${encodeURIComponent(mp4uMatch[1])}&referer=${encodeURIComponent("https://www.mp4upload.com/")}`;
         return {
@@ -1956,6 +2105,950 @@ router.get(
   })
 );
 
+interface ResolvedDownloadTarget {
+  streamUrl: string;
+  referer: string;
+  filename: string;
+  mode: "mp4" | "hls-remux" | "mega";
+  sizeBytes?: number;
+  serverName?: string;
+  megaKeyHex?: string;
+  megaNonceHex?: string;
+  publicNoReferer?: boolean;
+  mimeType?: string;
+}
+
+const STREAM_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+
+function isDirectVideoFileUrl(u: string): boolean {
+  try {
+    const p = new URL(u).pathname.toLowerCase();
+    return p.endsWith(".mp4") || p.endsWith(".mkv") || p.endsWith(".webm");
+  } catch {
+    return /\.(?:mp4|mkv|webm)(?:$|[?#])/i.test(u);
+  }
+}
+
+function getHostReferer(sourceUrl: string): string {
+  try {
+    const u = new URL(sourceUrl);
+    if (u.hostname.includes("yourupload")) return "https://www.yourupload.com/";
+    if (u.hostname.includes("mp4upload")) return "https://www.mp4upload.com/";
+    if (u.hostname.includes("sendvid")) return "https://sendvid.com/";
+    if (u.hostname.includes("ok.ru")) return "https://ok.ru/";
+    return `${u.protocol}//${u.hostname}/`;
+  } catch {
+    return "";
+  }
+}
+
+function decodeMegaBase64Url(b64: string): Buffer {
+  const norm = b64.replace(/-/g, "+").replace(/_/g, "/");
+  const pad = "==".slice(0, (4 - (norm.length % 4)) % 4);
+  return Buffer.from(norm + pad, "base64");
+}
+
+async function resolveMegaTarget(
+  megaUrl: string,
+  fallbackFilename: string,
+): Promise<ResolvedDownloadTarget | null> {
+  try {
+    const m =
+      megaUrl.match(/mega\.nz\/(?:file|embed)\/([^#/?]+)#([A-Za-z0-9_-]+)/i) ||
+      megaUrl.match(/mega\.nz\/#!([^!/?]+)!([A-Za-z0-9_-]+)/i);
+    if (!m) return null;
+    const fileId = m[1];
+    const keyB64 = m[2];
+    const rawKey = decodeMegaBase64Url(keyB64);
+    if (rawKey.length < 32) return null;
+
+    const aesKey = Buffer.alloc(16);
+    for (let i = 0; i < 16; i++) {
+      aesKey[i] = rawKey[i] ^ rawKey[i + 16];
+    }
+    const nonce = rawKey.subarray(16, 24);
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 7000);
+    let apiData: any;
+    try {
+      const apiResp = await fetch("https://g.api.mega.co.nz/cs?id=1", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "User-Agent": STREAM_UA },
+        body: JSON.stringify([{ a: "g", g: 1, p: fileId }]),
+        signal: controller.signal,
+      });
+      if (!apiResp.ok) return null;
+      const arr = await apiResp.json();
+      apiData = Array.isArray(arr) ? arr[0] : null;
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (!apiData || typeof apiData !== "object" || !apiData.g || !apiData.s) {
+      return null;
+    }
+
+    const sizeBytes = Number(apiData.s);
+    if (!Number.isFinite(sizeBytes) || sizeBytes < 100 * 1024) return null;
+
+    let finalName = fallbackFilename;
+    if (typeof apiData.at === "string") {
+      try {
+        const atBuf = decodeMegaBase64Url(apiData.at);
+        const attrDec = crypto.createDecipheriv("aes-128-cbc", aesKey, Buffer.alloc(16));
+        attrDec.setAutoPadding(false);
+        const attrRaw = Buffer.concat([attrDec.update(atBuf), attrDec.final()])
+          .toString("utf8")
+          .replace(/\0+$/, "");
+        if (attrRaw.startsWith("MEGA{")) {
+          const parsedAttr = JSON.parse(attrRaw.slice(4));
+          if (parsedAttr?.n && /\.(mp4|mkv|webm)$/i.test(parsedAttr.n)) {
+            const cleanAttrName = String(parsedAttr.n).replace(/[^\w\u0600-\u06FF.\s-]/gi, "").trim();
+            if (cleanAttrName) finalName = cleanAttrName;
+          }
+        }
+      } catch (_) {}
+    }
+
+    return {
+      streamUrl: String(apiData.g),
+      referer: "https://mega.nz/",
+      filename: fallbackFilename || finalName,
+      mode: "mega",
+      sizeBytes,
+      serverName: "Mega",
+      megaKeyHex: aesKey.toString("hex"),
+      megaNonceHex: nonce.toString("hex"),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchUpstreamFollowRedirect(
+  targetUrl: string,
+  referer: string,
+  rangeHeader?: string,
+  timeoutMs = 8000,
+): Promise<globalThis.Response> {
+  const headers: Record<string, string> = {
+    "User-Agent": STREAM_UA,
+    Accept: "*/*",
+  };
+  if (referer) {
+    headers["Referer"] = referer;
+    try {
+      const refObj = new URL(referer);
+      headers["Origin"] = `${refObj.protocol}//${refObj.host}`;
+    } catch (_) {}
+  }
+  if (rangeHeader) {
+    headers["Range"] = rangeHeader;
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    let upstream = await fetch(targetUrl, {
+      headers,
+      redirect: "manual",
+      signal: controller.signal,
+    });
+
+    if (
+      (upstream.status === 301 ||
+        upstream.status === 302 ||
+        upstream.status === 303 ||
+        upstream.status === 307 ||
+        upstream.status === 308) &&
+      upstream.headers.get("location")
+    ) {
+      const nextUrl = new URL(upstream.headers.get("location")!, targetUrl).href;
+      const nextHeaders: Record<string, string> = {
+        "User-Agent": STREAM_UA,
+        Accept: "*/*",
+      };
+      if (rangeHeader) nextHeaders["Range"] = rangeHeader;
+      if (referer && !nextUrl.includes("vidcache.net")) {
+        nextHeaders["Referer"] = referer;
+      }
+      upstream = await fetch(nextUrl, {
+        headers: nextHeaders,
+        redirect: "follow",
+        signal: controller.signal,
+      });
+    }
+
+    return upstream;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function verifyBinaryVideoUrl(
+  candidateStreamUrl: string,
+  referer: string,
+): Promise<{ ok: boolean; sizeBytes?: number }> {
+  try {
+    const resp = await fetchUpstreamFollowRedirect(
+      candidateStreamUrl,
+      referer,
+      "bytes=0-4095",
+      6000,
+    );
+    try {
+      await resp.body?.cancel();
+    } catch (_) {}
+
+    if (!resp.ok) return { ok: false };
+    const ct = (resp.headers.get("content-type") || "").toLowerCase();
+    if (
+      ct.includes("text/html") ||
+      ct.includes("application/xhtml") ||
+      ct.includes("application/json") ||
+      ct.includes("text/plain")
+    ) {
+      return { ok: false };
+    }
+
+    let sizeBytes: number | undefined;
+    const contentRange = resp.headers.get("content-range") || "";
+    const rangeMatch = contentRange.match(/\/(\d+)$/);
+    if (rangeMatch) {
+      sizeBytes = parseInt(rangeMatch[1], 10);
+    } else if (resp.headers.get("content-length")) {
+      const cl = parseInt(resp.headers.get("content-length") || "0", 10);
+      if (cl > 0) sizeBytes = cl;
+    }
+
+    if (
+      ct.startsWith("video/") ||
+      ct.includes("application/octet-stream") ||
+      ct.includes("binary/octet-stream") ||
+      (sizeBytes !== undefined && sizeBytes > 500 * 1024)
+    ) {
+      return { ok: true, sizeBytes };
+    }
+    return { ok: false };
+  } catch {
+    return { ok: false };
+  }
+}
+
+async function resolveSingleCandidateToVideo(
+  rawUrl: string,
+  filename: string,
+): Promise<{ mp4?: ResolvedDownloadTarget; hls?: ResolvedDownloadTarget }> {
+  if (!rawUrl || !rawUrl.startsWith("http")) return {};
+
+  // Videa.hu public no-referer MP4/WebM direct CDN stream
+  if (rawUrl.toLowerCase().includes("videa.hu")) {
+    const vSrcs = await serverCache.getOrFetch(
+      `videa_direct_v1:${rawUrl}`,
+      () => extractVideaDirectSources(rawUrl),
+      15 * 60 * 1000,
+    );
+    for (const vs of vSrcs) {
+      const check = await verifyBinaryVideoUrl(vs.file, "");
+      if (check.ok) {
+        const isWebm = vs.mimeType.includes("webm");
+        const finalName = isWebm ? filename.replace(/\.mp4$/i, ".webm") : filename;
+        return {
+          mp4: {
+            streamUrl: vs.file,
+            referer: "",
+            filename: finalName,
+            mode: "mp4",
+            sizeBytes: check.sizeBytes,
+            serverName: "Videa",
+            publicNoReferer: true,
+            mimeType: vs.mimeType || "video/mp4",
+          },
+        };
+      }
+    }
+    return {};
+  }
+
+  // Mega.nz direct API + AES-128-CTR decrypt stream
+  if (rawUrl.toLowerCase().includes("mega.nz/")) {
+    const megaTarget = await serverCache.getOrFetch(
+      `mega_target_v1:${rawUrl}`,
+      () => resolveMegaTarget(rawUrl, filename),
+      30 * 60 * 1000,
+    );
+    if (megaTarget) {
+      return { mp4: { ...megaTarget, filename, publicNoReferer: false, mimeType: "video/mp4" } };
+    }
+    return {};
+  }
+
+  // Google Drive direct binary download (bypasses virus scan HTML page)
+  if (rawUrl.includes("drive.google.com") || rawUrl.includes("gdrive")) {
+    const dMatch =
+      rawUrl.match(/\/d\/([A-Za-z0-9_-]+)/) ||
+      rawUrl.match(/id=([A-Za-z0-9_-]+)/);
+    if (dMatch) {
+      const gUrl = `https://drive.usercontent.google.com/download?id=${dMatch[1]}&export=download&confirm=t`;
+      const check = await verifyBinaryVideoUrl(gUrl, "");
+      if (check.ok) {
+        return {
+          mp4: {
+            streamUrl: gUrl,
+            referer: "",
+            filename,
+            mode: "mp4",
+            sizeBytes: check.sizeBytes,
+            serverName: "Google Drive",
+            publicNoReferer: true,
+            mimeType: "video/mp4",
+          },
+        };
+      }
+    }
+  }
+
+  const candidateUrlsToTry: { streamUrl: string; referer: string; isHls: boolean }[] = [];
+
+  if (isDirectVideoFileUrl(rawUrl)) {
+    candidateUrlsToTry.push({
+      streamUrl: rawUrl,
+      referer: getHostReferer(rawUrl),
+      isHls: false,
+    });
+  } else {
+    // Normalize non-embed URLs to embed URLs where scrapers give direct streams
+    let extractInput = rawUrl;
+    if (extractInput.includes("uqload") && !extractInput.includes("/embed-")) {
+      extractInput = extractInput.replace(/(uqload\.[a-z]+\/)([A-Za-z0-9_-]+)/i, "$1embed-$2");
+    }
+    if (extractInput.includes("mp4upload.com/") && !extractInput.includes("/embed-")) {
+      extractInput = extractInput.replace(/mp4upload\.com\/([A-Za-z0-9_-]+)/i, "mp4upload.com/embed-$1.html");
+    }
+    if (extractInput.includes("vidmoly") && !extractInput.includes("/embed-")) {
+      extractInput = extractInput.replace(/(vidmoly\.[a-z]+\/)([A-Za-z0-9_-]+)/i, "$1embed-$2");
+    }
+    if (
+      (extractInput.includes("asnwish") ||
+        extractInput.includes("streamwish") ||
+        extractInput.includes("awish") ||
+        extractInput.includes("swish")) &&
+      extractInput.includes("/f/")
+    ) {
+      extractInput = extractInput.replace("/f/", "/e/");
+    }
+    if (extractInput.includes("ok.ru/video/")) {
+      extractInput = extractInput.replace("/video/", "/videoembed/");
+    }
+    if (extractInput.includes("yourupload.com/watch/")) {
+      extractInput = extractInput.replace("/watch/", "/embed/");
+    }
+
+    const extracted = await serverCache.getOrFetch(
+      `extract_stream_v7:${extractInput}`,
+      () => extractDirectStream(extractInput),
+      5 * 60 * 1000,
+    );
+
+    const allSources = [
+      ...(extracted.directUrl
+        ? [{ file: extracted.directUrl, label: "Primary", type: extracted.type === "hls" ? "hls" : extracted.type === "direct" ? "mp4" : "iframe" }]
+        : []),
+      ...(extracted.sources || []),
+    ];
+
+    for (const src of allSources) {
+      if (!src.file || src.type === "iframe") continue;
+      let streamUrl = src.file;
+      let referer = getHostReferer(extractInput);
+
+      if (streamUrl.startsWith("/api/anime/stream-proxy")) {
+        const u = new URL(streamUrl, "http://localhost");
+        streamUrl = u.searchParams.get("url") || "";
+        referer = u.searchParams.get("referer") || referer;
+      }
+      if (!streamUrl.startsWith("http")) continue;
+
+      const isHls = src.type === "hls" || /\.m3u8(?:$|[?#])/i.test(streamUrl);
+      if (!candidateUrlsToTry.some((c) => c.streamUrl === streamUrl)) {
+        candidateUrlsToTry.push({ streamUrl, referer, isHls });
+      }
+    }
+  }
+
+  let hlsFallback: ResolvedDownloadTarget | undefined;
+
+  for (const cand of candidateUrlsToTry) {
+    if (cand.isHls) {
+      if (!hlsFallback) {
+        let isPublicHls = false;
+        try {
+          const rNoRef = await fetchWithTimeout(cand.streamUrl, { headers: { "User-Agent": STREAM_UA } }, 3500);
+          if (rNoRef.ok) {
+            const txt = await rNoRef.text();
+            if (txt.includes("#EXTM3U")) isPublicHls = true;
+          }
+        } catch (_) {}
+        hlsFallback = {
+          streamUrl: cand.streamUrl,
+          referer: cand.referer,
+          filename,
+          mode: "hls-remux",
+          serverName: "HLS Direct",
+          publicNoReferer: isPublicHls,
+          mimeType: "application/vnd.apple.mpegurl",
+        };
+      }
+      continue;
+    }
+
+    const check = await verifyBinaryVideoUrl(cand.streamUrl, cand.referer);
+    if (check.ok) {
+      const noRefCheck = cand.referer
+        ? await verifyBinaryVideoUrl(cand.streamUrl, "")
+        : check;
+      return {
+        mp4: {
+          streamUrl: cand.streamUrl,
+          referer: cand.referer,
+          filename,
+          mode: "mp4",
+          sizeBytes: check.sizeBytes,
+          publicNoReferer: noRefCheck.ok,
+          mimeType: "video/mp4",
+        },
+      };
+    }
+  }
+
+  return hlsFallback ? { hls: hlsFallback } : {};
+}
+
+async function resolveBestDownloadTarget(
+  rawCandidates: string[],
+  title: string,
+  ep: string,
+  preferPublicExternal = false,
+  keepPrimaryFirst = false,
+): Promise<{
+  primary: ResolvedDownloadTarget | null;
+  publicExternal: ResolvedDownloadTarget | null;
+}> {
+  const cleanTitle =
+    (title || "Anime").replace(/[^\w\u0600-\u06FF\s-]/gi, "").trim() || "Anime";
+  const safeFilename = `${cleanTitle}-Ep-${ep}.mp4`;
+
+  // Unwrap nested /api/anime/download?url=... links & deduplicate
+  const expanded: string[] = [];
+  for (const c of rawCandidates) {
+    if (!c) continue;
+    if (c.startsWith("/api/anime/download") || c.includes("/api/anime/download?")) {
+      try {
+        const u = new URL(c, "http://localhost");
+        const inner = u.searchParams.get("url");
+        if (inner && inner.startsWith("http") && !expanded.includes(inner)) {
+          expanded.push(inner);
+        }
+      } catch (_) {}
+      continue;
+    }
+    if (c.startsWith("http") && !expanded.includes(c)) {
+      expanded.push(c);
+    }
+  }
+
+  const getHostPriority = (url: string): number => {
+    const l = url.toLowerCase();
+    if (l.includes("mediafire")) return -10;
+    if (preferPublicExternal) {
+      if (l.includes("sendvid")) return 100;
+      if (l.includes("drive.google")) return 98;
+      if (l.includes("videa")) return 96;
+      if (l.includes("uqload")) return 94;
+      if (l.includes("4shared")) return 92;
+      if (l.includes("wish")) return 88;
+      if (l.includes("vidmoly")) return 86;
+      if (l.includes("filemoon") || l.includes("voe")) return 84;
+      if (l.includes("ok.ru")) return 82;
+      if (l.includes("streamtape") || l.includes("dood") || l.includes("d000d")) return 78;
+      if (l.includes("mp4upload")) return 50;
+      if (l.includes("mega.nz")) return 45;
+      return 40;
+    }
+    if (l.includes("sendvid")) return 100;
+    if (l.includes("videa")) return 98;
+    if (l.includes("mp4upload")) return 96;
+    if (l.includes("ok.ru")) return 92;
+    if (l.includes("mega.nz")) return 90;
+    if (l.includes("yourupload")) return 85;
+    if (l.includes("uqload")) return 80;
+    if (l.includes("4shared")) return 75;
+    if (l.includes("drive.google")) return 72;
+    if (l.includes("streamtape")) return 65;
+    if (l.includes("dood") || l.includes("d000d")) return 60;
+    if (l.includes("sibnet") || l.includes("vidoza") || l.includes("mixdrop")) return 55;
+    if (l.includes("wish") || l.includes("filemoon") || l.includes("vidmoly") || l.includes("voe")) return 40;
+    return 40;
+  };
+
+  const validCandidates = expanded.filter((u) => getHostPriority(u) > 0);
+  const ordered =
+    keepPrimaryFirst && validCandidates.length > 0
+      ? [
+          validCandidates[0],
+          ...validCandidates.slice(1).sort((a, b) => getHostPriority(b) - getHostPriority(a)),
+        ].slice(0, 14)
+      : validCandidates.sort((a, b) => getHostPriority(b) - getHostPriority(a)).slice(0, 14);
+
+  let firstMp4: ResolvedDownloadTarget | null = null;
+  let firstHlsFallback: ResolvedDownloadTarget | null = null;
+  let firstPublicMp4: ResolvedDownloadTarget | null = null;
+  let firstPublicHls: ResolvedDownloadTarget | null = null;
+
+  for (let i = 0; i < ordered.length; i += 3) {
+    const batch = ordered.slice(i, i + 3);
+    const results = await Promise.all(
+      batch.map((u) =>
+        resolveSingleCandidateToVideo(u, safeFilename).catch(
+          (): { mp4?: ResolvedDownloadTarget; hls?: ResolvedDownloadTarget } => ({}),
+        ),
+      ),
+    );
+    for (const r of results) {
+      if (r.mp4) {
+        if (!firstMp4) firstMp4 = r.mp4;
+        if (r.mp4.publicNoReferer && !firstPublicMp4) firstPublicMp4 = r.mp4;
+      }
+      if (r.hls) {
+        if (!firstHlsFallback) firstHlsFallback = r.hls;
+        if (r.hls.publicNoReferer && !firstPublicHls) firstPublicHls = r.hls;
+      }
+    }
+
+    if (preferPublicExternal) {
+      if (firstPublicMp4) break;
+      if (firstPublicHls && i >= 3) break;
+    } else if (firstMp4 && firstPublicMp4) {
+      break;
+    }
+  }
+
+  const publicExternal = firstPublicMp4 || firstPublicHls;
+  const primary = preferPublicExternal
+    ? (publicExternal || firstMp4 || firstHlsFallback)
+    : (firstMp4 || firstHlsFallback);
+
+  return { primary, publicExternal };
+}
+
+function sendVideoHeaders(
+  res: Response,
+  filename: string,
+  contentType: string,
+  asAttachment: boolean,
+  contentLength?: string | number | null,
+) {
+  const asciiFallback = filename.replace(/[^\x20-\x7E]/g, "_").replace(/"/g, "") || "episode.mp4";
+  res.setHeader(
+    "Content-Disposition",
+    `${asAttachment ? "attachment" : "inline"}; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+  );
+  res.setHeader("Content-Type", contentType || "video/mp4");
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  if (contentLength) {
+    res.setHeader("Content-Length", String(contentLength));
+  }
+}
+
+async function streamMegaTarget(
+  target: ResolvedDownloadTarget,
+  req: Request,
+  res: Response,
+  asAttachment: boolean,
+) {
+  const totalSize = target.sizeBytes || 0;
+  if (!totalSize || !target.megaKeyHex || !target.megaNonceHex) {
+    return res.status(502).send("بيانات ملف Mega غير مكتملة");
+  }
+
+  const aesKey = Buffer.from(target.megaKeyHex, "hex");
+  const nonce = Buffer.from(target.megaNonceHex, "hex");
+
+  let start = 0;
+  let end = totalSize - 1;
+  let isRange = false;
+
+  const rangeHeader = (req.headers.range as string | undefined) || "";
+  if (rangeHeader) {
+    const m = rangeHeader.match(/bytes=(\d*)-(\d*)/i);
+    if (m) {
+      isRange = true;
+      start = m[1] ? parseInt(m[1], 10) : 0;
+      end = m[2] ? parseInt(m[2], 10) : totalSize - 1;
+      if (isNaN(start) || start < 0) start = 0;
+      if (isNaN(end) || end >= totalSize) end = totalSize - 1;
+      if (start > end) {
+        res.status(416).setHeader("Content-Range", `bytes */${totalSize}`);
+        return res.end();
+      }
+    }
+  }
+
+  const responseLength = end - start + 1;
+  res.status(isRange ? 206 : 200);
+  sendVideoHeaders(res, target.filename, "video/mp4", asAttachment, responseLength);
+  res.setHeader("Accept-Ranges", "bytes");
+  if (isRange) {
+    res.setHeader("Content-Range", `bytes ${start}-${end}/${totalSize}`);
+  }
+
+  if (req.method === "HEAD") {
+    return res.end();
+  }
+
+  const alignedStart = Math.floor(start / 16) * 16;
+  const skipBytes = start - alignedStart;
+  const blockIdx = BigInt(alignedStart / 16);
+
+  const iv = Buffer.alloc(16);
+  nonce.copy(iv, 0);
+  iv.writeBigUInt64BE(blockIdx, 8);
+
+  const rangeSuffix = `/${alignedStart}-${end}`;
+  const upstream = await fetch(`${target.streamUrl}${rangeSuffix}`, {
+    headers: { "User-Agent": STREAM_UA },
+  });
+
+  if (!upstream.ok || !upstream.body) {
+    if (!res.headersSent) return res.status(502).send("تعذر سحب الملف من خادم Mega");
+    return res.end();
+  }
+
+  const decipher = crypto.createDecipheriv("aes-128-ctr", aesKey, iv);
+  let remainingSkip = skipBytes;
+  const reader = upstream.body.getReader();
+
+  req.on("close", () => {
+    reader.cancel().catch(() => {});
+  });
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      let plain = decipher.update(Buffer.from(value));
+      if (remainingSkip > 0) {
+        if (plain.length <= remainingSkip) {
+          remainingSkip -= plain.length;
+          continue;
+        }
+        plain = plain.subarray(remainingSkip);
+        remainingSkip = 0;
+      }
+      if (!res.writableEnded && plain.length > 0) {
+        res.write(plain);
+      } else if (res.writableEnded) {
+        break;
+      }
+    }
+    const tail = decipher.final();
+    if (tail.length > 0 && !res.writableEnded) {
+      res.write(tail);
+    }
+  } catch (_) {}
+
+  if (!res.writableEnded) {
+    res.end();
+  }
+}
+
+async function streamResolvedDownloadTarget(
+  target: ResolvedDownloadTarget,
+  req: Request,
+  res: Response,
+  asAttachment = true,
+) {
+  if (target.mode === "mega") {
+    return streamMegaTarget(target, req, res, asAttachment);
+  }
+
+  if (target.mode === "hls-remux") {
+    sendVideoHeaders(res, target.filename, "video/mp4", asAttachment);
+    if (req.method === "HEAD") {
+      return res.end();
+    }
+    const ffArgs: string[] = [
+      "-reconnect",
+      "1",
+      "-reconnect_streamed",
+      "1",
+      "-reconnect_delay_max",
+      "5",
+    ];
+    if (target.referer) {
+      ffArgs.push("-headers", `Referer: ${target.referer}\r\nUser-Agent: ${STREAM_UA}\r\n`);
+    } else {
+      ffArgs.push("-user_agent", STREAM_UA);
+    }
+    ffArgs.push(
+      "-i",
+      target.streamUrl,
+      "-c",
+      "copy",
+      "-bsf:a",
+      "aac_adtstoasc",
+      "-movflags",
+      "frag_keyframe+empty_moov",
+      "-f",
+      "mp4",
+      "pipe:1",
+    );
+
+    const ff = spawn("ffmpeg", ffArgs, { stdio: ["ignore", "pipe", "pipe"] });
+    req.on("close", () => {
+      try {
+        ff.kill("SIGKILL");
+      } catch (_) {}
+    });
+    ff.stdout.pipe(res);
+    ff.on("error", () => {
+      if (!res.headersSent) res.status(502).send("Video remux failed");
+      else if (!res.writableEnded) res.end();
+    });
+    return;
+  }
+
+  const upstream = await fetchUpstreamFollowRedirect(
+    target.streamUrl,
+    target.referer,
+    req.headers.range as string | undefined,
+    30000,
+  );
+
+  if (!upstream.ok || !upstream.body) {
+    return res.status(502).send("تعذر سحب ملف الفيديو من السيرفر");
+  }
+
+  const upstreamCt = (upstream.headers.get("content-type") || "").toLowerCase();
+  if (upstreamCt.includes("text/html")) {
+    try {
+      await upstream.body.cancel();
+    } catch (_) {}
+    return res.status(502).send("السيرفر أعاد صفحة HTML بدلاً من ملف الفيديو");
+  }
+
+  res.status(upstream.status);
+  sendVideoHeaders(
+    res,
+    target.filename,
+    upstreamCt.startsWith("video/") ? upstreamCt : "video/mp4",
+    asAttachment,
+    upstream.headers.get("content-length"),
+  );
+  const contentRange = upstream.headers.get("content-range");
+  if (contentRange) res.setHeader("Content-Range", contentRange);
+  res.setHeader("Accept-Ranges", upstream.headers.get("accept-ranges") || "bytes");
+
+  if (req.method === "HEAD") {
+    try {
+      await upstream.body.cancel();
+    } catch (_) {}
+    return res.end();
+  }
+
+  const reader = upstream.body.getReader();
+  req.on("close", () => {
+    reader.cancel().catch(() => {});
+  });
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!res.writableEnded) {
+      res.write(Buffer.from(value));
+    } else {
+      break;
+    }
+  }
+  if (!res.writableEnded) {
+    res.end();
+  }
+}
+
+// تجهيز واستخراج رابط فيديو MP4 موثوق ومباشر للتحميل الفوري
+router.post(
+  "/anime/resolve-download",
+  handleAsync(async (req: Request, res: Response) => {
+    const { url, fallbackUrls, title, ep, preferExternal } = req.body || {};
+    const candidates: string[] = [
+      ...(typeof url === "string" ? [url] : []),
+      ...(Array.isArray(fallbackUrls) ? fallbackUrls.filter((u: any) => typeof u === "string") : []),
+    ];
+
+    if (candidates.length === 0) {
+      return res.status(400).json({ success: false, message: "لا توجد روابط سيرفرات للتحميل." });
+    }
+
+    const isModFast = typeof url === "string" && url.includes("/api/anime/download");
+    const wantPublicExternal = Boolean(preferExternal || isModFast);
+    const { primary: resolved, publicExternal } = await resolveBestDownloadTarget(
+      candidates,
+      String(title || "Anime"),
+      String(ep || "1"),
+      wantPublicExternal,
+      !wantPublicExternal,
+    );
+
+    if (!resolved) {
+      return res.json({
+        success: false,
+        message: "لم يعثر الخادم على ملف MP4 مباشر في السيرفرات الحالية لهذه الحلقة.",
+      });
+    }
+
+    const token = `dl_${crypto.randomBytes(12).toString("hex")}`;
+    await serverCache.set(`download_token:${token}`, resolved, 60 * 60 * 1000);
+
+    const extTarget =
+      publicExternal && publicExternal.mode === "mp4" && publicExternal.publicNoReferer
+        ? publicExternal
+        : resolved.publicNoReferer && resolved.mode === "mp4"
+        ? resolved
+        : null;
+
+    res.json({
+      success: true,
+      mode: resolved.mode,
+      token,
+      downloadUrl: `/api/anime/download-stream?token=${token}`,
+      externalDirectUrl: extTarget ? extTarget.streamUrl : null,
+      externalDirectMime: extTarget ? (extTarget.mimeType || "video/mp4") : null,
+      filename: resolved.filename,
+      sizeBytes: resolved.sizeBytes || null,
+    });
+  }),
+);
+
+// تجهيز رابط بث مباشر قابل للتشغيل الفوري في المشغلات الخارجية (MX Player / VLC / مشغل النظام)
+router.post(
+  "/anime/resolve-play",
+  handleAsync(async (req: Request, res: Response) => {
+    const { url, fallbackUrls, title, ep } = req.body || {};
+    const candidates: string[] = [
+      ...(typeof url === "string" ? [url] : []),
+      ...(Array.isArray(fallbackUrls) ? fallbackUrls.filter((u: any) => typeof u === "string") : []),
+    ];
+
+    if (candidates.length === 0) {
+      return res.status(400).json({ success: false, message: "لا توجد روابط للتشغيل الخارجي." });
+    }
+
+    const { primary: resolved, publicExternal } = await resolveBestDownloadTarget(
+      candidates,
+      String(title || "Anime"),
+      String(ep || "1"),
+      true,
+    );
+
+    if (!resolved) {
+      return res.json({
+        success: false,
+        message: "تعذر استخراج بث مباشر للمشغل الخارجي من السيرفرات الحالية، جرب سيرفراً آخر.",
+      });
+    }
+
+    // الأولوية القصوى للروابط المباشرة من الـ CDN التي لا تتطلب Referer ولا تمر عبر بوابة مصادقة التطبيق
+    const directPublic = publicExternal || (resolved.publicNoReferer ? resolved : null);
+    if (directPublic && directPublic.publicNoReferer) {
+      return res.json({
+        success: true,
+        isDirectCdn: true,
+        mode: directPublic.mode === "hls-remux" ? "hls" : directPublic.mode,
+        streamUrl: directPublic.streamUrl,
+        mimeType:
+          directPublic.mimeType ||
+          (directPublic.mode === "hls-remux" ? "application/vnd.apple.mpegurl" : "video/mp4"),
+        filename:
+          directPublic.mode === "hls-remux"
+            ? directPublic.filename.replace(/\.mp4$/i, ".m3u8")
+            : directPublic.filename,
+      });
+    }
+
+    const token = `pl_${crypto.randomBytes(12).toString("hex")}`;
+    await serverCache.set(`play_token:${token}`, resolved, 6 * 60 * 60 * 1000);
+    const safeFile = encodeURIComponent(resolved.filename || "episode.mp4");
+
+    res.json({
+      success: true,
+      isDirectCdn: false,
+      mode: resolved.mode,
+      streamUrl: `/api/anime/play-stream/${token}/${safeFile}`,
+      mimeType: resolved.mimeType || "video/mp4",
+      filename: resolved.filename,
+    });
+  }),
+);
+
+// بث ملف الفيديو مباشرة في وضع Inline للمشغلات الخارجية مع دعم كامل للتقديم والتأخير (Range)
+router.get(
+  "/anime/play-stream/:token/:filename",
+  handleAsync(async (req: Request, res: Response) => {
+    const token = req.params.token || "";
+    if (!token) {
+      return res.status(400).send("Missing stream token");
+    }
+    const target = await serverCache.get<ResolvedDownloadTarget>(`play_token:${token}`);
+    if (!target) {
+      return res.status(404).send("انتهت صلاحية رابط البث، يرجى الضغط مجدداً");
+    }
+
+    await streamResolvedDownloadTarget(target, req, res, false);
+  }),
+);
+
+// بث ملف الفيديو مباشرة كملف مرفق للتنزيل الفوري عبر Token موثق
+router.get(
+  "/anime/download-stream",
+  handleAsync(async (req: Request, res: Response) => {
+    const token = (req.query.token as string) || "";
+    if (!token) {
+      return res.status(400).send("Missing download token");
+    }
+    const target = await serverCache.get<ResolvedDownloadTarget>(`download_token:${token}`);
+    if (!target) {
+      return res.status(404).send("انتهت صلاحية رابط التحميل، يرجى الضغط على تنزيل مجدداً");
+    }
+
+    await streamResolvedDownloadTarget(target, req, res, true);
+  }),
+);
+
+// مسار التحميل المباشر الذكي لحلقات الأنمي (MOD Direct Downloader) — لا يعيد أبداً ملف HTML
+router.get(
+  "/anime/download",
+  handleAsync(async (req: Request, res: Response) => {
+    const rawUrl = (req.query.url as string) || "";
+    const title = (req.query.title as string) || "Anime";
+    const ep = (req.query.ep as string) || "1";
+
+    if (!rawUrl || !rawUrl.startsWith("http")) {
+      return res.status(400).send("رابط التحميل غير صالح");
+    }
+
+    const { primary: resolved } = await resolveBestDownloadTarget([rawUrl], title, ep, false);
+    if (!resolved) {
+      return res
+        .status(404)
+        .send("تعذر استخراج ملف فيديو MP4 مباشر من هذا السيرفر، يرجى استخدام زر التحميل السريع MOD Fast.");
+    }
+
+    await streamResolvedDownloadTarget(resolved, req, res, true);
+  }),
+);
+
 router.post(
   "/anime/extract",
   handleAsync(async (req: Request, res: Response) => {
@@ -2234,7 +3327,7 @@ router.get(
           ),
           fetchWithTimeout(
             scraper.getRecentEpisodes(bypass).catch(() => []),
-            bypass ? 6000 : 4500,
+            bypass ? 10500 : 9000,
             []
           ),
           fetchWithTimeout(
@@ -2242,12 +3335,12 @@ router.get(
               const r = await fetchJikan(`https://api.jikan.moe/v4/schedules?filter=${currentDay}&limit=20`).catch(() => ({ data: [] }));
               return r.data || [];
             }),
-            3500,
+            4500,
             []
           ),
           fetchWithTimeout(
             scraper.getPopularToday(bypass).catch(() => []),
-            3500,
+            6500,
             []
           ),
         ]);
@@ -2415,13 +3508,53 @@ router.get(
           rating: anime.score || 0,
         }));
 
-      return {
+      // If recentEpisodes failed to scrape live, try stale real scraped cache before falling back
+      let finalRecent = recentEpisodes;
+      if (finalRecent.length === 0) {
+        const staleRaw = await serverCache.get<any[]>("recent_episodes", true);
+        if (Array.isArray(staleRaw) && staleRaw.length > 0) {
+          finalRecent = staleRaw.map((item, idx) => {
+            const cleanTitle = cleanAnimeTitle(item.title);
+            const seasonMatch = (item.title || "").match(/(?:الموسم|موسم|Season)\s*(\d+)/i);
+            const displayTitle =
+              seasonMatch && !cleanTitle.includes("الموسم") && !cleanTitle.toLowerCase().includes("season")
+                ? `${cleanTitle} S${seasonMatch[1]}`
+                : cleanTitle;
+            const exactSlug = item.id && item.id.includes("__ep__") ? item.id.split("__ep__")[0] : "";
+            const posterUrl = item.imageUrl ? item.imageUrl.replace("-thumbnail.", "-poster.") : "";
+            return {
+              _id: item.id || `recent-stale-${idx}`,
+              animeId: {
+                _id: exactSlug || `search-${displayTitle}`,
+                title: displayTitle,
+                titleAr: displayTitle,
+                posterUrl,
+                thumbnailUrl: item.imageUrl || posterUrl,
+                episodeLink: item.id || item.link || "",
+              },
+              episodeNumber: item.episode,
+              link: item.id || item.link || "",
+            };
+          });
+        }
+      }
+
+      const resultPayload = {
         top5: top5.length > 0 ? top5 : getCuratedTop5(),
-        recentEpisodes: recentEpisodes.length > 0 ? recentEpisodes : getCuratedRecentEpisodes(),
+        recentEpisodes: finalRecent,
         popular: popular.length > 0 ? popular : getCuratedSeasonAnime(),
         currentSeason: currentSeason.length > 0 ? currentSeason : getCuratedSeasonAnime(),
         schedule: schedule.length > 0 ? schedule : getCuratedTop5(),
       };
+
+      // Only cache for full 90s when live recentEpisodes succeeded; otherwise short 10s cache
+      if (finalRecent.length === 0) {
+        setTimeout(() => {
+          serverCache.delete(cacheKey).catch(() => {});
+        }, 5000);
+      }
+
+      return resultPayload;
         },
         90 * 1000,
         bypass

@@ -38,7 +38,6 @@ export default function ProfileView({
     user, 
     signIn,
     signInWithGoogleAdaptive,
-    runtimeEnv,
     logout, 
     userData: currentUserData, 
     userRole,
@@ -472,16 +471,6 @@ export default function ProfileView({
           </p>
         </div>
         <div className="w-full max-w-xs space-y-2.5">
-          {/* Detected Platform Badge */}
-          <div className="p-2.5 rounded-xl bg-zinc-950 border border-white/10 text-[9.5px] text-neutral-300 space-y-1 text-right">
-            <div className="flex items-center justify-between">
-              <span className="text-sky-400 font-black">البيئة المرصودة:</span>
-              <span className="font-black text-emerald-400">{runtimeEnv.isInstalledApp ? 'برنامج مثبّت 📲' : 'متصفح ويب 🌐'}</span>
-            </div>
-            <div className="text-white font-bold">{runtimeEnv.hostLabelAr} • {runtimeEnv.osLabelAr}</div>
-            <div className="text-[8.5px] text-neutral-400">طريقة اتصال جوجل: {runtimeEnv.strategyLabelAr}</div>
-          </div>
-
           <button
             onClick={signInWithGoogleAdaptive}
             className="w-full bg-white hover:bg-neutral-100 text-zinc-900 font-black py-3 rounded-xl text-xs transition flex items-center justify-center gap-2 cursor-pointer shadow-lg"
@@ -492,7 +481,7 @@ export default function ProfileView({
               <path fill="#FBBC05" d="M5.3 14.8c-.2-.8-.4-1.6-.4-2.5s.2-1.7.4-2.5L1.6 7C.6 9 0 11.2 0 13.5s.6 4.5 1.6 6.5l3.7-2.9z" />
               <path fill="#34A853" d="M12 24c3.2 0 6-1.1 8-3l-3.7-2.9c-1.1.7-2.5 1.2-4.3 1.2-3.1 0-5.8-2.1-6.7-5l-3.7 2.8C3.5 21.4 7.4 24 12 24z" />
             </svg>
-            <span>دخول ذكي عبر Google ({runtimeEnv.osLabelAr})</span>
+            <span>متابعة باستخدام Google</span>
           </button>
 
           <button

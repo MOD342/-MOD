@@ -17,6 +17,8 @@ interface CacheEntry<T> {
  * يحافظ على جلسات تسجيل الدخول وحساب المستخدم وتقدم الألعاب والإعدادات في localStorage،
  * مع تخزين مؤقت خفيف في الذاكرة (RAM) لتسريع التنقل الفوري ومنع إعادة الطلبات المكررة.
  */
+const STORAGE_SCHEMA_VERSION = 'otaku_clean_v2026_2';
+
 class ClientCacheManager {
   private memoryCache = new Map<string, CacheEntry<any>>();
   private inFlight = new Map<string, Promise<any>>();
@@ -28,13 +30,14 @@ class ClientCacheManager {
   }
 
   /**
-   * ينظف فقط مفاتيح الكاش المؤقتة القديمة دون المساس ببيانات المستخدم أو حساباته أو إعدادات التطبيق
+   * ينظف مفاتيح الكاش المؤقتة والبيانات القديمة المرتبطة بالمتصفح أو المنصة عند التحديث
+   * دون المساس بجلسة مصادقة Firebase الحقيقية للمستخدم.
    */
   public cleanLegacyCacheOnly(): void {
     try {
       if (typeof window === 'undefined') return;
 
-      // Unregister old legacy service workers that might serve stale HTML
+      // 1. Unregister legacy Service Workers & clear CacheStorage
       if ('serviceWorker' in navigator) {
         navigator.serviceWorker
           .getRegistrations()
@@ -45,33 +48,110 @@ class ClientCacheManager {
           })
           .catch(() => {});
       }
+
+      if (typeof localStorage !== 'undefined') {
+        const currentVer = localStorage.getItem('otaku_storage_version');
+        if (currentVer !== STORAGE_SCHEMA_VERSION) {
+          this.purgeLegacyStorageData();
+          localStorage.setItem('otaku_storage_version', STORAGE_SCHEMA_VERSION);
+        }
+      }
+    } catch {}
+  }
+
+  public purgeLegacyStorageData(): void {
+    try {
+      if (typeof window === 'undefined') return;
+
+      if (window.localStorage) {
+        const customHost = localStorage.getItem('custom_api_host') || '';
+        const isApkShell =
+          window.location.protocol === 'file:' ||
+          window.location.protocol === 'capacitor:' ||
+          Boolean((window as any).Capacitor) ||
+          Boolean((window as any).cordova) ||
+          (window.location.hostname === 'localhost' && !window.location.port);
+        if (
+          customHost.includes('ais-dev-') ||
+          customHost.includes('your-public-deployed') ||
+          customHost.includes('example.com') ||
+          (!isApkShell && (customHost.includes('.run.app') || customHost.includes('ais-pre-')))
+        ) {
+          localStorage.removeItem('custom_api_host');
+        }
+
+        const exactKeysToRemove = [
+          'is_api_unreachable',
+          'animeHistory',
+          'adminSliderSettings',
+          'adminAnimeCuration',
+          'fallback_active_session',
+          'apk_google_email',
+          'otaku_chat_history',
+          'otaku_widget_chat_v2',
+        ];
+        exactKeysToRemove.forEach((k) => {
+          try {
+            localStorage.removeItem(k);
+          } catch {}
+        });
+
+        const prefixKeysToRemove: string[] = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (
+            k &&
+            (k.startsWith('client_') ||
+              k.startsWith('direct_') ||
+              k.startsWith('servers_v') ||
+              k.startsWith('elite_') ||
+              k.startsWith('mod_user_data_') ||
+              k.startsWith('local_custom_lists_') ||
+              k.startsWith('local_anime_entries_') ||
+              k.startsWith('last_ad_ts_'))
+          ) {
+            prefixKeysToRemove.push(k);
+          }
+        }
+        prefixKeysToRemove.forEach((k) => {
+          try {
+            localStorage.removeItem(k);
+          } catch {}
+        });
+      }
+
+      try {
+        sessionStorage.clear();
+      } catch {}
+
+      if ('caches' in window) {
+        caches
+          .keys()
+          .then((names) => Promise.all(names.map((name) => caches.delete(name))))
+          .catch(() => {});
+      }
+
+      // Purge stale Firestore document IndexedDB cache (preserving firebaseLocalStorageDb auth tokens)
+      if (typeof indexedDB !== 'undefined' && typeof indexedDB.databases === 'function') {
+        indexedDB
+          .databases()
+          .then((dbs) => {
+            for (const dbInfo of dbs) {
+              if (dbInfo.name && dbInfo.name.startsWith('firestore/')) {
+                try {
+                  indexedDB.deleteDatabase(dbInfo.name);
+                } catch {}
+              }
+            }
+          })
+          .catch(() => {});
+      }
     } catch {}
   }
 
   public purgeAllBrowserStorage(): void {
     this.memoryCache.clear();
-    try {
-      if (typeof window === 'undefined' || !window.localStorage) return;
-      const keysToRemove: string[] = [];
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        // Only remove temporary API cache keys, NEVER remove user/auth/game/settings keys
-        if (
-          k &&
-          (k.startsWith('client_') ||
-            k.startsWith('direct_') ||
-            k.startsWith('servers_v') ||
-            k.startsWith('elite_'))
-        ) {
-          keysToRemove.push(k);
-        }
-      }
-      keysToRemove.forEach((k) => {
-        try {
-          localStorage.removeItem(k);
-        } catch {}
-      });
-    } catch {}
+    this.purgeLegacyStorageData();
   }
 
   get<T>(key: string): T | null {

@@ -329,26 +329,6 @@ export default function AdminDashboardView({
     let unsubArena: any;
     let unsubLeaks: any;
 
-    // Load local slider settings first
-    try {
-      const saved = JSON.parse(
-        localStorage.getItem('adminSliderSettings') ||
-          '{"limit": 5, "season": "auto", "sliderMode": "best_season", "customAnime": [], "speed": 3, "globalAnnouncement": ""}'
-      );
-      setSliderLimit(Math.min(10, Math.max(3, Number(saved.limit) || 5)));
-      setSliderSeason(saved.season || 'auto');
-      setSliderMode(saved.sliderMode || 'best_season');
-      if (Array.isArray(saved.customAnime)) setCustomSliderAnime(saved.customAnime);
-      setSliderSpeed(saved.speed ?? 3);
-      setGlobalAnnouncement(saved.globalAnnouncement || '');
-    } catch {}
-
-    try {
-      const savedCur = JSON.parse(localStorage.getItem('adminAnimeCuration') || '{"pinnedAnime":[],"hiddenAnime":[]}');
-      if (Array.isArray(savedCur.pinnedAnime)) setPinnedAnimeList(savedCur.pinnedAnime);
-      if (Array.isArray(savedCur.hiddenAnime)) setHiddenAnimeList(savedCur.hiddenAnime);
-    } catch {}
-
     const initRealtimeSync = async () => {
       try {
         const [sliderCfg, tgCfg, monCfg, curCfg] = await Promise.all([
@@ -364,12 +344,10 @@ export default function AdminDashboardView({
           if (Array.isArray(sliderCfg.customAnime)) setCustomSliderAnime(sliderCfg.customAnime);
           setSliderSpeed(sliderCfg.speed ?? 3);
           setGlobalAnnouncement(sliderCfg.globalAnnouncement || '');
-          localStorage.setItem('adminSliderSettings', JSON.stringify(sliderCfg));
         }
         if (curCfg) {
           if (Array.isArray(curCfg.pinnedAnime)) setPinnedAnimeList(curCfg.pinnedAnime);
           if (Array.isArray(curCfg.hiddenAnime)) setHiddenAnimeList(curCfg.hiddenAnime);
-          localStorage.setItem('adminAnimeCuration', JSON.stringify(curCfg));
         }
         if (tgCfg) {
           if (tgCfg.helpTelegramUrl) setHelpTelegramUrl(tgCfg.helpTelegramUrl);

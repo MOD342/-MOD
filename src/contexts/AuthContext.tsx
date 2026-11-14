@@ -263,13 +263,11 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
   const [authError, setAuthError] = useState('');
   const [authSuccess, setAuthSuccess] = useState('');
   const [authModalLoading, setAuthModalLoading] = useState(false);
-  const [isInIframe, setIsInIframe] = useState(false);
-  const [showOAuthTroubleshoot, setShowOAuthTroubleshoot] = useState(false);
+
 
   useEffect(() => {
     const detected = detectRuntimeEnvironment();
     setRuntimeEnv(detected);
-    setIsInIframe(detected.isInIframe);
   }, []);
 
   // Native/System-level Google Sign In and One Tap helper (Google Identity Services)
@@ -277,20 +275,16 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
     if (typeof window === 'undefined') return;
 
     const initGsi = () => {
-      // Prioritize the user-configured or project-level Google Client ID or firebase-applet-config.json oAuthClientId
       const clientId = (import.meta as any).env?.VITE_GOOGLE_CLIENT_ID || (firebaseConfig as any).oAuthClientId;
-      
-      if (!clientId) {
-        console.log("GSI skipped: No Google Client ID found. Using standard Firebase Auth flow.");
-        return;
-      }
+      if (!clientId) return;
 
-      // Skip GSI completely inside iframes (such as the Google AI Studio preview sandbox)
-      // because browsers block the 'identity-credentials-get' API inside sandboxed documents,
-      // which triggers GSI NotAllowedError exceptions. Standard Firebase popup works perfectly since it breaks out in a popup.
-      const isReallyInIframe = typeof window !== 'undefined' && (window.self !== window.top || isInIframe);
-      if (isReallyInIframe) {
-        console.log("GSI skipped: Running in an iframe. Using standard Firebase Popup/Redirect flow to prevent FedCM iframe NotAllowedError.");
+      let inFrame = false;
+      try {
+        inFrame = window.self !== window.top;
+      } catch {
+        inFrame = true;
+      }
+      if (inFrame || runtimeEnv.isAPKOrWebView) {
         return;
       }
       
@@ -319,8 +313,7 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
                 }, 1200);
               }
             } catch (err: any) {
-              console.error("Firebase GSI signin failed:", err);
-              setAuthError(`فشل الاتصال بالنظام: ${err.message || 'يرجى التحقق من إعدادات حساب جوجل للمشروع'}`);
+              console.warn("Firebase GSI signin fallback:", err);
             } finally {
               setAuthModalLoading(false);
             }
@@ -332,15 +325,7 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
 
         // Trigger One Tap floating prompt if auth modal is opened
         if (isAuthModalOpen && authMode === 'login') {
-          (window as any).google.accounts.id.prompt((notification: any) => {
-            if (notification.isNotDisplayed()) {
-              console.log("One Tap not displayed:", notification.getNotDisplayedReason());
-            } else if (notification.isSkippedMoment()) {
-              console.log("One Tap skipped:", notification.getSkippedReason());
-            } else if (notification.isDismissedMoment()) {
-              console.log("One Tap dismissed:", notification.getDismissedReason());
-            }
-          });
+          (window as any).google.accounts.id.prompt(() => {});
         }
       } catch (err) {
         console.warn("Error setting up Google Identity Services:", err);
@@ -361,7 +346,7 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
     }, 250);
 
     return () => clearInterval(interval);
-  }, [isAuthModalOpen, authMode]);
+  }, [isAuthModalOpen, authMode, runtimeEnv.isAPKOrWebView]);
 
   const resetAuthForm = () => {
     setAuthEmail('');
@@ -371,7 +356,6 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
     setAuthError('');
     setAuthSuccess('');
     setShowPassword(false);
-    setShowOAuthTroubleshoot(false);
   };
 
   // Listen for Google Redirect authentication and deep-linking URLs
@@ -381,16 +365,12 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
     getRedirectResult(auth)
       .then((result) => {
         if (result && result.user) {
-          console.log("Logged in successfully via Redirect callback:", result.user.displayName);
           setAuthSuccess(`أهلاً بك مجدداً ${result.user.displayName || 'يا صديقي'}! تم تسجيل الدخول بنجاح عبر حساب Google.`);
           setIsAuthModalOpen(false);
         }
       })
       .catch((error: any) => {
-        console.warn("Getting redirect result failed:", error);
-        if (error.code && error.code !== 'auth/redirect-cancelled-by-user') {
-          setAuthError('تعذر تكوين جلسة المصادقة عبر Google. يرجى استخدام البريد الإلكتروني وكلمة المرور إن تكرر الخطأ: ' + (error.message || error));
-        }
+        console.warn("Getting redirect result skipped:", error?.code || error?.message);
       })
       .finally(() => {
         setAuthModalLoading(false);
@@ -560,11 +540,6 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
           unsubSnapshot = onSnapshot(userRef, (docSnap) => {
              if (docSnap.exists()) {
                const fullData = { id: docSnap.id, ...docSnap.data() };
-               try {
-                 if (typeof localStorage !== 'undefined') {
-                   localStorage.setItem('mod_user_data_' + u.uid, JSON.stringify(fullData));
-                 }
-               } catch (e) {}
                setUserData(fullData);
              }
           }, (error) => {
@@ -576,50 +551,44 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
           
           setLoading(false);
         } catch (error) {
-           console.warn("Failed to setup user, initiating offline fallback:", error);
-           try {
-             const localDataStr = typeof localStorage !== 'undefined' ? localStorage.getItem('mod_user_data_' + u.uid) : null;
-             let fallbackData = null;
-             if (localDataStr) {
-               try {
-                 fallbackData = JSON.parse(localDataStr);
-               } catch (e) {}
-             }
-             if (!fallbackData) {
-               const emailPrefix = u.email?.split('@')[0] || '';
-               const cleanEmailPrefix = emailPrefix.trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
-               const baseUsername = cleanEmailPrefix || 'otaku_' + u.uid.substring(0, 5);
-               fallbackData = {
-                 id: u.uid,
-                 username: baseUsername,
-                 displayName: u.displayName || u.email?.split('@')[0] || 'أوتاكو الرائع',
-                 email: u.email || '',
-                 photoURL: u.photoURL || '',
-                 role: isStaffEmail(u.email) ? 'owner' : 'user',
-                 createdAt: new Date().toISOString(),
-                 xp: 0,
-                 level: 1,
-                 modPoints: 0,
-                 streakDays: 0,
-                 likesReceived: 0,
-                 commentsCount: 0,
-                 recommendationsAccepted: 0,
-                 aiGamesPoints: 0,
-                 ratingsCount: 0,
-                 chatMessagesCount: 0,
-                 coins: 0,
-                 purchasedItems: [],
-                 lastActiveDate: new Date().toISOString().split('T')[0]
-               };
-             }
-             setUserData(fallbackData);
-             setUserRole(isStaffEmail(u.email) ? 'owner' : (fallbackData.role || 'user'));
-           } catch (fallbackErr) {
-             console.warn("Offline user fallback failed:", fallbackErr);
-           }
+           console.warn("Failed to setup user profile:", error);
+           const emailPrefix = u.email?.split('@')[0] || '';
+           const cleanEmailPrefix = emailPrefix.trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
+           const baseUsername = cleanEmailPrefix || 'otaku_' + u.uid.substring(0, 5);
+           const fallbackData = {
+             id: u.uid,
+             username: baseUsername,
+             displayName: u.displayName || u.email?.split('@')[0] || 'أوتاكو الرائع',
+             email: u.email || '',
+             photoURL: u.photoURL || '',
+             role: isStaffEmail(u.email) ? 'owner' : 'user',
+             createdAt: new Date().toISOString(),
+             xp: 0,
+             level: 1,
+             modPoints: 0,
+             streakDays: 0,
+             likesReceived: 0,
+             commentsCount: 0,
+             recommendationsAccepted: 0,
+             aiGamesPoints: 0,
+             ratingsCount: 0,
+             chatMessagesCount: 0,
+             coins: 0,
+             purchasedItems: [],
+             lastActiveDate: new Date().toISOString().split('T')[0]
+           };
+           setUserData(fallbackData);
+           setUserRole(isStaffEmail(u.email) ? 'owner' : fallbackData.role);
            setLoading(false);
         }
       } else {
+        try {
+          if (typeof localStorage !== 'undefined') {
+            localStorage.removeItem('fallback_active_session');
+            localStorage.removeItem('apk_google_email');
+          }
+        } catch {}
+
         setUserData(null);
         setUserRole('user');
         setBanInfo(null);
@@ -634,6 +603,42 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
     };
   }, []);
 
+  const loadFallbackSession = async (fallbackAccount: { uid: string; email: string; displayName: string; photoURL: string }) => {
+    setUser({
+      id: fallbackAccount.uid,
+      uid: fallbackAccount.uid,
+      email: fallbackAccount.email,
+      displayName: fallbackAccount.displayName,
+      photoURL: fallbackAccount.photoURL,
+      emailVerified: true,
+      providerIds: ['custom']
+    });
+    const fallbackUserData = {
+      id: fallbackAccount.uid,
+      username: (fallbackAccount.email.split('@')[0] || 'otaku_hero').toLowerCase().replace(/[^a-z0-9_]/g, ''),
+      displayName: fallbackAccount.displayName,
+      email: fallbackAccount.email,
+      photoURL: fallbackAccount.photoURL,
+      role: isStaffEmail(fallbackAccount.email) ? 'owner' : 'user',
+      createdAt: new Date().toISOString(),
+      xp: 0,
+      level: 1,
+      modPoints: 0,
+      streakDays: 0,
+      likesReceived: 0,
+      commentsCount: 0,
+      recommendationsAccepted: 0,
+      aiGamesPoints: 0,
+      ratingsCount: 0,
+      chatMessagesCount: 0,
+      coins: 0,
+      purchasedItems: [],
+      lastActiveDate: new Date().toISOString().split('T')[0]
+    };
+    setUserData(fallbackUserData);
+    setUserRole(isStaffEmail(fallbackAccount.email) ? 'owner' : 'user');
+  };
+
   const signIn = async (initialMode: 'login' | 'register' | 'forgot' = 'login') => {
     setAuthMode(initialMode);
     setAuthError('');
@@ -642,11 +647,23 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
   };
 
   const signOut = async () => {
+    try {
+      localStorage.removeItem('fallback_active_session');
+    } catch (e) {}
     await firebaseSignOut(auth);
+    setUser(null);
+    setUserData(null);
+    setUserRole('user');
   };
 
   const logout = async () => {
+    try {
+      localStorage.removeItem('fallback_active_session');
+    } catch (e) {}
     await firebaseSignOut(auth);
+    setUser(null);
+    setUserData(null);
+    setUserRole('user');
   };
 
   const sendVerificationEmail = async (): Promise<{ success: boolean; message: string }> => {
@@ -991,7 +1008,6 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
         displayName: guestName,
         photoURL: `https://api.dicebear.com/7.x/adventurer/svg?seed=Otaku${randomNum}`
       };
-      localStorage.setItem('fallback_active_session', JSON.stringify(fallbackAccount));
       await loadFallbackSession(fallbackAccount);
       setIsAuthModalOpen(false);
       resetAuthForm();
@@ -1027,172 +1043,67 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
   const signInWithGoogleAdaptive = async () => {
     setAuthError('');
     setAuthSuccess('');
-    const currentEnv = detectRuntimeEnvironment();
-    setRuntimeEnv(currentEnv);
 
     const provider = new GoogleAuthProvider();
     provider.setCustomParameters({ prompt: 'select_account' });
+    auth.languageCode = 'ar';
 
     setAuthModalLoading(true);
     try {
-      // Case 1: Installed Android APK / WebView / Capacitor / Cordova
-      if (currentEnv.host === 'apk_webview') {
-        setAuthSuccess(`تم رصد ${currentEnv.hostLabelAr} — جاري الاتصال بحساب Google على جهاز الأندرويد...`);
-
-        // 1a. Check if a native Android/Capacitor Google Auth bridge is injected by the APK wrapper
-        const nativeGooglePlugin = (window as any).Capacitor?.Plugins?.GoogleAuth || (window as any).plugins?.googleplus;
-        if (nativeGooglePlugin) {
-          try {
-            const nativeRes = await (nativeGooglePlugin.signIn ? nativeGooglePlugin.signIn() : Promise.reject('no signIn'));
-            const idToken = nativeRes?.authentication?.idToken || nativeRes?.idToken;
-            if (idToken) {
-              const cred = GoogleAuthProvider.credential(idToken);
-              await signInWithCredential(auth, cred);
-              setIsAuthModalOpen(false);
-              resetAuthForm();
-              return;
-            }
-          } catch (nativeBridgeErr) {
-            console.warn('Native APK Google bridge fallback to Firebase Auth:', nativeBridgeErr);
+      // 1. في تطبيق الأندرويد المثبت (Capacitor / Cordova): استخدام مكون Google الأصلي مباشرة
+      const nativeGooglePlugin = (window as any).Capacitor?.Plugins?.GoogleAuth || (window as any).plugins?.googleplus;
+      if (nativeGooglePlugin) {
+        try {
+          if (typeof nativeGooglePlugin.initialize === 'function') {
+            const clientId = (import.meta as any).env?.VITE_GOOGLE_CLIENT_ID || (firebaseConfig as any).oAuthClientId;
+            await nativeGooglePlugin.initialize({
+              clientId,
+              scopes: ['profile', 'email'],
+              grantOfflineAccess: true
+            }).catch(() => {});
           }
-        }
-
-        // 1b. Try Google Identity Services (GSI) token/credential if available inside the WebView
-        const clientId = (import.meta as any).env?.VITE_GOOGLE_CLIENT_ID || (firebaseConfig as any).oAuthClientId;
-        if (clientId && (window as any).google?.accounts?.id) {
-          try {
-            await new Promise<void>((resolve, reject) => {
-              (window as any).google.accounts.id.prompt((notification: any) => {
-                if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
-                  reject(new Error('GSI not displayed in APK'));
-                } else {
-                  resolve();
-                }
-              });
-            });
+          const nativeRes = await (nativeGooglePlugin.signIn ? nativeGooglePlugin.signIn() : Promise.reject('no signIn'));
+          const idToken = nativeRes?.authentication?.idToken || nativeRes?.idToken;
+          if (idToken) {
+            const cred = GoogleAuthProvider.credential(idToken);
+            await signInWithCredential(auth, cred);
+            setIsAuthModalOpen(false);
+            resetAuthForm();
             return;
-          } catch {
-            // Fall through to Redirect/Popup for APK
           }
-        }
-
-        // 1c. In Android APK WebView, try Popup/Redirect first, and if blocked by WebView or unauthorized domain, activate instant APK Google session
-        try {
-          await signInWithPopup(auth, provider);
-          setIsAuthModalOpen(false);
-          resetAuthForm();
-          return;
-        } catch (apkPopupErr: any) {
-          console.warn('APK Google Popup fallback:', apkPopupErr?.code || apkPopupErr?.message);
-          if (apkPopupErr?.code === 'auth/popup-closed-by-user') {
-            throw apkPopupErr;
-          }
-          const emailInput = authEmail.trim() || localStorage.getItem('apk_google_email') || 'otaku.hero@gmail.com';
-          const nameInput = authDisplayName.trim() || emailInput.split('@')[0] || 'بطل الأوتاكو';
-          const fallbackUid = 'apk_google_' + btoa(emailInput).replace(/[^a-zA-Z0-9]/g, '').slice(0, 16);
-          const fallbackAccount = {
-            uid: fallbackUid,
-            email: emailInput,
-            displayName: nameInput,
-            photoURL: `https://api.dicebear.com/7.x/adventurer/svg?seed=${encodeURIComponent(nameInput)}`
-          };
-          localStorage.setItem('fallback_active_session', JSON.stringify(fallbackAccount));
-          await loadFallbackSession(fallbackAccount);
-          setIsAuthModalOpen(false);
-          resetAuthForm();
-          return;
+        } catch (nativeErr) {
+          console.warn('Native Google Auth bridge fallback:', nativeErr);
         }
       }
 
-      // Case 2: Installed iOS App (Standalone PWA / iOS WebView)
-      if (currentEnv.host === 'ios_standalone') {
-        setAuthSuccess(`تم رصد ${currentEnv.hostLabelAr} — جاري فتح مصادقة Google المتوافقة مع نظام iOS...`);
-        try {
-          await signInWithPopup(auth, provider);
-          setIsAuthModalOpen(false);
-          resetAuthForm();
-          return;
-        } catch (iosPopupErr: any) {
-          if (iosPopupErr?.code === 'auth/popup-closed-by-user') {
-            throw iosPopupErr;
-          }
-          await signInWithRedirect(auth, provider);
-          return;
-        }
-      }
-
-      // Case 3: Installed Windows App (Standalone PWA / Electron / WebView2)
-      if (currentEnv.host === 'windows_app') {
-        setAuthSuccess(`تم رصد ${currentEnv.hostLabelAr} — جاري فتح نافذة اتصال Google لنظام ويندوز...`);
-        try {
-          await signInWithPopup(auth, provider);
-          setIsAuthModalOpen(false);
-          resetAuthForm();
-          return;
-        } catch (winPopupErr: any) {
-          if (winPopupErr?.code === 'auth/popup-closed-by-user') {
-            throw winPopupErr;
-          }
-          await signInWithRedirect(auth, provider);
-          return;
-        }
-      }
-
-      // Case 4: Mobile Browser (Android Chrome / iOS Safari)
-      if (currentEnv.host === 'mobile_browser') {
-        setAuthSuccess(`تم رصد ${currentEnv.hostLabelAr} — جاري الاتصال السريع بحساب Google...`);
-        try {
-          await signInWithPopup(auth, provider);
-          setIsAuthModalOpen(false);
-          resetAuthForm();
-          return;
-        } catch (mobPopupErr: any) {
-          if (mobPopupErr?.code === 'auth/popup-closed-by-user') {
-            throw mobPopupErr;
-          }
-          console.warn('Mobile browser popup blocked, switching to fallback:', mobPopupErr);
-          throw mobPopupErr;
-        }
-      }
-
-      // Case 5: Standard Desktop Browser or Iframe Sandbox
-      setAuthSuccess(`تم رصد ${currentEnv.hostLabelAr} — جاري فتح نافذة تسجيل الدخول عبر Google...`);
+      // 2. استخدام نافذة Google القياسية مع التحويل الآمن عند الحظر في المتصفح أو التطبيق
       try {
         await signInWithPopup(auth, provider);
         setIsAuthModalOpen(false);
         resetAuthForm();
-      } catch (deskPopupErr: any) {
-        if (deskPopupErr?.code === 'auth/popup-closed-by-user') {
-          throw deskPopupErr;
+        return;
+      } catch (popupErr: any) {
+        if (popupErr?.code === 'auth/popup-closed-by-user') {
+          return;
         }
-        throw deskPopupErr;
+        if (
+          popupErr?.code === 'auth/popup-blocked' ||
+          popupErr?.code === 'auth/cancelled-popup-request' ||
+          popupErr?.code === 'auth/operation-not-supported-in-this-environment' ||
+          runtimeEnv.isAPKOrWebView
+        ) {
+          await signInWithRedirect(auth, provider);
+          return;
+        }
+        throw popupErr;
       }
     } catch (error: any) {
-      console.warn('Adaptive Google authentication error:', error);
-      setAuthSuccess('');
-      if (error?.code === 'auth/popup-closed-by-user') {
-        setAuthError('تم إغلاق نافذة تسجيل الدخول عبر Google قبل إكمال العملية.');
-      } else if (
-        error?.code === 'auth/unauthorized-domain' ||
-        error?.code === 'auth/operation-not-supported-in-this-environment' ||
-        error?.code === 'auth/popup-blocked'
-      ) {
-        // تفعيل الدخول الذكي الفوري على النطاقات الخارجية أو تطبيقات الهاتف دون تعطيل المستخدم
-        const emailInput = authEmail.trim() || localStorage.getItem('apk_google_email') || 'otaku.hero@gmail.com';
-        const nameInput = authDisplayName.trim() || emailInput.split('@')[0] || 'بطل الأوتاكو';
-        const fallbackUid = 'apk_google_' + btoa(emailInput).replace(/[^a-zA-Z0-9]/g, '').slice(0, 16);
-        const fallbackAccount = {
-          uid: fallbackUid,
-          email: emailInput,
-          displayName: nameInput,
-          photoURL: `https://api.dicebear.com/7.x/adventurer/svg?seed=${encodeURIComponent(nameInput)}`
-        };
-        localStorage.setItem('fallback_active_session', JSON.stringify(fallbackAccount));
-        await loadFallbackSession(fallbackAccount);
-        setIsAuthModalOpen(false);
-        resetAuthForm();
-      } else {
-        setAuthError('تعذر إكمال الاتصال التلقائي بحساب Google: ' + (error?.message || 'يرجى المحاولة مجدداً أو استخدام البريد الإلكتروني وكلمة المرور.'));
+      if (error?.code !== 'auth/popup-closed-by-user') {
+        if (error?.code === 'auth/unauthorized-domain') {
+          setAuthError('النطاق الحالي غير مضاف في إعدادات النطاقات المصرح بها في Firebase Authentication.');
+        } else {
+          setAuthError('تعذر إتمام تسجيل الدخول عبر Google في هذه البيئة. يمكنك الدخول بالبريد الإلكتروني أو الدخول الفوري.');
+        }
       }
     } finally {
       setAuthModalLoading(false);
@@ -1392,53 +1303,20 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
                 </button>
               </form>
 
-              {/* Traditional social link option */}
+              {/* Social Login Options */}
               {authMode !== 'forgot' && (
                 <>
                   <div className="my-4 relative flex items-center justify-center">
                     <div className="absolute inset-x-0 h-px bg-zinc-900" />
-                    <span className="relative bg-zinc-950 px-2.5 text-[9px] text-neutral-500 font-bold">أو الاتصال الذكي عبر حساب Google</span>
+                    <span className="relative bg-zinc-950 px-2.5 text-[10px] text-neutral-500 font-bold">أو المتابعة السريعة</span>
                   </div>
 
-                  {/* Smart Environment & Platform Detection Indicator */}
-                  <div className="mb-3 p-3 bg-[#090b12] border border-blue-500/20 rounded-xl text-right space-y-1.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-[9.5px] font-black text-sky-400 flex items-center gap-1.5">
-                        {runtimeEnv.os === 'android' || runtimeEnv.os === 'ios' ? (
-                          <Smartphone size={13} className="text-sky-400 shrink-0" />
-                        ) : runtimeEnv.os === 'windows' || runtimeEnv.os === 'macos' ? (
-                          <Monitor size={13} className="text-sky-400 shrink-0" />
-                        ) : (
-                          <Globe size={13} className="text-sky-400 shrink-0" />
-                        )}
-                        <span>بيئة التشغيل المرصودة تلقائياً:</span>
-                      </span>
-                      <span className={`text-[8.5px] font-black px-2 py-0.5 rounded-full border ${
-                        runtimeEnv.isInstalledApp
-                          ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
-                          : 'bg-purple-500/15 text-purple-300 border-purple-500/30'
-                      }`}>
-                        {runtimeEnv.isInstalledApp ? 'تطبيق مثبّت 📲' : 'متصفح ويب 🌐'}
-                      </span>
-                    </div>
-
-                    <div className="text-[9.5px] text-neutral-300 font-bold flex flex-wrap items-center gap-1.5">
-                      <span className="text-white">{runtimeEnv.hostLabelAr}</span>
-                      <span className="text-neutral-600">•</span>
-                      <span className="text-neutral-400">{runtimeEnv.osLabelAr}</span>
-                    </div>
-
-                    <div className="text-[8.5px] text-emerald-400/90 font-bold flex items-center gap-1 pt-0.5 border-t border-white/5">
-                      <Cpu size={10} className="shrink-0" />
-                      <span>بروتوكول جوجل المختار: {runtimeEnv.strategyLabelAr}</span>
-                    </div>
-                  </div>
-
+                  {/* Clean Google Sign-In Button */}
                   <button
                     type="button"
                     disabled={authModalLoading}
                     onClick={signInWithGoogleAdaptive}
-                    className="w-full mb-2.5 bg-white hover:bg-neutral-100 text-zinc-900 font-black text-[11px] py-2.5 px-4 rounded-xl transition cursor-pointer flex items-center justify-center gap-2 shadow-lg active:scale-[0.98] disabled:opacity-50"
+                    className="w-full mb-2.5 bg-white hover:bg-neutral-100 text-zinc-900 font-black text-xs py-2.5 px-4 rounded-xl transition cursor-pointer flex items-center justify-center gap-2 shadow-lg active:scale-[0.98] disabled:opacity-50"
                   >
                     <svg viewBox="0 0 24 24" className="w-4 h-4">
                       <path fill="#EA4335" d="M12 5c1.6 0 3 .6 4.1 1.7l3.1-3.1C17.3 1.8 14.8 1 12 1 7.4 1 3.5 3.6 1.6 7.4l3.7 2.8C6.2 7.2 8.9 5 12 5z" />
@@ -1446,15 +1324,7 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
                       <path fill="#FBBC05" d="M5.3 14.8c-.2-.8-.4-1.6-.4-2.5s.2-1.7.4-2.5L1.6 7C.6 9 0 11.2 0 13.5s.6 4.5 1.6 6.5l3.7-2.9z" />
                       <path fill="#34A853" d="M12 24c3.2 0 6-1.1 8-3l-3.7-2.9c-1.1.7-2.5 1.2-4.3 1.2-3.1 0-5.8-2.1-6.7-5l-3.7 2.8C3.5 21.4 7.4 24 12 24z" />
                     </svg>
-                    <span>
-                      {runtimeEnv.host === 'apk_webview'
-                        ? 'تسجيل عبر حساب Google (وضع تطبيق الأندرويد APK)'
-                        : runtimeEnv.host === 'ios_standalone'
-                        ? 'تسجيل عبر حساب Google (وضع تطبيق الآيفون iOS)'
-                        : runtimeEnv.host === 'windows_app'
-                        ? 'تسجيل عبر حساب Google (وضع برنامج ويندوز)'
-                        : 'تسجيل الدخول عبر حساب Google'}
-                    </span>
+                    <span>متابعة باستخدام Google</span>
                   </button>
 
                   {/* Instant One-Click Otaku Guest Login Button */}
@@ -1462,82 +1332,11 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
                     type="button"
                     onClick={handleInstantOtakuLogin}
                     disabled={authModalLoading}
-                    className="w-full mb-2 bg-gradient-to-r from-emerald-600/90 to-teal-600/90 hover:from-emerald-500 hover:to-teal-500 text-white text-[10.5px] font-black py-2.5 px-4 rounded-xl shadow-md transition flex items-center justify-center gap-2 cursor-pointer"
+                    className="w-full mb-1 bg-gradient-to-r from-emerald-600/90 to-teal-600/90 hover:from-emerald-500 hover:to-teal-500 text-white text-[11px] font-black py-2.5 px-4 rounded-xl shadow-md transition flex items-center justify-center gap-2 cursor-pointer"
                   >
                     <Sparkles size={14} className="animate-pulse" />
                     <span>⚡ دخول فوري كـ أوتاكو (بضغطة واحدة بدون تسجيل)</span>
                   </button>
-
-                  {/* Troubleshoot Panel for Google Client ID / invalid_client 401 */}
-                  <div className="mt-2.5">
-                    <button
-                      type="button"
-                      onClick={() => setShowOAuthTroubleshoot(!showOAuthTroubleshoot)}
-                      className="w-full text-center text-[9px] text-[#FF1744] hover:underline font-bold flex items-center justify-center gap-1 cursor-pointer"
-                    >
-                      <span>{showOAuthTroubleshoot ? '▲ إخفاء دليل حل تفعيل الدخول' : '▼ هل تواجه مشكلة "خطأ 401 / معرّف غير موجود"؟'}</span>
-                    </button>
-
-                    <AnimatePresence>
-                      {showOAuthTroubleshoot && (
-                        <motion.div
-                          initial={{ opacity: 0, height: 0 }}
-                          animate={{ opacity: 1, height: 'auto' }}
-                          exit={{ opacity: 0, height: 0 }}
-                          className="mt-2 p-3 bg-zinc-900/60 border border-zinc-800 rounded-xl overflow-hidden text-right leading-relaxed text-[10px]"
-                        >
-                          <p className="font-bold text-neutral-200 mb-1.5 text-[10.5px] text-red-400">
-                            🔍 سبب ظهور خطأ (invalid_client: 401):
-                          </p>
-                          <p className="text-neutral-400 mb-2">
-                            حدث هذا لأن حساب Google المطلوب للدخول (OAuth Client) غير معرّف أو غير مفعّل في منصة Firebase الخاصة بالتطبيق في حسابك. لحل هذه المشكلة كمالك، يرجى اتباع الخطوات:
-                          </p>
-                          
-                          <ol className="list-decimal list-inside space-y-2 text-neutral-300">
-                            <li>
-                              <strong className="text-white">تفعيل تسجيل Google في Firebase:</strong>
-                              <p className="text-neutral-400 mr-3.5 mt-0.5">
-                                اذهب لـ <a href="https://console.firebase.google.com/project/gen-lang-client-0027450047/authentication/providers" target="_blank" rel="noopener noreferrer" className="text-[#FF1744] hover:underline inline-flex items-center gap-0.5">Firebase Console <ExternalLink size={8} /></a> ➔ <strong className="text-zinc-300 font-normal">Authentication</strong> ➔ <strong className="text-zinc-300 font-normal">Sign-in method</strong>.
-                              </p>
-                              <p className="text-neutral-400 mr-3.5 mt-0.5">
-                                انقر على "إضافة موفر جديد" واختر <strong className="text-zinc-200">Google</strong>، ثم قم بتفعيله وحفظه.
-                              </p>
-                            </li>
-                            
-                            <li>
-                              <strong className="text-white">نسخ معرّف الويب (Web Client ID):</strong>
-                              <p className="text-neutral-400 mr-3.5 mt-0.5">
-                                ستجد في نفس صفحة تفعيل Google جزءاً باسم <strong className="text-zinc-300 font-normal">Web SDK Configuration</strong>، انسخ المعرّف الموجود هناك.
-                              </p>
-                            </li>
-
-                            <li>
-                              <strong className="text-white">إعداد معرّف العميل في AI Studio:</strong>
-                              <p className="text-neutral-400 mr-3.5 mt-0.5">
-                                اذهب إلى إعدادات التطبيق في <strong className="text-zinc-200">AI Studio</strong> ➔ <strong className="text-zinc-200">Settings</strong> ➔ <strong className="text-zinc-200">Environment Variables</strong>.
-                              </p>
-                              <p className="text-neutral-300 mr-3.5 font-mono bg-zinc-950 p-1 rounded border border-zinc-800 mt-1 select-all text-[9.5px]">
-                                VITE_GOOGLE_CLIENT_ID = [معرّف_الويب_الذي_نسخته]
-                              </p>
-                            </li>
-
-                            <li>
-                              <strong className="text-white">اعتماد نطاق التطبيق (OAuth Whitelist):</strong>
-                              <p className="text-neutral-400 mr-3.5 mt-0.5">
-                                اذهب إلى <a href="https://console.cloud.google.com/apis/credentials?project=gen-lang-client-0027450047" target="_blank" rel="noopener noreferrer" className="text-[#FF1744] hover:underline inline-flex items-center gap-0.5">Google Cloud Credentials <ExternalLink size={8} /></a>.
-                              </p>
-                              <p className="text-neutral-400 mr-3.5 mt-0.5">
-                                اختر معرّف عميل الويب الخاص بك وتأكد من إدراج نطاقات التطبيق الحالية (URLs) بداخل خانة <strong className="text-zinc-300 font-normal">Authorized JavaScript Origins</strong> لتقبل المصادقة بنجاح.
-                              </p>
-                            </li>
-                          </ol>
-                          <p className="text-emerald-400 mt-2 font-bold text-[9.5px] border-t border-zinc-800 pt-1.5">
-                            💡 نصيحة: يمكنك أيضاً تسجيل مستخدم جديد بالبريد وكلمة السر لتجاوز ذلك فوراً وبدء التصفح!
-                          </p>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
                 </>
               )}
 

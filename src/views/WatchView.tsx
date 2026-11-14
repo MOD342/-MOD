@@ -14,12 +14,19 @@ import {
   Trash2, 
   Send, 
   Loader2, 
-  Lock 
+  Lock,
+  ExternalLink,
+  RefreshCw,
+  Copy,
+  Check,
+  AlertCircle,
+  Sparkles,
+  ShieldCheck,
+  Shield
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { isStaffEmail } from '../services/moderationService';
 import { recordEpisodeWatch } from '../services/gamificationService';
-import CustomVideoPlayer from '../components/CustomVideoPlayer';
 import { db } from '../firebase';
 import { 
   collection, 
@@ -46,14 +53,22 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
   const [episode, setEpisode] = useState(initialEpisode);
   const [activeTab, setActiveTab] = useState<'servers' | 'episodes' | 'comments'>('servers');
   const [serverSubTab, setServerSubTab] = useState<'watch' | 'download'>('watch');
-  const [useAdBlocker, setUseAdBlocker] = useState(true);
   const [servers, setServers] = useState<any[]>([]);
   const [activeServerUrl, setActiveServerUrl] = useState<string | null>(null);
   const [loadingServers, setLoadingServers] = useState(false);
-  const [extractedUrl, setExtractedUrl] = useState<string | null>(null);
-  const [extractedType, setExtractedType] = useState<'direct' | 'hls' | 'iframe'>('iframe');
-  const [extractedSources, setExtractedSources] = useState<any[]>([]);
-  const [extracting, setExtracting] = useState(false);
+  const [hasPlaybackError, setHasPlaybackError] = useState(false);
+  const [strictAdShield, setStrictAdShield] = useState(false);
+  const [copiedDownloadUrl, setCopiedDownloadUrl] = useState<string | null>(null);
+  const [downloadingKey, setDownloadingKey] = useState<string | null>(null);
+  const [downloadFeedback, setDownloadFeedback] = useState<{
+    type: 'error' | 'success';
+    text: string;
+    actionUrl?: string;
+    actionLabel?: string;
+  } | null>(null);
+  const activeBlobUrlRef = React.useRef<string | null>(null);
+  const [launchingExternal, setLaunchingExternal] = useState<'player' | 'adm' | null>(null);
+  const [externalFeedback, setExternalFeedback] = useState<string | null>(null);
   const { user, userData, userRole } = useAuth();
   const MIN_COMMENT_LEVEL = 5;
   const userLevel = userData?.level || 1;
@@ -102,7 +117,7 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
     if (episode) {
       window.scrollTo({ top: 0, behavior: 'smooth' });
       const activeSeasonNumber = episode?.seasonNumber || watchSeasonNum || 1;
-      const serversCacheKey = `servers_v9_${anime?._id || 'unknown'}_s_${activeSeasonNumber}_ep_${episode?.num || episode?.id || '1'}`;
+      const serversCacheKey = `servers_v11_${anime?._id || 'unknown'}_s_${activeSeasonNumber}_ep_${episode?.num || episode?.id || '1'}`;
       const cachedServers = clientCache.get<any[]>(serversCacheKey);
       
       if (cachedServers && Array.isArray(cachedServers) && cachedServers.length > 0 && cachedServers.some((s: any) => s.category === 'download')) {
@@ -115,10 +130,6 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
         setServers([]);
         setActiveServerUrl(null);
       }
-
-      setExtractedUrl(null);
-      setExtractedSources([]);
-      setExtracting(false);
       
       fetch('/api/anime/servers', {
         method: 'POST',
@@ -240,83 +251,403 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
     return 'HD';
   };
 
-  const handleServerSelect = async (url: string) => {
+  // درع حجب النوافذ المنبثقة والإعلانات (AdGuard DNS Ad-Blocking & Popup Shield)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const originalOpen = window.open;
+    const AD_BLOCK_KEYWORDS = [
+      'pop', 'adserver', 'ads.', '/ads', 'click', 'traffic', 'bet', 'casino',
+      'bonus', 'cash', 'doubleclick', 'googlesyndication', 'propeller', 'exoclick',
+      'adsterra', 'monetag', 'hilltopads', 'juicyads', 'onclick', 'acscdn',
+      'adtng', 'cuty.io', 'ouo.io', 'exe.io', 'clk.sh', 'linkvertise', 'shorte.st',
+      'adf.ly', 'bc.vc', 'shrink', 'redirect', 'tracker', 'telemetry'
+    ];
+
+    window.open = function(url?: string | URL, target?: string, features?: string) {
+      const urlStr = String(url || '').toLowerCase();
+      if (!urlStr || urlStr === 'about:blank' || AD_BLOCK_KEYWORDS.some(k => urlStr.includes(k))) {
+        console.warn('🛡️ تم حظر نافذة/إعلان منبثق عبر درع DNS لحجب الإعلانات:', urlStr);
+        return null;
+      }
+      return originalOpen.call(window, url, target, features);
+    };
+
+    return () => {
+      window.open = originalOpen;
+      if (activeBlobUrlRef.current) {
+        try { URL.revokeObjectURL(activeBlobUrlRef.current); } catch (_) {}
+        activeBlobUrlRef.current = null;
+      }
+    };
+  }, []);
+
+  const handleServerSelect = (url: string) => {
     setActiveServerUrl(url);
-    setExtractedUrl(null);
-    setExtractedSources([]);
+    setHasPlaybackError(false);
+  };
 
-    const lowerUrl = (url || '').toLowerCase();
+  // دالة التبديل التلقائي إلى السيرفر التالي عند تعطل السيرفر الحالي
+  const handleNextServerFailover = () => {
+    const watchList = servers.filter(s => s.category !== 'download');
+    if (watchList.length <= 1) return;
+    const currentIdx = watchList.findIndex(s => s.url === activeServerUrl);
+    const nextIdx = (currentIdx + 1) % watchList.length;
+    const nextServer = watchList[nextIdx];
+    if (nextServer) {
+      handleServerSelect(nextServer.url);
+    }
+  };
 
-    // 1. فحص الروابط المباشرة (.mp4 / .m3u8) لتعمل فوراً على مشغل التطبيق الداخلي
-    const isDirectURL =
-      lowerUrl.split('?')[0].endsWith('.mp4') ||
-      lowerUrl.split('?')[0].endsWith('.m3u8') ||
-      lowerUrl.includes('manifest.m3u8');
+  // فتح السيرفر في نافذة أو متصفح خارجي (مفيد جداً للهواتف وأجهزة أندرويد)
+  const handleOpenExternal = () => {
+    if (activeServerUrl) {
+      window.open(activeServerUrl, '_blank', 'noopener,noreferrer');
+    }
+  };
 
-    if (isDirectURL) {
-      const isM3u8 = lowerUrl.includes('.m3u8');
-      setExtractedUrl(url);
-      setExtractedType(isM3u8 ? 'hls' : 'direct');
-      setExtractedSources([{ file: url, label: 'FHD', type: isM3u8 ? 'hls' : 'mp4' }]);
-      setExtracting(false);
-      return;
+  const handleCopyLink = (url: string) => {
+    if (navigator?.clipboard?.writeText) {
+      navigator.clipboard.writeText(url).then(() => {
+        setCopiedServerUrl(url);
+        setTimeout(() => setCopiedServerUrl(null), 2000);
+      }).catch(() => {});
+    }
+  };
+
+  const triggerHiddenAnchor = (hrefUrl: string, downloadName?: string) => {
+    const a = document.createElement('a');
+    a.href = hrefUrl;
+    if (downloadName) a.download = downloadName;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  const downloadViaAuthenticatedFetch = async (
+    downloadUrl: string,
+    filename: string,
+    expectedSizeBytes?: number | null,
+  ) => {
+    setDownloadFeedback({
+      type: 'success',
+      text: 'جاري بدء سحب ملف الفيديو...',
+    });
+
+    const resp = await fetch(downloadUrl, { credentials: 'include' });
+    const ct = (resp.headers.get('content-type') || '').toLowerCase();
+    if (!resp.ok || ct.includes('text/html') || !resp.body) {
+      throw new Error('استجاب الخادم بملف غير صالح للتحميل.');
     }
 
-    // 2. السيرفرات النظيفة الخالية من الإعلانات والـ Sandbox Wall (Mega, Videa, Google Drive, Ok.ru, Dailymotion, Mail.ru, VK)
-    // تعمل فوراً كـ Embed نظيف مع قفل النوافذ المنبثقة، بينما السيرفرات التي تحتوي على Sandboxed embed أو إعلانات (Streamwish, CloudStream, Uqload, Vidmoly, Sendvid, 4Shared, MP4Upload, YourUpload) يتم سحب البث الخام منها وتشغيله على مشغل التطبيق الداخلي بلا أي إعلان
-    const isCleanNativeIframeHost =
-      lowerUrl.includes('mega.nz') ||
-      lowerUrl.includes('videa.hu') ||
-      lowerUrl.includes('drive.google.com') ||
-      lowerUrl.includes('ok.ru/videoembed') ||
-      lowerUrl.includes('dailymotion.com/embed') ||
-      lowerUrl.includes('my.mail.ru') ||
-      lowerUrl.includes('vk.com/video_ext');
+    const totalBytes = Number(resp.headers.get('content-length') || expectedSizeBytes || 0);
+    const reader = resp.body.getReader();
 
-    if (isCleanNativeIframeHost) {
-      setExtractedUrl(url);
-      setExtractedType('iframe');
-      setExtractedSources([{ file: url, label: 'FHD', type: 'iframe' }]);
-      setExtracting(false);
-      return;
+    const formatProgress = (loaded: number) => {
+      const loadedMb = (loaded / (1024 * 1024)).toFixed(1);
+      if (totalBytes > 0) {
+        const totalMb = (totalBytes / (1024 * 1024)).toFixed(1);
+        const pct = Math.min(99, Math.round((loaded / totalBytes) * 100));
+        return `جاري التنزيل: ${pct}% (${loadedMb} / ${totalMb} MB)...`;
+      }
+      return `جاري التنزيل: ${loadedMb} MB...`;
+    };
+
+    // استخدام File System Access API إن توفر لحفظ الملف مباشرة على القرص بدون استهلاك الذاكرة
+    if (typeof (window as any).showSaveFilePicker === 'function') {
+      try {
+        const handle = await (window as any).showSaveFilePicker({
+          suggestedName: filename,
+          types: [{ description: 'MP4 Video', accept: { 'video/mp4': ['.mp4'] } }],
+        });
+        const writable = await handle.createWritable();
+        let loaded = 0;
+        let lastUiUpdate = 0;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          await writable.write(value);
+          loaded += value.byteLength;
+          const now = Date.now();
+          if (now - lastUiUpdate > 350) {
+            lastUiUpdate = now;
+            setDownloadFeedback({ type: 'success', text: formatProgress(loaded) });
+          }
+        }
+        await writable.close();
+        setDownloadFeedback({ type: 'success', text: `تم حفظ الحلقة بنجاح: ${filename}` });
+        setTimeout(() => setDownloadFeedback(null), 6000);
+        return;
+      } catch (pickerErr: any) {
+        if (pickerErr?.name === 'AbortError') {
+          try { await reader.cancel(); } catch (_) {}
+          setDownloadFeedback(null);
+          return;
+        }
+        // Fallback to Blob if showSaveFilePicker is blocked inside iframe
+      }
     }
 
-    // 3. استخراج رابط البث المباشر (HLS / MP4) لتجاوز رسالة Sandboxed embed is not allowed وإزالة الإعلانات المنبثقة نهائياً
-    setExtracting(true);
+    const chunks: BlobPart[] = [];
+    let loaded = 0;
+    let lastUiUpdate = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      loaded += value.byteLength;
+      const now = Date.now();
+      if (now - lastUiUpdate > 350) {
+        lastUiUpdate = now;
+        setDownloadFeedback({ type: 'success', text: formatProgress(loaded) });
+      }
+    }
+
+    if (activeBlobUrlRef.current) {
+      try { URL.revokeObjectURL(activeBlobUrlRef.current); } catch (_) {}
+      activeBlobUrlRef.current = null;
+    }
+
+    const blob = new Blob(chunks, { type: ct.startsWith('video/') ? ct : 'video/mp4' });
+    const blobUrl = URL.createObjectURL(blob);
+    activeBlobUrlRef.current = blobUrl;
+    triggerHiddenAnchor(blobUrl, filename);
+
+    const finalMb = (loaded / (1024 * 1024)).toFixed(1);
+    setDownloadFeedback({
+      type: 'success',
+      text: `اكتمل التجهيز (${finalMb} MB): ${filename}`,
+      actionUrl: blobUrl,
+      actionLabel: `حفظ الملف الآن (${finalMb} MB)`,
+    });
+  };
+
+  const handleDirectDownload = async (primaryUrl: string, keyId: string) => {
+    if (downloadingKey) return;
+    setDownloadingKey(keyId);
+    setDownloadFeedback(null);
+
     try {
-      const res = await fetch('/api/anime/extract', {
+      const candidateUrls = Array.from(
+        new Set([
+          primaryUrl,
+          ...servers.filter((s) => s.category === 'download').map((s) => s.url),
+          ...servers.filter((s) => s.category !== 'download').map((s) => s.url),
+        ])
+      ).filter(Boolean);
+
+      const isAndroid = /Android/i.test(navigator.userAgent);
+      const isInIframe = typeof window !== 'undefined' && window.self !== window.top;
+      const isLocalNativeOrigin =
+        window.location.protocol === 'capacitor:' ||
+        window.location.protocol === 'file:' ||
+        (window.location.hostname === 'localhost' && !window.location.port);
+      const isRestrictedPreviewContext = isInIframe || isLocalNativeOrigin;
+
+      const resp = await fetch('/api/anime/resolve-download', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url })
+        body: JSON.stringify({
+          url: primaryUrl,
+          fallbackUrls: candidateUrls,
+          title: anime?.englishTitle || anime?.title || 'Anime',
+          ep: episode?.num || 1,
+          preferExternal: isAndroid && primaryUrl.includes('/api/anime/download'),
+        }),
       });
-      const json = await res.json();
-      if (
-        json.success &&
-        json.data?.directUrl &&
-        !String(json.data.directUrl).includes('commondatastorage.googleapis.com')
-      ) {
-        const resolvedStream = json.data.directUrl;
-        const resolvedType: 'direct' | 'hls' | 'iframe' =
-          json.data.type === 'hls'
-            ? 'hls'
-            : json.data.type === 'direct'
-            ? 'direct'
-            : 'iframe';
-        const resolvedSources = Array.isArray(json.data.sources) ? json.data.sources : [];
-        setExtractedUrl(resolvedStream);
-        setExtractedType(resolvedType);
-        setExtractedSources(resolvedSources);
-      } else {
-        setExtractedUrl(url);
-        setExtractedType('iframe');
-        setExtractedSources([{ file: url, label: 'FHD', type: 'iframe' }]);
+
+      const data = await resp.json();
+      if (!data?.success || !data?.downloadUrl) {
+        setDownloadFeedback({
+          type: 'error',
+          text: data?.message || 'لم يتم العثور على رابط MP4 مباشر لهذه الحلقة حالياً، جرب سيرفراً آخر.',
+        });
+        return;
       }
-    } catch (e) {
-      setExtractedUrl(url);
-      setExtractedType('iframe');
-      setExtractedSources([{ file: url, label: 'FHD', type: 'iframe' }]);
+
+      const filename = data.filename || `Anime-Ep-${episode?.num || 1}.mp4`;
+
+      // 1. خارج الإطارات المقيدة والأصل المحلي، يبدأ التنزيل المباشر للمتصفح فوراً
+      if (!isRestrictedPreviewContext) {
+        triggerHiddenAnchor(data.downloadUrl, filename);
+        setDownloadFeedback({
+          type: 'success',
+          text: `بدأ التنزيل المباشر: ${filename}`,
+          actionUrl: data.downloadUrl,
+          actionLabel: 'إعادة التنزيل',
+        });
+        return;
+      }
+
+      // 2. على أندرويد عند توفر رابط CDN مباشر نمرره مباشرة دون تخزين الملف بالذاكرة
+      if (isAndroid && data.externalDirectUrl) {
+        const directCdnUrl = data.externalDirectUrl as string;
+        const admMime = data.externalDirectMime || 'video/mp4';
+        try {
+          const parsed = new URL(directCdnUrl);
+          const scheme = parsed.protocol.replace(':', '');
+          const hostAndPath = `${parsed.host}${parsed.pathname}${parsed.search}`;
+          const intentUri = `intent://${hostAndPath}#Intent;scheme=${scheme};action=android.intent.action.VIEW;package=com.dv.adm;type=${admMime};S.title=${encodeURIComponent(filename)};S.filename=${encodeURIComponent(filename)};S.browser_fallback_url=${encodeURIComponent(directCdnUrl)};end`;
+          triggerHiddenAnchor(intentUri);
+        } catch {
+          window.open(directCdnUrl, '_blank', 'noopener,noreferrer');
+        }
+        setDownloadFeedback({
+          type: 'success',
+          text: `تم إرسال الملف المباشر للتنزيل: ${filename}`,
+          actionUrl: directCdnUrl,
+          actionLabel: 'فتح / حفظ يدوي',
+        });
+        return;
+      }
+
+      // 3. للكمبيوتر أو للسيرفرات التي تتطلب فك تشفير الخادم (مثل Mega و MP4Upload): سحب موثّق بالكوكيز مع زر حفظ فوري بعد الاكتمال
+      await downloadViaAuthenticatedFetch(data.downloadUrl, filename, data.sizeBytes);
+    } catch {
+      setDownloadFeedback({
+        type: 'error',
+        text: 'تعذر إكمال تنزيل الفيديو، حاول مجدداً أو اختر سيرفراً آخر.',
+      });
     } finally {
-      setExtracting(false);
+      setDownloadingKey(null);
+    }
+  };
+
+  const handleExternalPlayerLaunch = async () => {
+    if (launchingExternal) return;
+    setLaunchingExternal('player');
+    setExternalFeedback(null);
+
+    try {
+      const candidateUrls = Array.from(
+        new Set([
+          ...(activeServerUrl ? [activeServerUrl] : []),
+          ...servers.filter((s) => s.category !== 'download').map((s) => s.url),
+          ...servers.filter((s) => s.category === 'download').map((s) => s.url),
+        ])
+      ).filter(Boolean);
+
+      const resp = await fetch('/api/anime/resolve-play', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: activeServerUrl || candidateUrls[0],
+          fallbackUrls: candidateUrls,
+          title: anime?.englishTitle || anime?.title || 'Anime',
+          ep: episode?.num || 1,
+        }),
+      });
+
+      const data = await resp.json();
+      if (!data?.success || !data?.streamUrl) {
+        setExternalFeedback(data?.message || 'تعذر تجهيز رابط بث مباشر للمشغل الخارجي، جرب سيرفراً آخر.');
+        setTimeout(() => setExternalFeedback(null), 5000);
+        return;
+      }
+
+      const isRestrictedPreviewContext =
+        (typeof window !== 'undefined' && window.self !== window.top) ||
+        window.location.protocol === 'capacitor:' ||
+        window.location.protocol === 'file:' ||
+        (window.location.hostname === 'localhost' && !window.location.port);
+
+      if (!data.isDirectCdn && isRestrictedPreviewContext) {
+        setExternalFeedback('السيرفر المتاح لهذه الحلقة محمي ولا يدعم البث الخارجي مباشرة، استخدم زر التنزيل أو جرب سيرفراً آخر.');
+        setTimeout(() => setExternalFeedback(null), 6000);
+        return;
+      }
+
+      const fullStreamUrl = data.streamUrl.startsWith('/')
+        ? `${window.location.origin}${data.streamUrl}`
+        : data.streamUrl;
+      const mediaTitle = `${anime?.title || 'Anime'} - Ep ${episode?.num || 1}`;
+      const isAndroid = /Android/i.test(navigator.userAgent);
+
+      if (isAndroid) {
+        try {
+          const parsed = new URL(fullStreamUrl);
+          const scheme = parsed.protocol.replace(':', '');
+          const hostAndPath = `${parsed.host}${parsed.pathname}${parsed.search}`;
+          const mimeType = 'video/*';
+          const intentUri = `intent://${hostAndPath}#Intent;scheme=${scheme};action=android.intent.action.VIEW;type=${mimeType};S.title=${encodeURIComponent(mediaTitle)};S.browser_fallback_url=${encodeURIComponent(fullStreamUrl)};end`;
+          triggerHiddenAnchor(intentUri);
+        } catch {
+          triggerHiddenAnchor(fullStreamUrl);
+        }
+      } else {
+        window.open(fullStreamUrl, '_blank', 'noopener,noreferrer');
+      }
+    } catch {
+      setExternalFeedback('تعذر الاتصال بخادم البث الخارجي، حاول مجدداً.');
+      setTimeout(() => setExternalFeedback(null), 5000);
+    } finally {
+      setLaunchingExternal(null);
+    }
+  };
+
+  const handleAdmDownloadLaunch = async () => {
+    if (launchingExternal) return;
+    setLaunchingExternal('adm');
+    setExternalFeedback(null);
+
+    try {
+      const candidateUrls = Array.from(
+        new Set([
+          ...(activeServerUrl ? [activeServerUrl] : []),
+          ...servers.filter((s) => s.category === 'download').map((s) => s.url),
+          ...servers.filter((s) => s.category !== 'download').map((s) => s.url),
+        ])
+      ).filter(Boolean);
+
+      const resp = await fetch('/api/anime/resolve-download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: activeServerUrl || candidateUrls[0],
+          fallbackUrls: candidateUrls,
+          title: anime?.englishTitle || anime?.title || 'Anime',
+          ep: episode?.num || 1,
+          preferExternal: true,
+        }),
+      });
+
+      const data = await resp.json();
+      if (!data?.success || !data?.downloadUrl) {
+        setExternalFeedback(data?.message || 'لم يتم العثور على رابط MP4 مباشر لهذه الحلقة.');
+        setTimeout(() => setExternalFeedback(null), 5000);
+        return;
+      }
+
+      const isRestrictedPreviewContext =
+        (typeof window !== 'undefined' && window.self !== window.top) ||
+        window.location.protocol === 'capacitor:' ||
+        window.location.protocol === 'file:' ||
+        (window.location.hostname === 'localhost' && !window.location.port);
+      const mediaTitle = data.filename || `${anime?.title || 'Anime'}_Ep${episode?.num || 1}.mp4`;
+      const isAndroid = /Android/i.test(navigator.userAgent);
+
+      const externalTarget = data.externalDirectUrl;
+      if (isAndroid && (externalTarget || !isRestrictedPreviewContext)) {
+        const admUrl = externalTarget || `${window.location.origin}${data.downloadUrl}`;
+        const admMime = data.externalDirectMime || 'video/mp4';
+        try {
+          const parsed = new URL(admUrl);
+          const scheme = parsed.protocol.replace(':', '');
+          const hostAndPath = `${parsed.host}${parsed.pathname}${parsed.search}`;
+          const intentUri = `intent://${hostAndPath}#Intent;scheme=${scheme};action=android.intent.action.VIEW;package=com.dv.adm;type=${admMime};S.title=${encodeURIComponent(mediaTitle)};S.filename=${encodeURIComponent(mediaTitle)};S.browser_fallback_url=${encodeURIComponent(admUrl)};end`;
+          triggerHiddenAnchor(intentUri);
+          return;
+        } catch (_) {}
+      }
+
+      setActiveTab('servers');
+      setServerSubTab('download');
+      await downloadViaAuthenticatedFetch(data.downloadUrl, mediaTitle, data.sizeBytes);
+    } catch {
+      setExternalFeedback('تعذر تجهيز رابط التنزيل المباشر.');
+      setTimeout(() => setExternalFeedback(null), 5000);
+    } finally {
+      setLaunchingExternal(null);
     }
   };
 
@@ -424,44 +755,28 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
           <ChevronRight size={22} className="-translate-x-0.5" />
         </button>
         
-        {/* Actual Player: Always uses App CustomVideoPlayer */}
+        {/* Actual Player: Direct iframe with DNS Ad-Block Shield */}
         <div className="absolute inset-0 flex items-center justify-center bg-neutral-950">
-          {loadingServers || extracting ? (
+          {loadingServers ? (
               <div className="flex flex-col items-center gap-3">
                  <div className="w-12 h-12 rounded-full border-2 border-purple-500 border-t-transparent animate-spin"/>
-                 <span className="text-sm font-bold text-neutral-400">{extracting ? 'جاري تجهيز البث المباشر على مشغل التطبيق...' : 'جاري جلب السيرفرات...'}</span>
+                 <span className="text-sm font-bold text-neutral-400">جاري الاتصال بالسيرفر عبر درع حجب الإعلانات...</span>
               </div>
-          ) : (extractedUrl || activeServerUrl) ? (
-            extractedType === 'iframe' ? (
-              <div className="w-full h-full relative bg-black">
-                <iframe
-                  key={extractedUrl || activeServerUrl}
-                  src={extractedUrl || activeServerUrl || ''}
-                  title={episode?.title || `الحلقة ${episode?.num}`}
-                  className="w-full h-full border-0"
-                  sandbox="allow-scripts allow-same-origin allow-forms allow-presentation"
-                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
-                  allowFullScreen
-                  referrerPolicy="origin"
-                />
-              </div>
-            ) : (
-              <CustomVideoPlayer 
-                url={extractedUrl || activeServerUrl || ''} 
-                type={extractedType === 'hls' ? 'hls' : 'direct'}
-                sources={extractedSources}
-                poster={anime?.posterUrl}
-                episodeTitle={episode?.title || `الحلقة ${episode?.num}`}
-                onFallback={() => setExtractedType('iframe')}
-                hasNextEpisode={!!nextEpisode}
-                onNextEpisode={() => {
-                  if (nextEpisode) {
-                    setEpisode(nextEpisode);
-                    if (onEpisodeSelect) onEpisodeSelect(nextEpisode);
-                  }
-                }}
+          ) : activeServerUrl ? (
+            <div className="w-full h-full relative bg-black">
+              <iframe
+                key={`${activeServerUrl}_${strictAdShield ? 'strict' : 'standard'}`}
+                src={activeServerUrl}
+                title={episode?.title || `الحلقة ${episode?.num}`}
+                className="w-full h-full border-0"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
+                allowFullScreen
+                referrerPolicy="no-referrer"
+                {...(strictAdShield
+                  ? { sandbox: 'allow-scripts allow-same-origin allow-forms allow-presentation' }
+                  : {})}
               />
-            )
+            </div>
           ) : (
             <div className="text-center">
               <div className="w-16 h-16 mx-auto rounded-full bg-neutral-900/80 backdrop-blur-md border border-neutral-800 flex items-center justify-center mb-4 transition-all duration-300">
@@ -475,6 +790,84 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
 
       {/* Info & Controls */}
       <div className="p-4 flex-1 overflow-y-auto pb-24 transition-all duration-500">
+
+        {/* Failover Alert Banner if server has an issue */}
+        {hasPlaybackError && (
+          <div className="mb-4 p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between gap-3 text-amber-200">
+            <div className="flex items-center gap-2 text-xs font-bold min-w-0">
+              <AlertCircle size={18} className="text-amber-400 shrink-0" />
+              <span className="truncate">السيرفر واجه اعتراضاً أو إعلانات، اضغط للتبديل لسيرفر آخر فورا</span>
+            </div>
+            <button
+              type="button"
+              onClick={handleNextServerFailover}
+              className="px-3 py-1.5 rounded-xl bg-amber-500 text-black font-black text-xs shrink-0 hover:bg-amber-400 transition cursor-pointer flex items-center gap-1.5 shadow-md shadow-amber-500/20"
+            >
+              <RefreshCw size={14} />
+              <span>سيرفر بديل</span>
+            </button>
+          </div>
+        )}
+
+        {/* DNS Ad-Block Active Badge & Player Controls Toolbar */}
+        {activeServerUrl && (
+          <div className="flex flex-wrap items-center justify-between gap-2.5 mb-5 p-2.5 rounded-2xl bg-neutral-900/60 border border-neutral-800/80 backdrop-blur-sm">
+            {/* DNS Protection Status Badge & Strict Shield Toggle */}
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 text-xs font-bold">
+                <ShieldCheck size={16} className="text-emerald-400 shrink-0" />
+                <span>AdGuard DNS (94.140.14.14) لحجب الإعلانات</span>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setStrictAdShield(prev => !prev)}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition border cursor-pointer ${
+                  strictAdShield
+                    ? 'bg-emerald-600/20 border-emerald-500/50 text-emerald-300'
+                    : 'bg-neutral-800 hover:bg-neutral-700 border-neutral-700/60 text-neutral-300'
+                }`}
+                title="تفعيل أو إيقاف منع النوافذ المنبثقة المشدد داخل المشغل"
+              >
+                <Shield size={14} className={strictAdShield ? 'text-emerald-400' : 'text-neutral-400'} />
+                <span>{strictAdShield ? 'حظر النوافذ: مشدد' : 'حظر النوافذ: قياسي'}</span>
+              </button>
+            </div>
+
+            {/* Actions: External open, Next server, Copy link */}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleOpenExternal}
+                className="px-3 py-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-bold flex items-center gap-1.5 transition border border-neutral-700/60 cursor-pointer"
+                title="فتح السيرفر في متصفح خارجي أو مشغل الهاتف"
+              >
+                <ExternalLink size={14} className="text-blue-400" />
+                <span>فتح خارجي</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleNextServerFailover}
+                className="px-3 py-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-bold flex items-center gap-1.5 transition border border-neutral-700/60 cursor-pointer"
+                title="الانتقال إلى السيرفر البديل التالي"
+              >
+                <RefreshCw size={14} className="text-purple-400" />
+                <span>سيرفر آخر</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleCopyLink(activeServerUrl)}
+                className="px-3 py-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-xs font-bold flex items-center gap-1.5 transition border border-neutral-700/50 cursor-pointer"
+                title="نسخ رابط السيرفر المباشر"
+              >
+                {copiedServerUrl ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
+                <span>{copiedServerUrl ? 'تم النسخ!' : 'نسخ الرابط'}</span>
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
           <div>
@@ -517,14 +910,27 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
           </div>
         </div>
 
-        {(extractedUrl || activeServerUrl) && (
-           <div className="grid grid-cols-3 gap-2 mb-6">
-              <a 
-                href={`intent:${extractedUrl || activeServerUrl}#Intent;package=com.mxtech.videoplayer.ad;S.title=${encodeURIComponent(`${anime?.title || 'Anime'}_Ep${episode?.num || 1}`)};end`}
-                className="bg-[#1a4b9c] rounded-xl p-3 flex items-center justify-center gap-1.5 text-white text-xs font-bold shadow-lg hover:bg-[#133878] transition"
+        {activeServerUrl && (
+          <div className="mb-6 space-y-2">
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                type="button"
+                disabled={Boolean(launchingExternal)}
+                onClick={handleExternalPlayerLaunch}
+                className="bg-[#1a4b9c] rounded-xl p-3 flex items-center justify-center gap-1.5 text-white text-xs font-bold shadow-lg hover:bg-[#133878] disabled:opacity-60 transition cursor-pointer"
               >
-                 <Play size={15} /> MX Player
-              </a>
+                {launchingExternal === 'player' ? (
+                  <>
+                    <Loader2 size={15} className="animate-spin" />
+                    <span>جاري التحويل...</span>
+                  </>
+                ) : (
+                  <>
+                    <Play size={15} />
+                    <span>مشغل خارجي</span>
+                  </>
+                )}
+              </button>
               <button 
                 type="button"
                 onClick={() => {
@@ -538,13 +944,33 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
               >
                  <Tv size={15} /> صفحة الأنمي
               </button>
-              <a 
-                href={`intent:${extractedUrl || activeServerUrl}#Intent;package=com.dv.adm;S.title=${encodeURIComponent(`${anime?.title || 'Anime'}_Ep${episode?.num || 1}`)};end`}
-                className="bg-[#d84e20] rounded-xl p-3 flex items-center justify-center gap-1.5 text-white text-xs font-bold shadow-lg hover:bg-[#b03d17] transition"
+              <button
+                type="button"
+                disabled={Boolean(launchingExternal)}
+                onClick={handleAdmDownloadLaunch}
+                className="bg-[#d84e20] rounded-xl p-3 flex items-center justify-center gap-1.5 text-white text-xs font-bold shadow-lg hover:bg-[#b03d17] disabled:opacity-60 transition cursor-pointer"
               >
-                 <Download size={15} /> ADM
-              </a>
-           </div>
+                {launchingExternal === 'adm' ? (
+                  <>
+                    <Loader2 size={15} className="animate-spin" />
+                    <span>جاري التجهيز...</span>
+                  </>
+                ) : (
+                  <>
+                    <Download size={15} />
+                    <span>ADM</span>
+                  </>
+                )}
+              </button>
+            </div>
+
+            {externalFeedback && (
+              <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs font-bold flex items-center gap-2">
+                <AlertCircle size={14} className="shrink-0" />
+                <span>{externalFeedback}</span>
+              </div>
+            )}
+          </div>
         )}
 
         {/* Tabs */}
@@ -822,42 +1248,136 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
                 }
 
                 return (
-                  <div className="grid grid-cols-2 gap-3">
-                    {displayList.map((s, i) => {
-                      const isActive = activeServerUrl === s.url && serverSubTab === 'watch';
-                      const mainName = getCleanServerMainName(s.serverName, s.url, i);
-                      const cleanQuality = getCleanQualityLabel(s.quality);
-
-                      let qualityBadgeColor = 'bg-amber-500/15 text-amber-400 border border-amber-500/30';
-                      if (cleanQuality === 'FHD') {
-                        qualityBadgeColor = 'bg-red-500/15 text-red-400 border border-red-500/30';
-                      } else if (cleanQuality === 'SD') {
-                        qualityBadgeColor = 'bg-blue-500/15 text-blue-400 border border-blue-500/30';
-                      }
-
-                      if (serverSubTab === 'download') {
-                        return (
+                  <div className="space-y-3">
+                    {serverSubTab === 'download' && downloadFeedback && (
+                      <div
+                        className={`p-3 rounded-xl text-xs font-bold flex flex-wrap items-center justify-between gap-2 border ${
+                          downloadFeedback.type === 'success'
+                            ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                            : 'bg-amber-500/10 border-amber-500/30 text-amber-300'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          {downloadFeedback.type === 'success' ? (
+                            <Check size={15} className="shrink-0" />
+                          ) : (
+                            <AlertCircle size={15} className="shrink-0" />
+                          )}
+                          <span>{downloadFeedback.text}</span>
+                        </div>
+                        {downloadFeedback.actionUrl && (
                           <a
-                            key={i}
-                            href={s.url}
-                            target="_blank"
+                            href={downloadFeedback.actionUrl}
+                            download={
+                              downloadFeedback.actionUrl.startsWith('blob:') || downloadFeedback.actionUrl.startsWith('/')
+                                ? `${anime?.englishTitle || anime?.title || 'Anime'}-Ep-${episode?.num || 1}.mp4`
+                                : undefined
+                            }
+                            target={downloadFeedback.actionUrl.startsWith('http') ? '_blank' : undefined}
                             rel="noopener noreferrer"
-                            className="w-full relative overflow-hidden rounded-xl p-3.5 flex items-center justify-between group transition-all duration-300 border bg-[#0f0f0f] border-neutral-800/80 hover:bg-[#151515] hover:border-indigo-500/60 cursor-pointer"
+                            className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-black shrink-0 transition"
                           >
-                            <div className="flex items-center gap-2.5 min-w-0">
-                              <div className="p-2 rounded-lg transition-colors bg-neutral-800 text-indigo-400 group-hover:bg-indigo-600 group-hover:text-white shrink-0">
-                                <Download size={16} />
-                              </div>
-                              <span className="font-black text-xs sm:text-sm text-neutral-200 group-hover:text-white truncate">
-                                {mainName}
-                              </span>
-                            </div>
-                            <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-md shrink-0 ${qualityBadgeColor}`}>
-                              {cleanQuality}
-                            </span>
+                            {downloadFeedback.actionLabel || 'حفظ الملف'}
                           </a>
-                        );
-                      }
+                        )}
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-2 gap-3">
+                      {displayList.map((s, i) => {
+                        const isActive = activeServerUrl === s.url && serverSubTab === 'watch';
+                        const mainName = getCleanServerMainName(s.serverName, s.url, i);
+                        const cleanQuality = getCleanQualityLabel(s.quality);
+
+                        let qualityBadgeColor = 'bg-amber-500/15 text-amber-400 border border-amber-500/30';
+                        if (cleanQuality === 'FHD') {
+                          qualityBadgeColor = 'bg-red-500/15 text-red-400 border border-red-500/30';
+                        } else if (cleanQuality === 'SD') {
+                          qualityBadgeColor = 'bg-blue-500/15 text-blue-400 border border-blue-500/30';
+                        }
+
+                        if (serverSubTab === 'download') {
+                          const isModFast = s.url.startsWith('/api/anime/download') || s.serverName.includes('MOD Fast');
+                          const keyId = `dl_${i}_${s.url}`;
+                          const isThisDownloading = downloadingKey === keyId;
+                          return (
+                            <div
+                              key={i}
+                              className={`w-full relative overflow-hidden rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 group transition-all duration-300 border ${
+                                isModFast
+                                  ? 'col-span-2 bg-gradient-to-r from-indigo-950/40 via-purple-950/30 to-[#0f0f0f] border-indigo-500/40 shadow-lg shadow-indigo-950/20'
+                                  : 'bg-[#0f0f0f] border-neutral-800/80 hover:bg-[#151515] hover:border-indigo-500/50'
+                              }`}
+                            >
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <div className={`p-2.5 rounded-xl transition-colors shrink-0 ${
+                                  isModFast
+                                    ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                                    : 'bg-neutral-800 text-indigo-400 group-hover:bg-indigo-600 group-hover:text-white'
+                                }`}>
+                                  <Download size={18} />
+                                </div>
+                                <div className="flex flex-col min-w-0">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="font-black text-xs sm:text-sm text-neutral-100 group-hover:text-white truncate">
+                                      {isModFast ? 'تحميل مباشر فائق السرعة (MOD Fast)' : mainName}
+                                    </span>
+                                    {isModFast && (
+                                      <span className="bg-amber-500/20 text-amber-300 text-[9px] font-black px-1.5 py-0.5 rounded border border-amber-500/30">
+                                        موصى به
+                                      </span>
+                                    )}
+                                  </div>
+                                  <span className="text-[10px] text-neutral-400">
+                                    {isModFast ? 'تنزيل ملف فيديو MP4 مباشرة لجهازك بنقرة واحدة' : 'تنزيل مباشر بصيغة MP4'}
+                                  </span>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
+                                <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-md ${qualityBadgeColor}`}>
+                                  {cleanQuality}
+                                </span>
+
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const fullUrl = s.url.startsWith('/') ? `${window.location.origin}${s.url}` : s.url;
+                                    if (navigator?.clipboard?.writeText) {
+                                      navigator.clipboard.writeText(fullUrl).then(() => {
+                                        setCopiedDownloadUrl(s.url);
+                                        setTimeout(() => setCopiedDownloadUrl(null), 2000);
+                                      }).catch(() => {});
+                                    }
+                                  }}
+                                  className="p-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-300 transition border border-neutral-700/50 cursor-pointer"
+                                  title="نسخ الرابط"
+                                >
+                                  {copiedDownloadUrl === s.url ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
+                                </button>
+
+                                <button
+                                  type="button"
+                                  disabled={Boolean(downloadingKey)}
+                                  onClick={() => handleDirectDownload(s.url, keyId)}
+                                  className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white font-black text-xs transition shadow-md shadow-indigo-600/20 flex items-center gap-1.5 cursor-pointer"
+                                >
+                                  {isThisDownloading ? (
+                                    <>
+                                      <Loader2 size={14} className="animate-spin" />
+                                      <span>جاري التجهيز...</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Download size={14} />
+                                      <span>تنزيل</span>
+                                    </>
+                                  )}
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        }
 
                       return (
                         <button
@@ -890,6 +1410,7 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
                         </button>
                       );
                     })}
+                    </div>
                   </div>
                 );
               })()}

@@ -53,6 +53,10 @@ export const notificationsService = {
   },
 
   getUserNotifications: async (userId: string): Promise<AppNotification[]> => {
+    if (!auth.currentUser || auth.currentUser.uid !== userId) {
+      return [];
+    }
+
     const now = Date.now();
     const cached = userNotifsCache.get(userId);
     if (cached && now < cached.expireAt) {
@@ -84,6 +88,7 @@ export const notificationsService = {
   },
 
   markAsRead: async (userId: string, notifId: string): Promise<void> => {
+    if (!auth.currentUser || auth.currentUser.uid !== userId) return;
     try {
       await updateDoc(doc(db, 'users', userId, 'notifications', notifId), {
         read: true
@@ -96,16 +101,18 @@ export const notificationsService = {
   },
 
   deleteUserNotification: async (userId: string, notifId: string): Promise<void> => {
+    if (!auth.currentUser || auth.currentUser.uid !== userId) return;
     try {
       await deleteDoc(doc(db, 'users', userId, 'notifications', notifId));
       // Invalidate user notifications cache
       userNotifsCache.delete(userId);
-    } catch (err) {
+    } catch(err) {
       console.error(err);
     }
   },
 
   clearAllUserNotifications: async (userId: string): Promise<void> => {
+    if (!auth.currentUser || auth.currentUser.uid !== userId) return;
     try {
       const q = query(collection(db, 'users', userId, 'notifications'));
       const snap = await getDocs(q);

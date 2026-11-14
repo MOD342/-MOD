@@ -1,11 +1,18 @@
 import express, { Request, Response, NextFunction } from 'express';
 import compression from 'compression';
+import dns from 'dns';
 import path from 'path';
 import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 import apiRoutes from './src/api/index';
-import { connectDB } from './src/config/database';
 import { schedulerService } from './src/services/schedulerService';
+
+// توجيه استعلامات السيرفر عبر DNS حجب الإعلانات (AdGuard DNS)
+try {
+  dns.setServers(['94.140.14.14', '94.140.15.15', '1.1.1.1']);
+} catch (dnsErr) {
+  console.warn('DNS override skipped:', dnsErr);
+}
 
 async function startServer() {
   const app = express();
@@ -15,9 +22,20 @@ async function startServer() {
   const portFromArg = portArgIndex !== -1 && process.argv[portArgIndex + 1] ? parseInt(process.argv[portArgIndex + 1], 10) : null;
   const PORT = portFromArg || (process.env.PORT ? parseInt(process.env.PORT, 10) : 3000);
   
-  // إعدادات الضغط المتقدمة لتحسين استهلاك البيانات وزيادة سرعة الإرسال بنسبة 60%
+  // إعدادات الضغط المتقدمة (مع استثناء مسارات بث وتحميل الفيديو المباشر لمنع تقطيع الـ Range)
   app.use(compression({
-    threshold: 512, // ضغط أي استجابة أكبر من 512 بايت
+    threshold: 512,
+    filter: (req, res) => {
+      if (
+        req.path.includes('download-stream') ||
+        req.path.includes('play-stream') ||
+        req.path.includes('stream-proxy') ||
+        req.path === '/api/anime/download'
+      ) {
+        return false;
+      }
+      return compression.filter(req, res);
+    },
   }));
 
   // قياس زمن الاستجابة الفعلي وإضافته لترويسة X-Response-Time بأمان قبل إرسال الرأس للعميل
@@ -37,13 +55,6 @@ async function startServer() {
       return (originalWriteHead as any)(statusCode, ...rest);
     };
     next();
-  });
-
-  // وضع البث المباشر الفوري (Zero-Cache Mode): تم إيقاف التخزين المؤقت المسبق
-
-  // الاتصال بقاعدة البيانات بشكل غير حاصر للتأكد من إطلاق الخادم فوراً وبسرعة قصوى
-  connectDB().catch(err => {
-    console.error('خطأ غير متوقع أثناء تهيئة الاتصال بـ MongoDB:', err);
   });
 
   // سياسات CORS لتمكين الاتصال المباشر من تطبيقات أندرويد 15 والويب فيوز ومختلف النطاقات
@@ -120,11 +131,7 @@ self.addEventListener('activate', (event) => {
 
   app.get('/app_icon.png', (req: Request, res: Response) => {
     const iconPath = path.join(process.cwd(), 'src/assets/images/app_icon.png');
-    res.sendFile(iconPath, (err) => {
-      if (err) {
-        res.sendFile(path.join(process.cwd(), 'assets/app_icon.png'));
-      }
-    });
+    res.sendFile(iconPath);
   });
 
   // Global Error Handler لتنسيق الأخطاء
