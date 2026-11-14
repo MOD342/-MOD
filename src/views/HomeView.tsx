@@ -206,7 +206,7 @@ export default function HomeView({
       const clientDay = daysMap[new Date().getDay()];
       const activeSeason = customSeason || sliderSettings.season || 'auto';
       const activeMode = customSliderMode || sliderSettings.sliderMode || 'best_season';
-      const cacheKey = `direct_dashboard_v3_${activeSeason}_${activeMode}_${clientDay}`;
+      const cacheKey = `direct_dashboard_v4_${activeSeason}_${activeMode}_${clientDay}`;
 
       const applyDashboardData = async (data: any) => {
         if (!data) return;
@@ -284,7 +284,7 @@ export default function HomeView({
       const clientDay = daysMap[new Date().getDay()];
       const activeSeason = sliderSettings.season || 'auto';
       const activeMode = sliderSettings.sliderMode || 'best_season';
-      const cacheKey = `direct_dashboard_v3_${activeSeason}_${activeMode}_${clientDay}`;
+      const cacheKey = `direct_dashboard_v4_${activeSeason}_${activeMode}_${clientDay}`;
 
       const ts = Date.now();
       const [dashRes, recentRes] = await Promise.all([

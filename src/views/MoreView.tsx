@@ -176,7 +176,7 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
       title: 'النظام والدعم',
       items: [
         { id: 'support_help', label: 'الدعم', icon: HelpCircle, color: 'text-red-400', bg: 'bg-[#FF1744]/15' },
-        { id: 'diagnostics', label: 'الشبكة', icon: LayoutGrid, color: 'text-amber-400', bg: 'bg-amber-500/10' },
+        { id: 'diagnostics', label: 'فحص الأخطاء', icon: LayoutGrid, color: 'text-amber-400', bg: 'bg-amber-500/10' },
         { id: 'app_permissions', label: 'الأذونات', icon: Bell, color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
         { id: 'pwa_install', label: 'تثبيت التطبيق', icon: Smartphone, color: 'text-violet-400', bg: 'bg-violet-500/10' },
         ...(isAdmin || isDirectStaff || isStaffEmail(user?.email) || userRole === 'admin' || userRole === 'owner' || userRole === 'moderator'

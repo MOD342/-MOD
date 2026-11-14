@@ -1,5 +1,5 @@
-import { Queue, Worker, Job } from 'bullmq';
-import IORedis from 'ioredis';
+import type { Queue, Worker } from 'bullmq';
+import type IORedis from 'ioredis';
 import { ScraperService } from './scraperService';
 
 // Initialize the single shared scraper service instance
@@ -50,17 +50,25 @@ class QueueManager {
   private maxConcurrency: number = 2; // Keep at 2 to avoid overwhelming target sites/IP rates
 
   constructor() {
-    this.initQueueSystem();
+    if (!process.env.VERCEL) {
+      this.initQueueSystem();
+    }
   }
 
   private async initQueueSystem() {
+    if (process.env.VERCEL) return;
     const redisHost = process.env.REDIS_HOST || '127.0.0.1';
     const redisPort = parseInt(process.env.REDIS_PORT || '6379');
 
     // Attempt to probe Redis with a very fast timeout to fail-safe smoothly
     try {
+      const [{ default: IORedisCtor }, { Queue: BullQueue, Worker: BullWorker }] = await Promise.all([
+        import('ioredis'),
+        import('bullmq')
+      ]);
+
       console.log(`[Queue System] Probing Redis at redis://${redisHost}:${redisPort}...`);
-      const probeClient = new IORedis({
+      const probeClient = new IORedisCtor({
         host: redisHost,
         port: redisPort,
         connectTimeout: 1500,
@@ -68,7 +76,7 @@ class QueueManager {
         retryStrategy: () => null // Do not retry on probe failure
       });
 
-      probeClient.on('error', (err) => {
+      probeClient.on('error', () => {
         // Suppress print to avoid log noise, fail probe gracefully
       });
 
@@ -89,9 +97,9 @@ class QueueManager {
         port: redisPort
       };
 
-      this.bullQueue = new Queue('scraper-queue', { connection: connectionOpts });
+      this.bullQueue = new BullQueue('scraper-queue', { connection: connectionOpts });
       
-      this.bullWorker = new Worker('scraper-queue', async (job) => {
+      this.bullWorker = new BullWorker('scraper-queue', async (job) => {
         console.log(`[BullMQ Worker] Processing Job ${job.id} - ${job.name}`);
         job.updateProgress(5);
         const result = await this.executeScrapingTask(job.name, job.data, (progress, logDetail) => {

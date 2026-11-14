@@ -12,7 +12,7 @@ import { listService, AnimeEntry } from '../services/listService';
 import { STORE_ITEMS_SORTED, getAvatarShapeClass, isBadgeUnlocked, isTitleUnlocked } from '../data/storeItems';
 import { isStaffEmail } from '../services/moderationService';
 import { doc, updateDoc, getDoc, setDoc, deleteDoc } from 'firebase/firestore';
-import { db } from '../firebase';
+import { db, auth } from '../firebase';
 import { DYNAMIC_ACHIEVEMENTS, CATEGORY_LABELS } from '../data/dynamicAchievements';
 
 interface ProfileViewProps {
@@ -1770,7 +1770,21 @@ export default function ProfileView({
                           const names = await caches.keys();
                           await Promise.all(names.map((n) => caches.delete(n)));
                         }
-                        await fetch('/api/cache/clear', { method: 'POST' }).catch(() => {});
+                        const isStaff =
+                          Boolean(auth.currentUser) &&
+                          (isStaffEmail(auth.currentUser?.email) ||
+                            userRole === 'admin' ||
+                            userRole === 'owner' ||
+                            userRole === 'moderator');
+                        if (isStaff && auth.currentUser) {
+                          const token = await auth.currentUser.getIdToken().catch(() => '');
+                          if (token) {
+                            await fetch('/api/cache/clear', {
+                              method: 'POST',
+                              headers: { Authorization: `Bearer ${token}` },
+                            }).catch(() => {});
+                          }
+                        }
                         window.location.reload();
                       } catch {}
                     }}

@@ -3,40 +3,42 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, lazy, Suspense, useEffect, useRef } from 'react';
+import { useState, Suspense, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { AppLayout } from './components/AppLayout';
 import { Loader2, Sparkles, X, Trophy, Play, MessageSquare, Info, Bell, Flame, ShieldAlert } from 'lucide-react';
 import HomeView from './views/HomeView';
+import MoreView from './views/MoreView';
+import DiagnosticsView from './views/DiagnosticsView';
 import { useAuth } from './contexts/AuthContext';
 import { collection, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
 import { db, auth } from './firebase';
 import { isStaffEmail } from './services/moderationService';
+import { consumePendingDiagnosticsTab } from './utils/errorTelemetry';
+import { lazyWithRetry } from './utils/lazyWithRetry';
 
-const ExploreView = lazy(() => import('./views/ExploreView'));
-const CommunityView = lazy(() => import('./views/CommunityView'));
-const MyListsView = lazy(() => import('./views/MyListsView'));
-const ProfileView = lazy(() => import('./views/ProfileView'));
-const AnimeDetailsView = lazy(() => import('./views/AnimeDetailsView'));
-const AnimeCommentsView = lazy(() => import('./views/AnimeCommentsView'));
-const WatchView = lazy(() => import('./views/WatchView'));
-const AdminDashboardView = lazy(() => import('./views/AdminDashboardView'));
-const ScheduleView = lazy(() => import('./views/ScheduleView'));
-const StoreView = lazy(() => import('./views/StoreView'));
-const MoreView = lazy(() => import('./views/MoreView'));
-const RecentEpisodesView = lazy(() => import('./views/RecentEpisodesView'));
-const CurrentSeasonView = lazy(() => import('./views/CurrentSeasonView'));
-const LevelPerksView = lazy(() => import('./views/LevelPerksView'));
-const FavoritesView = lazy(() => import('./views/FavoritesView'));
-const RewardsView = lazy(() => import('./views/RewardsView'));
-const NotificationsView = lazy(() => import('./views/NotificationsView'));
-const AiChatView = lazy(() => import('./views/AiChatView'));
-const AdSupportView = lazy(() => import('./views/AdSupportView'));
-const SupportPortalView = lazy(() => import('./views/SupportPortalView'));
-const OtakuArenaHubView = lazy(() => import('./views/OtakuArenaHubView'));
-const DiagnosticsView = lazy(() => import('./views/DiagnosticsView'));
+const ExploreView = lazyWithRetry(() => import('./views/ExploreView'), 'ExploreView');
+const CommunityView = lazyWithRetry(() => import('./views/CommunityView'), 'CommunityView');
+const MyListsView = lazyWithRetry(() => import('./views/MyListsView'), 'MyListsView');
+const ProfileView = lazyWithRetry(() => import('./views/ProfileView'), 'ProfileView');
+const AnimeDetailsView = lazyWithRetry(() => import('./views/AnimeDetailsView'), 'AnimeDetailsView');
+const AnimeCommentsView = lazyWithRetry(() => import('./views/AnimeCommentsView'), 'AnimeCommentsView');
+const WatchView = lazyWithRetry(() => import('./views/WatchView'), 'WatchView');
+const AdminDashboardView = lazyWithRetry(() => import('./views/AdminDashboardView'), 'AdminDashboardView');
+const ScheduleView = lazyWithRetry(() => import('./views/ScheduleView'), 'ScheduleView');
+const StoreView = lazyWithRetry(() => import('./views/StoreView'), 'StoreView');
+const RecentEpisodesView = lazyWithRetry(() => import('./views/RecentEpisodesView'), 'RecentEpisodesView');
+const CurrentSeasonView = lazyWithRetry(() => import('./views/CurrentSeasonView'), 'CurrentSeasonView');
+const LevelPerksView = lazyWithRetry(() => import('./views/LevelPerksView'), 'LevelPerksView');
+const FavoritesView = lazyWithRetry(() => import('./views/FavoritesView'), 'FavoritesView');
+const RewardsView = lazyWithRetry(() => import('./views/RewardsView'), 'RewardsView');
+const NotificationsView = lazyWithRetry(() => import('./views/NotificationsView'), 'NotificationsView');
+const AiChatView = lazyWithRetry(() => import('./views/AiChatView'), 'AiChatView');
+const AdSupportView = lazyWithRetry(() => import('./views/AdSupportView'), 'AdSupportView');
+const SupportPortalView = lazyWithRetry(() => import('./views/SupportPortalView'), 'SupportPortalView');
+const OtakuArenaHubView = lazyWithRetry(() => import('./views/OtakuArenaHubView'), 'OtakuArenaHubView');
 
-const AiChatWidget = lazy(() => import('./components/AiChatWidget'));
+const AiChatWidget = lazyWithRetry(() => import('./components/AiChatWidget'), 'AiChatWidget');
 import { MascotLoadingScreen, MascotOfflineScreen } from './components/MascotScreens';
 import PermissionPromptModal from './components/PermissionPromptModal';
 
@@ -53,7 +55,18 @@ export default function App() {
   const [activeTab, setActiveTab ] = useState('home');
   const [showSplash, setShowSplash] = useState(false);
   const [askPermissions, setAskPermissions] = useState(false);
-  const [viewStack, setViewStack] = useState<{name: string, props?: any}[]>([{ name: 'home' }]);
+  const [viewStack, setViewStack] = useState<{name: string, props?: any}[]>(() => {
+    if (typeof window !== 'undefined') {
+      const pendingTab = consumePendingDiagnosticsTab();
+      const params = new URLSearchParams(window.location.search);
+      const hasDiagQuery = params.has('diagnostics') || params.get('view') === 'diagnostics';
+      const hasDiagHash = window.location.hash.includes('diagnostics');
+      if (pendingTab || hasDiagQuery || hasDiagHash) {
+        return [{ name: 'home' }, { name: 'diagnostics', props: { initialTab: pendingTab || 'tests' } }];
+      }
+    }
+    return [{ name: 'home' }];
+  });
   const [activeToasts, setActiveToasts] = useState<any[]>([]);
 
   const triggerToast = (notif: any) => {
@@ -312,8 +325,19 @@ export default function App() {
       localStorage.removeItem('mod_permissions_prompted');
       setAskPermissions(true);
     };
+    const handleOpenDiagnostics = (e: Event) => {
+      const initialTab = (e as CustomEvent)?.detail?.initialTab || 'errors';
+      setViewStack(prev => {
+        const last = prev[prev.length - 1];
+        if (last?.name === 'diagnostics') {
+          return [...prev.slice(0, -1), { name: 'diagnostics', props: { initialTab } }];
+        }
+        return [...prev, { name: 'diagnostics', props: { initialTab } }];
+      });
+    };
     window.addEventListener('open-ai-chat', handleOpenChat);
     window.addEventListener('open-permissions-modal', handleOpenPermissions);
+    window.addEventListener('otaku:open-diagnostics', handleOpenDiagnostics);
 
     // Prompt for permissions on mount (since splash loading is removed)
     if (typeof window !== 'undefined') {
@@ -325,6 +349,7 @@ export default function App() {
         return () => {
           window.removeEventListener('open-ai-chat', handleOpenChat);
           window.removeEventListener('open-permissions-modal', handleOpenPermissions);
+          window.removeEventListener('otaku:open-diagnostics', handleOpenDiagnostics);
           clearTimeout(timer);
         };
       }
@@ -333,6 +358,7 @@ export default function App() {
     return () => {
       window.removeEventListener('open-ai-chat', handleOpenChat);
       window.removeEventListener('open-permissions-modal', handleOpenPermissions);
+      window.removeEventListener('otaku:open-diagnostics', handleOpenDiagnostics);
     };
   }, []);
 
@@ -593,7 +619,7 @@ export default function App() {
       case 'suggestions_hub':
         return <OtakuArenaHubView initialTab="arena" onBack={goBack} onUserClick={(userId) => navigateTo('other_profile', { userId })} onNavigate={navigateTo} />;
       case 'diagnostics':
-        return <DiagnosticsView onBack={goBack} />;
+        return <DiagnosticsView onBack={goBack} initialTab={currentView.props?.initialTab} />;
       case 'ai_chat':
         return <AiChatView onBack={goBack} />;
       case 'ad_support':

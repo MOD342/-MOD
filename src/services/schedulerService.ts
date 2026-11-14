@@ -1,4 +1,4 @@
-import cron, { ScheduledTask } from 'node-cron';
+import type { ScheduledTask } from 'node-cron';
 import { ScraperService } from './scraperService';
 import { serverCache } from './cacheService';
 
@@ -84,12 +84,13 @@ class SchedulerService {
   /**
    * Initializes all cron schedules.
    */
-  public init() {
-    if (this.isInitialized) {
+  public async init() {
+    if (this.isInitialized || process.env.VERCEL) {
       return;
     }
 
     this.isInitialized = true;
+    const { default: cron } = await import('node-cron');
 
     const task24h = cron.schedule('0 0 * * *', () => {
       this.runRecentAnimeJob().catch(() => {});

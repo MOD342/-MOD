@@ -3093,6 +3093,46 @@ router.post(
 );
 
 // -------------------------------------------------------------
+// مسار فحص صحة النظام العام (لأغراض التشخيص الآمن بدون تعديل إداري)
+// -------------------------------------------------------------
+router.get(
+  "/system/health",
+  handleAsync(async (req: Request, res: Response) => {
+    const stats = serverCache.getStats();
+    const jobs = schedulerService.getJobsStatus();
+    res.json({
+      success: true,
+      data: {
+        status: "ok",
+        runtime: process.env.VERCEL ? "vercel-serverless" : "node-express",
+        uptimeSeconds: Math.round(process.uptime()),
+        cache: {
+          engine: stats.engine,
+          mode: stats.mode,
+          keysCount: stats.keysCount,
+          hits: stats.hits,
+          staleHits: stats.staleHits,
+          misses: stats.misses,
+          hitRatioPercent: stats.hitRatioPercent,
+        },
+        scheduler: {
+          totalJobs: jobs.length,
+          jobs: jobs.map((j) => ({
+            id: j.id,
+            nameArabic: j.nameArabic,
+            cronExpression: j.cronExpression,
+            status: j.status,
+            runCount: j.runCount,
+            lastRunAt: j.lastRunAt,
+            lastDurationMs: j.lastDurationMs,
+          })),
+        },
+      },
+    });
+  }),
+);
+
+// -------------------------------------------------------------
 // مسارات إدارة ومراقبة التخزين المؤقت (node-cache Caching Engine) - محمية بـ Firebase Admin SDK
 // -------------------------------------------------------------
 router.get(
@@ -3251,7 +3291,7 @@ router.get(
         ? userDay
         : days[new Date().getDay()];
 
-      const cacheKey = `dashboard-v5-${currentDay}-${requestedSeason}-${requestedSliderMode}`;
+      const cacheKey = `dashboard-v6-${currentDay}-${requestedSeason}-${requestedSliderMode}`;
 
       if (bypass) {
         await serverCache.delete(cacheKey);
@@ -3263,13 +3303,13 @@ router.get(
           await serverCache.delete(`dashboard-${d}-${requestedSeason}`);
           await serverCache.delete(`dashboard-${d}-auto`);
           for (const m of sliderModes) {
-            await serverCache.delete(`dashboard-v5-${d}-${requestedSeason}-${m}`);
-            await serverCache.delete(`dashboard-v5-${d}-auto-${m}`);
+            await serverCache.delete(`dashboard-v6-${d}-${requestedSeason}-${m}`);
+            await serverCache.delete(`dashboard-v6-${d}-auto-${m}`);
           }
         }
       }
 
-      const dashboardData = await serverCache.getOrFetch<any>(
+      const dashboardData = await serverCache.getOrFetchSWR<any>(
         cacheKey,
         async () => {
           // Determine season url to fetch based on custom settings
@@ -3307,14 +3347,14 @@ router.get(
           ? requestedSeason
           : undefined;
 
-      const [sliderListRaw, seasonListRaw, recentList, todayScheduleRaw, animedarHotRaw] =
+      const [sliderListRaw, seasonListRaw, recentList, todayScheduleRaw, trendingTodayRaw] =
         await Promise.all([
           fetchWithTimeout(
             anilistService.getSliderByMode(requestedSliderMode, 15).catch(async () => {
               const r = await fetchJikan("https://api.jikan.moe/v4/top/anime?filter=bypopularity&limit=12").catch(() => ({ data: [] }));
               return r.data || [];
             }),
-            3500,
+            3200,
             []
           ),
           fetchWithTimeout(
@@ -3322,12 +3362,12 @@ router.get(
               const r = await fetchJikan(seasonUrl).catch(() => ({ data: [] }));
               return r.data || [];
             }),
-            3500,
+            3200,
             []
           ),
           fetchWithTimeout(
             scraper.getRecentEpisodes(bypass).catch(() => []),
-            bypass ? 10500 : 9000,
+            bypass ? 7500 : 6500,
             []
           ),
           fetchWithTimeout(
@@ -3339,8 +3379,11 @@ router.get(
             []
           ),
           fetchWithTimeout(
-            scraper.getPopularToday(bypass).catch(() => []),
-            6500,
+            anilistService.getSliderByMode("trending_season", 20).catch(async () => {
+              const r = await fetchJikan("https://api.jikan.moe/v4/top/anime?filter=airing&limit=20").catch(() => ({ data: [] }));
+              return r.data || [];
+            }),
+            3500,
             []
           ),
         ]);
@@ -3373,16 +3416,18 @@ router.get(
       }
 
       if (top5.length === 0) {
-        for (const hotItem of animedarHotRaw || []) {
+        for (const tAnime of trendingTodayRaw || []) {
           if (top5.length >= 10) break;
-          if (!seenTopIds.has(hotItem.id)) {
-            seenTopIds.add(hotItem.id);
+          const idStr = tAnime.mal_id?.toString();
+          if (idStr && !seenTopIds.has(idStr)) {
+            seenTopIds.add(idStr);
             top5.push({
-              _id: hotItem.id,
-              title: hotItem.title,
-              posterUrl: hotItem.imageUrl,
-              rating: hotItem.rating || 8.8,
-              genres: ["أكشن", "فانتازيا"],
+              _id: idStr,
+              title: cleanAnimeTitle(tAnime.title_english || tAnime.title) || tAnime.title_english || tAnime.title,
+              posterUrl: tAnime.images?.jpg?.large_image_url || tAnime.images?.jpg?.image_url,
+              bannerUrl: tAnime.bannerUrl || tAnime.bannerImage || tAnime.images?.jpg?.large_image_url || tAnime.images?.jpg?.image_url,
+              rating: tAnime.score || 8.5,
+              genres: tAnime.genres?.map((g: any) => g.name) || ["أكشن", "فانتازيا"],
             });
           }
         }
@@ -3435,37 +3480,53 @@ router.get(
         }
       });
 
-      // 2. رائج اليوم (Daily Trending): متجدد يومياً من الحلقات الأكثر مشاهدة وتفاعلاً اليوم بدلاً من القائمة التاريخية الثابتة
+      // 2. رائج اليوم (Daily Trending): مستخرج من ترتيب التفاعل والرائج اليومي العالمي في AniList مع عزله عن تكرار أحدث الحلقات
       const popular: any[] = [];
       const seenTrendingIds = new Set<string>();
+      const recentTitleKeys = new Set<string>(
+        recentEpisodes
+          .slice(0, 12)
+          .map((ep) => (ep.animeId?.title || ep.title || "").toLowerCase().trim())
+          .filter(Boolean)
+      );
 
-      for (const hotItem of animedarHotRaw || []) {
-        if (popular.length >= 10) break;
-        if (hotItem.id && !seenTrendingIds.has(hotItem.id)) {
-          seenTrendingIds.add(hotItem.id);
+      const trendingPool =
+        Array.isArray(trendingTodayRaw) && trendingTodayRaw.length > 0
+          ? trendingTodayRaw
+          : seasonListRaw || [];
+
+      // Pass 1: Prefer trending titles that aren't already sitting in the top of recentEpisodes
+      for (const anime of trendingPool) {
+        if (popular.length >= 12) break;
+        const idStr = anime.mal_id?.toString();
+        const titleClean = cleanAnimeTitle(anime.title_english || anime.title) || anime.title_english || anime.title;
+        if (idStr && !seenTrendingIds.has(idStr) && !recentTitleKeys.has(titleClean.toLowerCase().trim())) {
+          seenTrendingIds.add(idStr);
           popular.push({
-            _id: hotItem.id,
-            title: hotItem.title,
-            posterUrl: hotItem.imageUrl,
-            episodeNumber: hotItem.episode || "1",
-            rating: hotItem.rating || 8.8,
+            _id: idStr,
+            title: titleClean,
+            posterUrl: anime.images?.jpg?.large_image_url || anime.images?.jpg?.image_url,
+            episodeNumber: anime.latestEpisode ? String(anime.latestEpisode) : undefined,
+            rating: anime.score || 8.4,
             isDailyTrending: true,
           });
         }
       }
 
+      // Pass 2: If fewer than 10 distinct items matched, top up from remaining trendingPool (still never copying recentEpisodes blindly)
       if (popular.length < 10) {
-        for (const ep of recentEpisodes) {
-          if (popular.length >= 10) break;
-          const targetId = ep.animeId?._id || ep._id;
-          if (targetId && !seenTrendingIds.has(targetId)) {
-            seenTrendingIds.add(targetId);
+        for (const anime of trendingPool) {
+          if (popular.length >= 12) break;
+          const idStr = anime.mal_id?.toString();
+          const titleClean = cleanAnimeTitle(anime.title_english || anime.title) || anime.title_english || anime.title;
+          if (idStr && !seenTrendingIds.has(idStr)) {
+            seenTrendingIds.add(idStr);
             popular.push({
-              _id: targetId,
-              title: ep.animeId?.title || ep.title,
-              posterUrl: ep.animeId?.posterUrl || ep.posterUrl,
-              episodeNumber: ep.episodeNumber || "1",
-              rating: 8.6,
+              _id: idStr,
+              title: titleClean,
+              posterUrl: anime.images?.jpg?.large_image_url || anime.images?.jpg?.image_url,
+              episodeNumber: anime.latestEpisode ? String(anime.latestEpisode) : undefined,
+              rating: anime.score || 8.4,
               isDailyTrending: true,
             });
           }
@@ -3556,7 +3617,8 @@ router.get(
 
       return resultPayload;
         },
-        90 * 1000,
+        120 * 1000,
+        15 * 60 * 1000,
         bypass
       );
 

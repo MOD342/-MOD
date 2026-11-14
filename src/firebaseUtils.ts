@@ -1,4 +1,5 @@
 import { auth } from './firebase';
+import { recordTelemetryError } from './utils/errorTelemetry';
 
 export enum OperationType {
   CREATE = 'create',
@@ -51,6 +52,15 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     console.warn('Firestore Non-critical Read Info (using system fallbacks):', JSON.stringify(errInfo));
     return;
   }
+
+  recordTelemetryError({
+    source: 'firestore',
+    severity: 'error',
+    title: `خطأ صلاحيات أو عملية Firestore (${operationType})`,
+    message: errInfo.error,
+    url: path || undefined,
+    details: JSON.stringify(errInfo, null, 2),
+  });
 
   console.warn('Firestore Operation Error:', JSON.stringify(errInfo));
   throw new Error(JSON.stringify(errInfo));

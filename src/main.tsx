@@ -4,10 +4,17 @@ import { createRoot } from 'react-dom/client';
 import App from './App.tsx';
 import './index.css';
 import { AuthProvider } from './contexts/AuthContext';
+import { GlobalErrorBoundary } from './components/GlobalErrorBoundary';
 import { clientCache } from './utils/clientCache';
 import { handleFrontendFallback, setFallbackActive } from './utils/frontendFallback';
+import { initGlobalErrorTelemetry, recordTelemetryError } from './utils/errorTelemetry';
 
 const originalFetch = window.fetch.bind(window);
+export const rawNativeFetch = originalFetch;
+
+try {
+  initGlobalErrorTelemetry();
+} catch {}
 
 // الكشف الدقيق عما إذا كان التطبيق يعمل داخل حزمة APK / Capacitor / Cordova محلية بدون خادم ويب مستضيف
 export function isRunningInAPKOrExternalShell(): boolean {
@@ -138,14 +145,48 @@ async function smartFetch(input: any, init?: any): Promise<Response> {
 
         const contentType = res.headers.get('content-type') || '';
         if (contentType.includes('application/json') && res.status < 500) {
+          if (res.status >= 400 && !urlString.includes('/api/anime/details/')) {
+            recordTelemetryError({
+              source: 'network',
+              severity: 'warning',
+              title: `استجابة HTTP ${res.status} من الخادم`,
+              message: `المسار ${urlString} أرجع رمز ${res.status}`,
+              url: typeof resolvedInput === 'string' ? resolvedInput : urlString,
+              statusCode: res.status,
+            });
+          }
           return res;
         }
-        if (res.ok && contentType.includes('application/json')) {
-          return res;
+        if (contentType.includes('text/html')) {
+          recordTelemetryError({
+            source: 'network',
+            severity: 'error',
+            title: 'شذوذ توجيه الخادم (HTML بدل JSON)',
+            message: `المسار ${urlString} أرجع صفحة HTML بدلاً من JSON (شائع عند نشر الواجهة فقط على Vercel دون خادم API).`,
+            url: typeof resolvedInput === 'string' ? resolvedInput : urlString,
+            statusCode: res.status,
+          });
+        } else if (res.status >= 500) {
+          recordTelemetryError({
+            source: 'network',
+            severity: 'error',
+            title: `فشل خادم الـ API (${res.status})`,
+            message: `استجابة خطأ من الخادم للمسار ${urlString}`,
+            url: typeof resolvedInput === 'string' ? resolvedInput : urlString,
+            statusCode: res.status,
+          });
         }
         break;
-      } catch {
+      } catch (err: any) {
         if (attempt === 2) {
+          recordTelemetryError({
+            source: 'network',
+            severity: 'error',
+            title: 'تعذر الاتصال بالخادم (Network / CORS / Timeout)',
+            message: err?.message || `فشل جلب ${urlString}`,
+            url: typeof resolvedInput === 'string' ? resolvedInput : urlString,
+            stack: err?.stack,
+          });
           break;
         }
       }
@@ -176,8 +217,10 @@ try {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <AuthProvider>
-      <App />
-    </AuthProvider>
+    <GlobalErrorBoundary>
+      <AuthProvider>
+        <App />
+      </AuthProvider>
+    </GlobalErrorBoundary>
   </StrictMode>,
 );

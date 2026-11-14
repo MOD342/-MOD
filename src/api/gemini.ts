@@ -1,5 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
 
 const router = Router();
 let aiInstance: GoogleGenAI | null = null;
@@ -932,5 +932,179 @@ ${contextParts.join('\n')}
   }
 }));
 
+router.get('/diagnostics/health', (req: Request, res: Response) => {
+  const ai = getAi();
+  res.json({
+    success: true,
+    data: {
+      aiConfigured: Boolean(ai),
+      model: 'gemini-3.1-flash-lite',
+      runtime: process.env.VERCEL ? 'vercel-serverless' : 'node-express',
+      nodeVersion: process.version,
+      uptimeSeconds: Math.round(process.uptime()),
+    },
+  });
+});
+
+router.post('/analyze-diagnostics', handleAsync(async (req: Request, res: Response) => {
+  const { environment, tests, telemetryErrors } = req.body || {};
+  const startedAt = Date.now();
+
+  if (!environment && !Array.isArray(tests) && !Array.isArray(telemetryErrors)) {
+    return res.status(400).json({
+      success: false,
+      message: 'يرجى إرسال نتائج الاختبارات وسجل الأخطاء لتحليلها.',
+    });
+  }
+
+  const ai = getAi();
+  if (!ai) {
+    return res.status(503).json({
+      success: false,
+      aiMissingKey: true,
+      message: 'مفتاح GEMINI_API_KEY غير متوفر على الخادم الحالي.',
+    });
+  }
+
+  const sanitizedTests = Array.isArray(tests)
+    ? tests.slice(0, 20).map((t: any) => ({
+        name: String(t.name || '').slice(0, 120),
+        category: String(t.category || '').slice(0, 40),
+        status: String(t.status || 'idle'),
+        latencyMs: typeof t.latency === 'number' ? t.latency : null,
+        details: String(t.details || '').slice(0, 500),
+      }))
+    : [];
+
+  const sanitizedErrors = Array.isArray(telemetryErrors)
+    ? telemetryErrors.slice(0, 25).map((e: any) => ({
+        source: String(e.source || ''),
+        severity: String(e.severity || ''),
+        title: String(e.title || '').slice(0, 150),
+        message: String(e.message || '').slice(0, 300),
+        url: String(e.url || '').slice(0, 200),
+        statusCode: e.statusCode ?? null,
+        count: e.count || 1,
+      }))
+    : [];
+
+  const prompt = `أنت مهندس برمجيات وتشخيص أعطال خبير (Full-Stack + Vercel + Capacitor + Firebase + Scraping).
+حلل بيانات التشخيص التالية لتطبيق "أنمي MOD" واكتشف أين يكمن الشذوذ تحديداً ولماذا قد تفشل بعض الوظائف عند النشر على Vercel أو في المتصفح:
+
+[بيئة التشغيل]:
+${JSON.stringify(environment || {})}
+
+[نتائج الاختبارات]:
+${JSON.stringify(sanitizedTests)}
+
+[الأخطاء المسجلة]:
+${JSON.stringify(sanitizedErrors)}
+
+المطلوب تحليل دقيق وصادق وموجز باللغة العربية بناءً على المعطيات الفعلية أعلاه فقط (لا تخترع أعطالاً غير موجودة في البيانات).`;
+
+  const responseSchema = {
+    type: Type.OBJECT,
+    properties: {
+      overallStatus: {
+        type: Type.STRING,
+        description: 'One of: healthy, degraded, critical',
+      },
+      healthScore: {
+        type: Type.INTEGER,
+        description: 'Health score between 0 and 100',
+      },
+      summary: {
+        type: Type.STRING,
+        description: 'Executive summary in Arabic explaining the overall state and main findings',
+      },
+      vercelDiagnosis: {
+        type: Type.STRING,
+        description: 'Specific diagnosis regarding Vercel hosting compatibility and serverless/API behavior in Arabic',
+      },
+      priorityAction: {
+        type: Type.STRING,
+        description: 'The single highest-priority fix step to perform first in Arabic',
+      },
+      anomalies: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            title: { type: Type.STRING },
+            severity: { type: Type.STRING, description: 'critical, warning, or info' },
+            affectedArea: { type: Type.STRING },
+            rootCause: { type: Type.STRING },
+            fixSteps: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+            },
+          },
+          required: ['title', 'severity', 'affectedArea', 'rootCause', 'fixSteps'],
+        },
+      },
+      recommendedActions: {
+        type: Type.ARRAY,
+        items: { type: Type.STRING },
+      },
+    },
+    required: [
+      'overallStatus',
+      'healthScore',
+      'summary',
+      'vercelDiagnosis',
+      'priorityAction',
+      'anomalies',
+      'recommendedActions',
+    ],
+  };
+
+  const candidates: Array<{ model: string; thinkingLevel: ThinkingLevel; timeoutMs: number }> = [
+    { model: 'gemini-3.1-flash-lite', thinkingLevel: ThinkingLevel.MINIMAL, timeoutMs: 7500 },
+    { model: 'gemini-4-hydrogen', thinkingLevel: ThinkingLevel.LOW, timeoutMs: 8500 },
+  ];
+
+  const attemptErrors: string[] = [];
+
+  for (const candidate of candidates) {
+    try {
+      const response = await ai.models.generateContent({
+        model: candidate.model,
+        contents: prompt,
+        config: {
+          abortSignal: AbortSignal.timeout(candidate.timeoutMs),
+          thinkingConfig: { thinkingLevel: candidate.thinkingLevel },
+          systemInstruction:
+            'أنت خبير تشخيص أعطال تطبيقات React/Express/Vercel/Firebase. التزم بالدقة والوضوح والإيجاز العملي باللغة العربية.',
+          responseMimeType: 'application/json',
+          responseSchema,
+        },
+      });
+
+      const rawText = (response.text ?? '').trim();
+      if (rawText) {
+        const parsed = JSON.parse(rawText);
+        return res.json({
+          success: true,
+          engine: candidate.model,
+          durationMs: Date.now() - startedAt,
+          data: parsed,
+        });
+      }
+      attemptErrors.push(`${candidate.model}: empty response text`);
+    } catch (err: any) {
+      const errMsg = err?.cause?.message || err?.message || String(err);
+      attemptErrors.push(`${candidate.model}: ${errMsg}`);
+      console.warn(`[Diagnostics AI Analyze] ${candidate.model} failed (${Date.now() - startedAt}ms):`, errMsg);
+    }
+  }
+
+  return res.status(502).json({
+    success: false,
+    durationMs: Date.now() - startedAt,
+    message: `تعذر إتمام التحليل عبر Gemini (${attemptErrors.join(' | ')})`,
+  });
+}));
+
 export default router;
+
 

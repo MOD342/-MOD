@@ -1,7 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { initializeApp, getApps, App } from 'firebase-admin/app';
-import { getAuth as getAdminAuth } from 'firebase-admin/auth';
-import { getFirestore as getAdminFirestore } from 'firebase-admin/firestore';
+import crypto from 'node:crypto';
+import type { App } from 'firebase-admin/app';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { serverCache } from '../services/cacheService';
 import { schedulerService } from '../services/schedulerService';
@@ -48,11 +47,12 @@ export const isStaffEmail = (email?: string | null): boolean => {
   return ADMIN_EMAILS.some(adminEmail => adminEmail.toLowerCase() === clean);
 };
 
-// Initialize Firebase Admin SDK singleton for the configured project
+// Initialize Firebase Admin SDK singleton lazily so cold starts & Node 20 runtimes never fail on load
 let adminApp: App | null = null;
 
-export function getFirebaseAdminApp(): App {
+export async function getFirebaseAdminApp(): Promise<App> {
   if (!adminApp) {
+    const { initializeApp, getApps } = await import('firebase-admin/app');
     const existingApps = getApps();
     if (existingApps.length > 0 && existingApps[0]) {
       adminApp = existingApps[0];
@@ -65,8 +65,9 @@ export function getFirebaseAdminApp(): App {
   return adminApp;
 }
 
-export function getAdminDb() {
-  const app = getFirebaseAdminApp();
+export async function getAdminDb() {
+  const app = await getFirebaseAdminApp();
+  const { getFirestore: getAdminFirestore } = await import('firebase-admin/firestore');
   try {
     if (firebaseConfig.firestoreDatabaseId) {
       return getAdminFirestore(app, firebaseConfig.firestoreDatabaseId);
@@ -74,6 +75,128 @@ export function getAdminDb() {
     return getAdminFirestore(app);
   } catch {
     return getAdminFirestore(app);
+  }
+}
+
+// Cached Google x509 public certs for zero-dependency Firebase ID Token verification
+let cachedGoogleCerts: { certs: Record<string, string>; expiresAt: number } | null = null;
+
+async function fetchGoogleSecureTokenCerts(forceRefresh = false): Promise<Record<string, string>> {
+  if (!forceRefresh && cachedGoogleCerts && cachedGoogleCerts.expiresAt > Date.now()) {
+    return cachedGoogleCerts.certs;
+  }
+  const res = await fetch(
+    'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com',
+    { signal: AbortSignal.timeout(5000) }
+  );
+  if (!res.ok) {
+    throw new Error(`Failed to fetch Google Firebase public certs: HTTP ${res.status}`);
+  }
+  const certs = (await res.json()) as Record<string, string>;
+  const cacheControl = res.headers.get('cache-control') || '';
+  const maxAgeMatch = cacheControl.match(/max-age=(\d+)/i);
+  const ttlMs = maxAgeMatch ? Math.max(60_000, Number(maxAgeMatch[1]) * 1000) : 3600_000;
+  cachedGoogleCerts = { certs, expiresAt: Date.now() + ttlMs };
+  return certs;
+}
+
+function decodeJwtPart(segment: string): any {
+  const json = Buffer.from(segment, 'base64url').toString('utf8');
+  return JSON.parse(json);
+}
+
+async function verifyFirebaseIdTokenWithCerts(idToken: string): Promise<{
+  uid: string;
+  email?: string;
+  email_verified?: boolean;
+}> {
+  const parts = idToken.split('.');
+  if (parts.length !== 3) {
+    throw new Error('Malformed Firebase ID token');
+  }
+  const [headerB64, payloadB64, signatureB64] = parts;
+  const header = decodeJwtPart(headerB64);
+  const payload = decodeJwtPart(payloadB64);
+
+  if (header?.alg !== 'RS256' || !header?.kid) {
+    throw new Error('Unsupported Firebase token algorithm or missing key ID');
+  }
+
+  let certs = await fetchGoogleSecureTokenCerts(false);
+  let certPem = certs[header.kid];
+  if (!certPem) {
+    certs = await fetchGoogleSecureTokenCerts(true);
+    certPem = certs[header.kid];
+  }
+  if (!certPem) {
+    throw new Error('Matching Google public certificate not found for Firebase token');
+  }
+
+  const verifier = crypto.createVerify('RSA-SHA256');
+  verifier.update(`${headerB64}.${payloadB64}`);
+  verifier.end();
+  const isSignatureValid = verifier.verify(certPem, Buffer.from(signatureB64, 'base64url'));
+  if (!isSignatureValid) {
+    throw new Error('Invalid Firebase ID token RSA signature');
+  }
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const projectId = firebaseConfig.projectId;
+  if (payload?.aud !== projectId) {
+    throw new Error('Invalid Firebase token audience');
+  }
+  if (payload?.iss !== `https://securetoken.google.com/${projectId}`) {
+    throw new Error('Invalid Firebase token issuer');
+  }
+  if (typeof payload?.sub !== 'string' || !payload.sub) {
+    throw new Error('Missing Firebase token subject (uid)');
+  }
+  if (typeof payload?.exp !== 'number' || payload.exp <= nowSec) {
+    throw new Error('Firebase ID token expired');
+  }
+  if (typeof payload?.iat !== 'number' || payload.iat > nowSec + 300) {
+    throw new Error('Firebase ID token issued in the future');
+  }
+
+  return {
+    uid: payload.sub,
+    email: payload.email,
+    email_verified: payload.email_verified,
+  };
+}
+
+async function verifyFirebaseIdToken(idToken: string): Promise<{
+  uid: string;
+  email?: string;
+  email_verified?: boolean;
+  verifiedVia: 'firebase_admin_sdk' | 'firebase_token_cert';
+}> {
+  try {
+    const [app, { getAuth: getAdminAuth }] = await Promise.all([
+      getFirebaseAdminApp(),
+      import('firebase-admin/auth'),
+    ]);
+    const decoded = await getAdminAuth(app).verifyIdToken(idToken);
+    return {
+      uid: decoded.uid,
+      email: decoded.email,
+      email_verified: decoded.email_verified,
+      verifiedVia: 'firebase_admin_sdk',
+    };
+  } catch (err: any) {
+    const code = String(err?.code || '');
+    const msg = String(err?.message || '');
+    // Fallback cleanly to Node crypto x509 cert verification on ERR_REQUIRE_ESM (Node 20 jwks-rsa/jose) or missing Admin credentials
+    if (
+      code === 'ERR_REQUIRE_ESM' ||
+      msg.includes('require() of ES Module') ||
+      msg.includes('ERR_REQUIRE_ESM') ||
+      msg.includes('jwks-rsa')
+    ) {
+      const verified = await verifyFirebaseIdTokenWithCerts(idToken);
+      return { ...verified, verifiedVia: 'firebase_token_cert' };
+    }
+    throw err;
   }
 }
 
@@ -103,7 +226,7 @@ async function fetchFirestoreDocServerSide(
   // 1. Try Firebase Admin SDK Firestore first if credentials exist in environment
   if (process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.FIREBASE_SERVICE_ACCOUNT) {
     try {
-      const db = getAdminDb();
+      const db = await getAdminDb();
       const snap = await db.collection(collectionPath).doc(docId).get();
       if (snap.exists) {
         return snap.data() || null;
@@ -162,12 +285,12 @@ export async function verifyUserAdminContext(
   idToken: string,
   forceRefresh = false
 ): Promise<VerifiedAdminContext> {
-  const app = getFirebaseAdminApp();
-  const decoded = await getAdminAuth(app).verifyIdToken(idToken);
+  const decoded = await verifyFirebaseIdToken(idToken);
 
   const uid = decoded.uid;
   const email = (decoded.email || '').trim().toLowerCase();
   const emailVerified = Boolean(decoded.email_verified);
+  const verifiedVia = decoded.verifiedVia;
 
   if (!forceRefresh) {
     const cached = roleVerificationCache.get(uid);
@@ -189,7 +312,7 @@ export async function verifyUserAdminContext(
         canManageSettings: true,
         canViewRoles: true,
       },
-      verifiedVia: 'firebase_admin_sdk',
+      verifiedVia,
     };
     roleVerificationCache.set(uid, {
       context: ownerContext,
@@ -212,7 +335,7 @@ export async function verifyUserAdminContext(
         canManageSettings: false,
         canViewRoles: false,
       },
-      verifiedVia: 'firebase_admin_sdk',
+      verifiedVia,
     };
     return bannedContext;
   }
@@ -264,7 +387,7 @@ export async function verifyUserAdminContext(
     emailVerified,
     role: validRole,
     permissions,
-    verifiedVia: 'firebase_admin_sdk',
+    verifiedVia,
   };
 
   roleVerificationCache.set(uid, {
