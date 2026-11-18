@@ -3,6 +3,7 @@ import { Bot, X, Sparkles, Send, Trash2, Lock, Award, Clock } from 'lucide-react
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { isStaffEmail } from '../services/moderationService';
+import ViewportPortal from './ViewportPortal';
 
 const QUICK_PROMPTS = [
   'اقترح لي أنمي قصير ومكتمل يحبس الأنفاس 🔥',
@@ -86,19 +87,19 @@ export default function AiChatWidget() {
           status: 'أبحث عن توصية أو نقاش أنمي 📺',
         }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (res.status === 429 || data.rateLimited) {
         if (data.retryAfterSec) setCooldownSec(data.retryAfterSec);
         setChat((prev) => [
           ...prev,
-          { sender: 'bot', text: data.message || 'يرجى الانتظار قليلاً قبل إرسال رسالة جديدة للحفاظ على سرعة الخادم.' },
+          { sender: 'bot', text: data.message || 'يرجى الانتظار قليلاً قبل إرسال رسالة جديدة.' },
         ]);
-      } else if (data.success && data.text) {
+      } else if (res.ok && data.success && data.text) {
         setChat((prev) => [...prev, { sender: 'bot', text: data.text }]);
       } else {
         setChat((prev) => [
           ...prev,
-          { sender: 'bot', text: 'عذراً يا صديقي، حدث ضغط مؤقت في الخادم. جرب إرسال رسالتك مرة أخرى!' },
+          { sender: 'bot', text: data.message || 'تعذر الحصول على رد من المساعد الذكي حالياً.' },
         ]);
       }
     } catch (e) {
@@ -122,36 +123,41 @@ export default function AiChatWidget() {
   };
 
   return (
-    <AnimatePresence>
-      {isOpen && (
-        <>
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            onClick={() => setIsOpen(false)}
-            className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[95]"
-          />
-          <motion.div
-            initial={{ opacity: 0, scale: 0.92, y: 24 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.92, y: 24 }}
-            dir="rtl"
-            className="fixed inset-x-3 top-[7%] bottom-[8%] max-w-md mx-auto bg-[#0b0b10] border border-purple-500/25 rounded-3xl shadow-[0_0_50px_rgba(147,51,234,0.25)] overflow-hidden z-[100] flex flex-col"
-          >
+    <ViewportPortal>
+      <AnimatePresence>
+        {isOpen && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsOpen(false)}
+              className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[95]"
+              style={{ height: 'var(--vv-height, 100dvh)' }}
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.92, y: 24 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.92, y: 24 }}
+              dir="rtl"
+              style={{
+                top: 'calc(var(--safe-top, 0px) + 0.75rem)',
+                bottom: 'calc(var(--safe-bottom, 0px) + 0.75rem)',
+                left: 'calc(var(--safe-left, 0px) + 0.75rem)',
+                right: 'calc(var(--safe-right, 0px) + 0.75rem)',
+              }}
+              className="fixed max-w-md mx-auto bg-[#0b0b10] border border-purple-500/25 rounded-3xl shadow-[0_0_50px_rgba(147,51,234,0.25)] overflow-hidden z-[100] flex flex-col"
+            >
             {/* Header */}
-            <div className="bg-gradient-to-l from-purple-900/90 via-indigo-950 to-[#0b0b10] p-4 shrink-0 flex justify-between items-center relative overflow-hidden border-b border-white/10">
+            <div className="theme-keep-dark bg-gradient-to-l from-purple-900/90 via-indigo-950 to-[#0b0b10] p-4 shrink-0 flex justify-between items-center relative overflow-hidden border-b border-white/10">
               <Sparkles className="absolute left-4 top-2 text-purple-400 opacity-15 pointer-events-none" size={44} />
               <div className="flex items-center gap-3 relative z-10">
                 <div className="w-10 h-10 bg-purple-500/20 rounded-2xl flex items-center justify-center backdrop-blur shadow-lg border border-purple-400/30">
                   <Bot size={22} className="text-purple-300" />
                 </div>
                 <div>
-                  <div className="flex items-center gap-1.5">
-                    <h3 className="text-white font-black text-sm">مساعد أنمي MOD الذكي</h3>
-                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                  </div>
-                  <p className="text-[10px] text-purple-300 font-bold">ميزة حصرية للمستوى {MIN_LEVEL}+</p>
+                  <h3 className="text-white font-black text-sm">مساعد أنمي MOD الذكي</h3>
+                  <p className="text-[11px] text-zinc-400 font-bold">متاح للمستوى {MIN_LEVEL}+</p>
                 </div>
               </div>
               <div className="flex items-center gap-1.5 relative z-10">
@@ -159,22 +165,23 @@ export default function AiChatWidget() {
                   <button
                     onClick={resetChat}
                     title="محادثة جديدة"
-                    className="text-white/60 hover:text-white transition bg-white/5 hover:bg-white/10 rounded-full p-2 border border-white/10 cursor-pointer"
+                    className="min-w-[44px] min-h-[44px] flex items-center justify-center text-white/70 hover:text-white transition bg-white/5 hover:bg-white/10 rounded-xl border border-white/10 cursor-pointer"
                   >
-                    <Trash2 size={15} />
+                    <Trash2 size={16} />
                   </button>
                 )}
                 <button
                   onClick={() => setIsOpen(false)}
-                  className="text-white/60 hover:text-white transition bg-white/5 hover:bg-white/10 rounded-full p-2 border border-white/10 cursor-pointer"
+                  aria-label="إغلاق"
+                  className="min-w-[44px] min-h-[44px] flex items-center justify-center text-white/70 hover:text-white transition bg-white/5 hover:bg-white/10 rounded-xl border border-white/10 cursor-pointer"
                 >
-                  <X size={17} />
+                  <X size={18} />
                 </button>
               </div>
             </div>
 
             {!isUnlocked ? (
-              <div className="flex-1 flex flex-col items-center justify-center p-6 text-center bg-gradient-to-b from-[#0b0b10] to-black">
+              <div className="theme-keep-dark flex-1 flex flex-col items-center justify-center p-6 text-center bg-gradient-to-b from-[#0b0b10] to-black">
                 <div className="w-20 h-20 rounded-3xl bg-purple-500/10 border border-purple-500/25 flex items-center justify-center mb-4 relative shadow-[0_0_30px_rgba(168,85,247,0.15)]">
                   <Lock size={34} className="text-purple-400" />
                   <Award size={20} className="text-yellow-400 absolute -bottom-1.5 -left-1.5" />
@@ -276,9 +283,10 @@ export default function AiChatWidget() {
               </>
             )}
           </motion.div>
-        </>
-      )}
-    </AnimatePresence>
+          </>
+        )}
+      </AnimatePresence>
+    </ViewportPortal>
   );
 }
 

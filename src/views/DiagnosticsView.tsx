@@ -29,6 +29,11 @@ import { isStaffEmail } from '../services/moderationService';
 import { clientCache } from '../utils/clientCache';
 import { rawNativeFetch, isRunningInAPKOrExternalShell } from '../main';
 import {
+  getConfiguredEnvApiUrl,
+  isEphemeralCloudHost,
+  resolveApiUrl,
+} from '../utils/apiUrl';
+import {
   TelemetryEvent,
   TelemetrySource,
   DiagnosticsTabKey,
@@ -182,14 +187,7 @@ export default function DiagnosticsView({
 
   const envInfo = useMemo(() => detectDeploymentEnvironment(), []);
 
-  const rawEnvHost = (import.meta.env.VITE_API_URL || '').trim();
-  const validEnvHost =
-    rawEnvHost.startsWith('http') &&
-    !rawEnvHost.includes('your-public-deployed') &&
-    !rawEnvHost.includes('example.com') &&
-    !rawEnvHost.includes('ais-dev-')
-      ? rawEnvHost.replace(/\/+$/, '')
-      : '';
+  const validEnvHost = getConfiguredEnvApiUrl();
 
   const isWebOrigin =
     typeof window !== 'undefined' &&
@@ -197,33 +195,16 @@ export default function DiagnosticsView({
     !(window.location.hostname === 'localhost' && !window.location.port);
 
   const defaultApiHost =
-    (isWebOrigin ? window.location.origin : '') || validEnvHost || '';
+    validEnvHost || (isWebOrigin ? window.location.origin : '') || '';
 
   const resolveRawTargetUrl = (apiPath: string): string => {
     const cleanPath = apiPath.startsWith('/') ? apiPath : `/${apiPath}`;
-    const stored = (localStorage.getItem('custom_api_host') || '').trim().replace(/\/+$/, '');
-    const isApk = isRunningInAPKOrExternalShell();
-    const usableStored =
-      stored &&
-      stored.startsWith('http') &&
-      !stored.includes('ais-dev-') &&
-      !stored.includes('your-public-deployed') &&
-      !stored.includes('example.com') &&
-      (isApk || (!stored.includes('.run.app') && !stored.includes('ais-pre-')))
-        ? stored
-        : '';
-    if (usableStored) return `${usableStored}${cleanPath}`;
-    if (isApk && validEnvHost) return `${validEnvHost}${cleanPath}`;
-    return cleanPath;
+    return resolveApiUrl(cleanPath);
   };
 
   useEffect(() => {
     const rawStored = localStorage.getItem('custom_api_host') || '';
-    const isLegacyHost =
-      rawStored.includes('ais-dev-') ||
-      rawStored.includes('your-public-deployed') ||
-      rawStored.includes('example.com') ||
-      (!envInfo.isApkShell && (rawStored.includes('ais-pre-') || rawStored.includes('.run.app')));
+    const isLegacyHost = isEphemeralCloudHost(rawStored);
     if (isLegacyHost) {
       localStorage.removeItem('custom_api_host');
     }

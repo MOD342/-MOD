@@ -223,7 +223,7 @@ export default function ThreeHeaderTrophyEmblem({
         onClick?.();
       }}
       title="شعار وكأس حلبة الأوتاكو ثلاثي الأبعاد"
-      className="relative group flex items-center justify-center rounded-2xl bg-gradient-to-b from-amber-500/15 via-[#141422] to-[#0a0a12] border border-amber-400/35 hover:border-[#FF1744] shadow-[0_0_25px_rgba(245,158,11,0.2)] transition cursor-pointer shrink-0 overflow-hidden"
+      className="theme-keep-dark relative group flex items-center justify-center rounded-2xl bg-gradient-to-b from-amber-500/15 via-[#141422] to-[#0a0a12] border border-amber-400/35 hover:border-[#FF1744] shadow-[0_0_25px_rgba(245,158,11,0.2)] transition cursor-pointer shrink-0 overflow-hidden"
       style={{ width: size, height: size }}
     >
       <div

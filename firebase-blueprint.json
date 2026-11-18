@@ -27,7 +27,12 @@
         "boosters": { "type": "object" },
         "lastBossDefeatDate": { "type": "string" },
         "unlockedRewards": { "type": "array" },
-        "hasClaimedCorrectionBadge": { "type": "boolean" }
+        "hasClaimedCorrectionBadge": { "type": "boolean" },
+        "doubleXpUntil": { "type": "number" },
+        "doubleCoinsUntil": { "type": "number" },
+        "streakShieldCount": { "type": "number" },
+        "antiCheatHintCount": { "type": "number" },
+        "lastSyncedAt": { "type": "number" }
       },
       "required": ["role", "createdAt", "xp", "level", "modPoints", "streakDays", "likesReceived", "commentsCount", "recommendationsAccepted", "aiGamesPoints", "ratingsCount", "chatMessagesCount", "lastActiveDate"]
     },
@@ -293,6 +298,22 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["code", "rewardCoins", "rewardXp", "maxUses", "usedCount", "redeemedBy", "active"]
+    },
+    "StoreGiftLog": {
+      "title": "StoreGiftLog",
+      "description": "Audit log for store items gifted between users",
+      "type": "object",
+      "properties": {
+        "senderId": { "type": "string" },
+        "senderName": { "type": "string" },
+        "recipientId": { "type": "string" },
+        "recipientName": { "type": "string" },
+        "itemId": { "type": "string" },
+        "itemName": { "type": "string" },
+        "price": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["senderId", "recipientId", "itemId", "itemName", "price", "createdAt"]
     }
   },
   "firestore": {
@@ -371,6 +392,10 @@
     "/arenaBelt/{docId}": {
       "schema": "ArenaBelt",
       "description": "Current arena belt champion and bracket state"
+    },
+    "/storeGiftLogs/{logId}": {
+      "schema": "StoreGiftLog",
+      "description": "Audit logs of store item gifts sent between users"
     }
   }
 }

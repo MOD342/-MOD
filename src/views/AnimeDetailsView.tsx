@@ -1,16 +1,21 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Play, Star, List, MessageCircle, Heart, Share2, Info, ChevronRight, Loader2, Users, Youtube, X, Plus, LogIn, ThumbsUp, ThumbsDown, Copy, Reply, Flag, EyeOff, Eye, Edit2, Trash2, ShieldCheck, CheckSquare, PlayCircle, Trophy, Send, Flame, Download, Lightbulb, Home } from 'lucide-react';
+import { Play, Star, List, MessageCircle, Heart, Share2, Info, ChevronRight, Loader2, Users, Youtube, X, Plus, LogIn, ThumbsUp, ThumbsDown, Copy, Reply, Flag, EyeOff, Eye, Edit2, Trash2, ShieldCheck, CheckSquare, PlayCircle, Trophy, Send, Flame, Download, Lightbulb, Home, RefreshCw, AlertCircle } from 'lucide-react';
 import { Search } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { db } from '../firebase';
 import { doc, updateDoc, increment, collection, query, where, getDocs } from 'firebase/firestore';
-import { listService, CustomList, MainListStatus, AnimeEntry, getAnimeRewards } from '../services/listService';
+import { listService, CustomList, MainListStatus, AnimeEntry, getAnimeRewards, isActiveLibraryEntry } from '../services/listService';
 import { Recommendation, getApprovedRecommendations, addRecommendation, Comment, getComments, addComment, updateCommentInteraction, updateRecommendationInteraction } from '../services/animeInteractionService';
 import { notificationsService } from '../services/notificationsService';
 import { isStaffEmail } from '../services/moderationService';
 import { clientCache } from '../utils/clientCache';
 import { LongPressCopy } from '../components/LongPressCopy';
+import { openExternalUrl } from '../utils/externalNavigation';
+import ViewportPortal from '../components/ViewportPortal';
+import PullToRefresh from '../components/PullToRefresh';
+import BatchDownloadModal from '../components/BatchDownloadModal';
+import { useDeviceDisplay } from '../hooks/useDeviceDisplay';
 
 function RecommendationItem({ rec, user, isMod, onDelete }: any) {
   const [likes, setLikes] = useState(rec.likes || 0);
@@ -175,10 +180,29 @@ const RELATION_TYPES_AR: Record<string, string> = {
   'Other': 'أخرى'
 };
 
+const RECENT_RANDOM_IDS: string[] = [];
+
+function recordRandomAnimeSeen(animeId?: string | number, malId?: string | number) {
+  const candidates = [animeId, malId]
+    .map((v) => (v !== undefined && v !== null ? String(v).trim() : ''))
+    .filter((v) => v && v !== 'random' && v !== 'unknown');
+  for (const c of candidates) {
+    const idx = RECENT_RANDOM_IDS.indexOf(c);
+    if (idx !== -1) RECENT_RANDOM_IDS.splice(idx, 1);
+    RECENT_RANDOM_IDS.push(c);
+  }
+  while (RECENT_RANDOM_IDS.length > 25) {
+    RECENT_RANDOM_IDS.shift();
+  }
+}
+
 export default function AnimeDetailsView({ id, showComments = false, focusCommentId, autoplayEpisode, onBack, onHome, onWatch, onAnimeClick, onNavigate }: AnimeDetailsProps) {
   const { user, signIn, userRole, userData } = useAuth();
   const [anime, setAnime] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshingDetails, setRefreshingDetails] = useState(false);
+  const [randomLoading, setRandomLoading] = useState(false);
+  const [loadError, setLoadError] = useState(false);
   const [appRating, setAppRating] = useState<{score: number, count: number}>({score: 0, count: 0});
   const [showListModal, setShowListModal] = useState(false);
   const [showDetailsNav, setShowDetailsNav] = useState(true);
@@ -212,6 +236,7 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
     }
   }, [anime, autoplayEpisode, onWatch]);
   
+  const display = useDeviceDisplay();
   const [userEntry, setUserEntry] = useState<AnimeEntry | null>(null);
   const [customLists, setCustomLists] = useState<CustomList[]>([]);
   const [newListName, setNewListName] = useState('');
@@ -274,6 +299,7 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
   const [selectedSeasonNum, setSelectedSeasonNum] = useState<number>(1);
   const [episodeFilterQuery, setEpisodeFilterQuery] = useState<string>('');
   const [episodeSortDesc, setEpisodeSortDesc] = useState<boolean>(false);
+  const [showBatchDownloadModal, setShowBatchDownloadModal] = useState<boolean>(false);
 
   useEffect(() => {
     if (anime) {
@@ -287,30 +313,116 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
     return Array.isArray(anime.episodes) ? anime.episodes : [];
   }, [anime]);
 
-  useEffect(() => {
+  const fetchGenerationRef = React.useRef(0);
+  const fetchAbortRef = React.useRef<AbortController | null>(null);
+
+  const fetchDetails = useCallback(async (forceBypass = false) => {
     if (!id) return;
-    const fetchDetails = async () => {
+    fetchGenerationRef.current += 1;
+    const generation = fetchGenerationRef.current;
+    fetchAbortRef.current?.abort();
+    const controller = new AbortController();
+    fetchAbortRef.current = controller;
+
+    setLoadError(false);
+    let hasCachedData = false;
+
+    if (id === 'random') {
+      setRandomLoading(true);
+      setLoading(true);
       try {
-        if (id !== 'random') {
-          const cached = clientCache.get<any>(`client_anime_details_v8_${id}`);
-          if (cached && cached.description && cached.description !== 'جاري تحديث قصة وتفاصيل هذا الأنمي قريباً.') {
-            setAnime(cached);
-            setLoading(false);
+        const excludeSet = new Set(RECENT_RANDOM_IDS);
+        if (anime?._id) excludeSet.add(String(anime._id));
+        if (anime?.malId) excludeSet.add(String(anime.malId));
+        const qs = new URLSearchParams();
+        if (excludeSet.size > 0) qs.set('exclude', Array.from(excludeSet).join(','));
+        qs.set('_r', String(Date.now()));
+
+        const timeoutId = setTimeout(() => controller.abort(), 14000);
+        try {
+          const res = await fetch(`/api/anime/details/random?${qs.toString()}`, {
+            cache: 'no-store',
+            signal: controller.signal,
+          });
+          clearTimeout(timeoutId);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const json = await res.json();
+          if (generation !== fetchGenerationRef.current) return;
+
+          const data = json?.data;
+          if (json?.success && data) {
+            recordRandomAnimeSeen(data._id, data.malId);
+            if (data._id && data._id !== 'random') {
+              clientCache.set(`client_anime_details_v8_${data._id}`, data, 12 * 60 * 60 * 1000);
+            }
+            setAnime(data);
+            setLoadError(false);
+            if (data?.description && /[a-zA-Z]{10,}/.test(data.description)) {
+              fetch('/api/anime/translate-synopsis', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ animeId: data._id || data.malId, text: data.description }),
+              })
+                .then((r) => r.json())
+                .then((tr) => {
+                  if (generation === fetchGenerationRef.current && tr?.success && tr.translated && /[\u0600-\u06FF]/.test(tr.translated)) {
+                    setAnime((prev: any) => (prev ? { ...prev, description: tr.translated } : prev));
+                  }
+                })
+                .catch(() => {});
+            }
+            import('../services/listService').then(({ listService }) => {
+              listService.getAnimeAppRating(data._id || data.malId).then((r) => {
+                if (generation === fetchGenerationRef.current) setAppRating(r);
+              });
+            });
           } else {
-            setLoading(true);
+            setLoadError(true);
           }
+        } catch (err: any) {
+          clearTimeout(timeoutId);
+          if (err?.name !== 'AbortError' && generation === fetchGenerationRef.current) {
+            setLoadError(true);
+          }
+        }
+      } finally {
+        if (generation === fetchGenerationRef.current) {
+          setLoading(false);
+          setRefreshingDetails(false);
+          setRandomLoading(false);
+        }
+      }
+      return;
+    }
+
+    try {
+      if (!forceBypass) {
+        const cached = clientCache.get<any>(`client_anime_details_v8_${id}`);
+        if (cached && cached.description && cached.description !== 'جاري تحديث قصة وتفاصيل هذا الأنمي قريباً.') {
+          setAnime(cached);
+          setLoading(false);
+          hasCachedData = true;
         } else {
           setLoading(true);
         }
-      } catch (e) {
-        setLoading(true);
+      } else {
+        setRefreshingDetails(true);
+        if (!anime) setLoading(true);
       }
-      try {
-        await clientCache.fetchWithRevalidate(
-          `client_anime_details_v8_${id}`,
-          `/api/anime/details/${id}`,
-          (data: any) => {
+    } catch {
+      setLoading(true);
+    }
+
+    try {
+      let resolvedData = false;
+      const result = await clientCache.fetchWithRevalidate(
+        `client_anime_details_v8_${id}`,
+        `/api/anime/details/${id}`,
+        (data: any) => {
+          if (data && generation === fetchGenerationRef.current) {
+            resolvedData = true;
             setAnime(data);
+            setLoadError(false);
             if (data?.description && /[a-zA-Z]{10,}/.test(data.description)) {
               fetch('/api/anime/translate-synopsis', {
                 method: 'POST',
@@ -319,26 +431,47 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
               })
                 .then(r => r.json())
                 .then(res => {
-                  if (res.success && res.translated && /[\u0600-\u06FF]/.test(res.translated)) {
+                  if (generation === fetchGenerationRef.current && res.success && res.translated && /[\u0600-\u06FF]/.test(res.translated)) {
                     setAnime((prev: any) => prev ? { ...prev, description: res.translated } : prev);
                   }
                 })
                 .catch(() => {});
             }
             import('../services/listService').then(({ listService }) => {
-               listService.getAnimeAppRating(data._id || id).then(setAppRating);
+               listService.getAnimeAppRating(data._id || id).then((r) => {
+                 if (generation === fetchGenerationRef.current) setAppRating(r);
+               });
             });
-          },
-          12 * 60 * 60 * 1000 // 12 Hours TTL for details with SWR revalidation
-        );
-      } catch (err) {
-        console.error(err);
-      } finally {
-        setLoading(false);
+          }
+        },
+        12 * 60 * 60 * 1000,
+        {
+          forceRefresh: forceBypass,
+          onError: () => {
+            if (!hasCachedData && generation === fetchGenerationRef.current) setLoadError(true);
+          }
+        }
+      );
+      if (!result && !resolvedData && !hasCachedData && !anime && generation === fetchGenerationRef.current) {
+        setLoadError(true);
       }
-    };
-    fetchDetails();
+    } catch (err) {
+      console.error(err);
+      if (!hasCachedData && !anime && generation === fetchGenerationRef.current) setLoadError(true);
+    } finally {
+      if (generation === fetchGenerationRef.current) {
+        setLoading(false);
+        setRefreshingDetails(false);
+      }
+    }
   }, [id]);
+
+  useEffect(() => {
+    void fetchDetails(false);
+    return () => {
+      fetchAbortRef.current?.abort();
+    };
+  }, [id, fetchDetails]);
 
   useEffect(() => {
     if (anime) {
@@ -401,19 +534,13 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
       URL.revokeObjectURL(blobUrl);
     } catch (error) {
       console.error('Download failed, fallback to direct open', error);
-      window.open(url, '_blank');
+      void openExternalUrl(url);
     } finally {
       setDownloadingPhoto(false);
     }
   };
 
-  useEffect(() => {
-    if (user && anime) {
-      loadUserData();
-    }
-  }, [user, anime]);
-
-  const loadUserData = async () => {
+  const loadUserData = useCallback(async () => {
     if (!user || !anime) return;
     setIsLoadingLists(true);
     try {
@@ -422,14 +549,36 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
         listService.getAnimeEntries(user.id)
       ]);
       setCustomLists(allCustom);
-      const entry = allEntries.find(e => e.id === anime._id);
+      const entry = allEntries.find(e =>
+        e.id === anime._id ||
+        e.animeId === anime._id ||
+        (anime.malId && (e.id === String(anime.malId) || e.animeId === String(anime.malId)))
+      );
       setUserEntry(entry || null);
     } catch (e) {
       console.error(e);
     } finally {
       setIsLoadingLists(false);
     }
-  };
+  }, [user, anime]);
+
+  useEffect(() => {
+    if (user && anime) {
+      void loadUserData();
+    }
+  }, [user, anime, loadUserData]);
+
+  useEffect(() => {
+    if (!user || !anime) return;
+    const onLibraryUpdated = (ev: Event) => {
+      const detail = (ev as CustomEvent)?.detail;
+      if (!detail?.userId || detail.userId === user.id) {
+        void loadUserData();
+      }
+    };
+    window.addEventListener('otaku:library-updated', onLibraryUpdated);
+    return () => window.removeEventListener('otaku:library-updated', onLibraryUpdated);
+  }, [user, anime, loadUserData]);
 
   const [showQuizModal, setShowQuizModal] = useState(false);
   const [quizData, setQuizData] = useState<any>(null);
@@ -856,27 +1005,65 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
 
   const isMod = userRole === 'owner' || userRole === 'admin' || userRole === 'moderator' || isStaffEmail(user?.email);
 
-  if (loading || !anime) {
+  if (loading && !anime) {
     return (
-      <div className="bg-black min-h-screen flex items-center justify-center">
+      <div className="bg-black min-h-screen flex flex-col items-center justify-center gap-3 text-neutral-400">
         <Loader2 className="animate-spin text-purple-500" size={40} />
+        <span className="text-xs font-bold">جاري تحميل تفاصيل الأنمي...</span>
       </div>
     );
   }
 
-  const isSaved = !!userEntry && userEntry.status !== 'none';
+  if (!anime || loadError) {
+    return (
+      <div className="bg-black min-h-screen flex flex-col items-center justify-center p-6 text-center gap-4" dir="rtl">
+        <AlertCircle className="text-rose-500" size={44} />
+        <div className="space-y-1 max-w-sm">
+          <h2 className="text-base font-black text-white">تعذر تحميل تفاصيل الأنمي</h2>
+          <p className="text-xs text-neutral-400">تحقق من اتصالك بالإنترنت ثم أعد المحاولة</p>
+        </div>
+        <div className="flex items-center gap-2.5">
+          <button
+            onClick={() => void fetchDetails(true)}
+            disabled={refreshingDetails}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-black transition cursor-pointer"
+          >
+            <RefreshCw size={14} className={refreshingDetails ? 'animate-spin' : ''} />
+            <span>إعادة المحاولة</span>
+          </button>
+          <button
+            onClick={onBack}
+            className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-neutral-900 border border-white/10 text-neutral-200 text-xs font-black transition cursor-pointer"
+          >
+            <ChevronRight size={14} />
+            <span>رجوع</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const isSaved = isActiveLibraryEntry(userEntry);
 
   return (
+    <PullToRefresh onRefresh={() => fetchDetails(true)}>
     <motion.div 
-      initial={{ opacity: 0, x: 50 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: 50 }}
-      className="bg-black min-h-screen pb-24"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="bg-black min-h-[var(--vv-height,100dvh)] pb-24"
     >
       {/* Top Navbar */}
-      <div className={`fixed top-0 right-0 left-0 max-w-md sm:max-w-xl md:max-w-3xl lg:max-w-5xl xl:max-w-7xl mx-auto p-4 pt-4 flex gap-2 z-[60] top-bar items-center pointer-events-none transition-all duration-300 ${
+      <div
+        style={{
+          paddingTop: 'calc(var(--safe-top, 0px) + 0.75rem)',
+          paddingLeft: 'calc(var(--safe-left, 0px) + 1rem)',
+          paddingRight: 'calc(var(--safe-right, 0px) + 1rem)',
+        }}
+        className={`theme-keep-dark fixed top-0 right-0 left-0 max-w-7xl mx-auto pb-3 flex gap-2 z-[60] top-bar items-center pointer-events-none transition-all duration-300 ${
         showDetailsNav ? 'translate-y-0 opacity-100' : '-translate-y-full opacity-0'
-      }`}>
+      }`}
+      >
         <button
           onClick={onBack}
           title="رجوع"
@@ -896,8 +1083,21 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
           <Home size={22} />
         </button>
         <div className="flex-1" />
-        <button onClick={() => { if(onAnimeClick) onAnimeClick('random') }} title="أنمي عشوائي" className="w-10 h-10 bg-transparent rounded-full flex items-center justify-center text-white drop-shadow-[0_2px_6px_rgba(0,0,0,0.85)] hover:text-purple-400 hover:scale-110 active:scale-95 transition-all duration-300 pointer-events-auto cursor-pointer">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 3h5v5"/><path d="M4 20L21 3"/><path d="M21 16v5h-5"/><path d="M15 15l6 6"/><path d="M4 4l5 5"/></svg>
+        <button
+          disabled={randomLoading || loading}
+          onClick={() => {
+            if (randomLoading || loading) return;
+            recordRandomAnimeSeen(anime?._id, anime?.malId);
+            if (onAnimeClick) onAnimeClick('random');
+          }}
+          title="أنمي عشوائي"
+          className="w-10 h-10 bg-transparent rounded-full flex items-center justify-center text-white drop-shadow-[0_2px_6px_rgba(0,0,0,0.85)] hover:text-purple-400 hover:scale-110 active:scale-95 disabled:opacity-50 transition-all duration-300 pointer-events-auto cursor-pointer"
+        >
+          {randomLoading ? (
+            <Loader2 size={20} className="animate-spin text-purple-400" />
+          ) : (
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 3h5v5"/><path d="M4 20L21 3"/><path d="M21 16v5h-5"/><path d="M15 15l6 6"/><path d="M4 4l5 5"/></svg>
+          )}
         </button>
         <button onClick={() => { 
               if(!user) signIn(); 
@@ -920,62 +1120,82 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
       </div>
 
       {/* Header Image */}
-      <div className="relative h-[65vh] w-full bg-[#121212] flex-shrink-0">
-        <img 
-          src={anime.posterUrl || "https://images.unsplash.com/photo-1614583225154-5fc2d153c391?q=80&w=1000&auto=format&fit=crop"} 
+      <div className={`theme-keep-dark relative w-full bg-[#121212] flex-shrink-0 ${
+        display.isCoverScreen
+          ? 'h-[48vh] min-h-[300px]'
+          : display.isWideOrUnfolded
+          ? 'h-[44vh] md:h-[48vh] max-h-[520px]'
+          : 'h-[58vh] min-h-[360px]'
+      }`}>
+        <img
+          src={anime.posterUrl || "https://images.unsplash.com/photo-1614583225154-5fc2d153c391?q=80&w=1000&auto=format&fit=crop"}
           onError={(e) => {
             const target = e.currentTarget;
             if (target.src && target.src.includes('-poster.')) {
               target.src = target.src.replace('-poster.', '-thumbnail.');
             }
           }}
-          alt="cover" 
+          alt="cover"
           className="w-full h-full object-cover"
         />
-        <div className="absolute inset-0 bg-gradient-to-t from-black via-black/40 to-transparent" />
-        
+        <div className="absolute inset-0 bg-gradient-to-t from-black via-black/45 to-transparent" />
+
         {/* Info Overlay */}
-        <div className="absolute bottom-6 right-4 left-4 z-30 flex flex-col items-center text-center gap-3">
-          <div className="space-y-1">
-            <h1 className="text-xl sm:text-2xl md:text-3xl font-bold text-white leading-tight drop-shadow-2xl">
+        <div className="absolute bottom-5 right-4 left-4 max-w-6xl mx-auto z-30 flex flex-col items-center md:items-start text-center md:text-right gap-3 md:flex-row md:gap-6">
+          {display.isWideOrUnfolded && (
+            <div className="hidden md:block w-32 lg:w-36 aspect-[3/4] rounded-2xl overflow-hidden border border-white/15 shadow-2xl shrink-0 bg-neutral-900">
+              <img
+                src={anime.posterUrl}
+                alt={anime.title}
+                referrerPolicy="no-referrer"
+                className="w-full h-full object-cover"
+              />
+            </div>
+          )}
+          <div className="space-y-2 flex-1 min-w-0">
+            <h1 className="text-xl sm:text-2xl md:text-3xl lg:text-4xl font-black text-white leading-tight drop-shadow-2xl">
               <LongPressCopy text={anime.title}>
                 {anime.title}
               </LongPressCopy>
             </h1>
             {anime.englishTitle && anime.englishTitle !== anime.title && (
-              <p className="text-[11px] sm:text-xs text-neutral-400 font-semibold tracking-wider">
+              <p className="text-[11px] sm:text-xs text-neutral-300 font-semibold tracking-wider truncate">
                 {anime.englishTitle}
               </p>
             )}
-          </div>
-          <div className="flex flex-row justify-center items-center gap-2 flex-wrap">
-            <span className="text-yellow-400 flex items-center justify-center gap-1 bg-black/80 px-3 py-1 rounded backdrop-blur-md border border-white/5 text-xs font-bold"><Star size={14} fill="currentColor"/> {anime.rating || anime.score || '?'}</span>
-            <span className="bg-black/80 px-3 py-1 rounded backdrop-blur-md border border-white/5 text-purple-300 text-xs font-bold">
-              {(() => {
-                const s = String(anime.season || '').toLowerCase().trim();
-                const yr = anime.releaseYear && String(anime.releaseYear) !== 'غير معروف' ? String(anime.releaseYear) : '';
-                if (s === 'winter') return yr ? `شتاء ${yr}` : 'شتاء';
-                if (s === 'spring') return yr ? `ربيع ${yr}` : 'ربيع';
-                if (s === 'summer') return yr ? `صيف ${yr}` : 'صيف';
-                if (s === 'fall' || s === 'autumn') return yr ? `خريف ${yr}` : 'خريف';
-                return anime.season || (yr ? `عام ${yr}` : 'غير محدد');
-              })()}
-            </span>
-            <span className="bg-black/80 px-3 py-1 rounded backdrop-blur-md border border-white/5 text-blue-300 text-xs font-bold">{anime.episodes?.length || anime.episodesCount || '?'} حلقة</span>
-            <span className="bg-black/80 px-3 py-1 rounded backdrop-blur-md border border-white/5 text-green-300 text-xs font-bold">
-              {(() => {
-                const st = String(anime.status || '').toLowerCase().trim();
-                if (st.includes('now') || st.includes('airing') || st.includes('releasing') || st.includes('ongoing') || st.includes('مستمر') || st.includes('يعرض')) return 'مستمر';
-                if (st.includes('finished') || st.includes('complete') || st.includes('مكتمل') || st.includes('منتهي')) return 'مكتمل';
-                if (st.includes('not yet') || st.includes('upcoming') || st.includes('قادم')) return 'قادم';
-                return anime.status || 'مستمر';
-              })()}
-            </span>
+            <div className="flex flex-row justify-center md:justify-start items-center gap-2 flex-wrap text-xs font-bold">
+              <span className="text-yellow-400 flex items-center justify-center gap-1 bg-black/80 px-2.5 py-1 rounded-lg border border-white/10 tabular-nums">
+                <Star size={14} fill="currentColor" /> {anime.rating || anime.score || '?'}
+              </span>
+              <span className="bg-black/80 px-2.5 py-1 rounded-lg border border-white/10 text-purple-300">
+                {(() => {
+                  const s = String(anime.season || '').toLowerCase().trim();
+                  const yr = anime.releaseYear && String(anime.releaseYear) !== 'غير معروف' ? String(anime.releaseYear) : '';
+                  if (s === 'winter') return yr ? `شتاء ${yr}` : 'شتاء';
+                  if (s === 'spring') return yr ? `ربيع ${yr}` : 'ربيع';
+                  if (s === 'summer') return yr ? `صيف ${yr}` : 'صيف';
+                  if (s === 'fall' || s === 'autumn') return yr ? `خريف ${yr}` : 'خريف';
+                  return anime.season || (yr ? `عام ${yr}` : 'غير محدد');
+                })()}
+              </span>
+              <span className="bg-black/80 px-2.5 py-1 rounded-lg border border-white/10 text-blue-300 tabular-nums">
+                {anime.episodes?.length || anime.episodesCount || '?'} حلقة
+              </span>
+              <span className="bg-black/80 px-2.5 py-1 rounded-lg border border-white/10 text-green-300">
+                {(() => {
+                  const st = String(anime.status || '').toLowerCase().trim();
+                  if (st.includes('now') || st.includes('airing') || st.includes('releasing') || st.includes('ongoing') || st.includes('مستمر') || st.includes('يعرض')) return 'مستمر';
+                  if (st.includes('finished') || st.includes('complete') || st.includes('مكتمل') || st.includes('منتهي')) return 'مكتمل';
+                  if (st.includes('not yet') || st.includes('upcoming') || st.includes('قادم')) return 'قادم';
+                  return anime.status || 'مستمر';
+                })()}
+              </span>
+            </div>
           </div>
         </div>
       </div>
 
-      <div className="px-4 mt-6 relative z-10 space-y-4">
+      <div className="max-w-6xl mx-auto px-4 md:px-6 mt-5 relative z-10 space-y-4">
 
         <div>
           <div className="flex gap-2 mb-3">
@@ -1045,48 +1265,49 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
         {/* Tab Content */}
         {activeTab === 'story' && (
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
-            <div className="bg-[#1E1E1E] p-3 rounded-2xl border border-neutral-800 space-y-3">
-              <div className="flex items-center justify-between">
-                <h3 className="text-white font-bold flex items-center gap-2 text-sm"><Info size={16} className="text-[#FF1744]"/> قصة الأنمي</h3>
-              </div>
-              <p className="text-neutral-300 text-xs leading-relaxed">{anime.description}</p>
-              <div className="flex flex-wrap gap-1.5">
-                {anime.genres?.map((g: string, idx: number) => (
-                  <span key={`${g}-${idx}`} className="text-[10px] bg-[#121212] border border-neutral-800 px-2.5 py-1 rounded-full text-neutral-300 font-bold">
-                    {toArabicGenre(g)}
-                  </span>
-                ))}
-              </div>
-            </div>
-            
-            <div className="bg-[#1E1E1E] p-3 rounded-2xl border border-neutral-800 space-y-3">
-              <h3 className="text-white font-bold flex items-center gap-2 text-sm"><Star size={16} className="text-yellow-500"/> تقييم المستخدمين</h3>
-              <div className="flex gap-4 items-center">
-                <div className="flex flex-col items-center justify-center p-3 rounded-xl bg-[#121212] border border-yellow-500/20 shadow-[0_0_15px_rgba(234,179,8,0.1)] min-w-[80px]">
-                   <span className="text-3xl font-black text-yellow-500 leading-none">{appRating.score || '?'}</span>
-                   <span className="text-[10px] font-bold text-neutral-500 mt-1">من {appRating.count} تقييم</span>
+            <div className={`grid gap-4 ${display.isBookPosture || display.isWideOrUnfolded ? 'grid-cols-1 md:grid-cols-12' : 'grid-cols-1'}`} style={display.isBookPosture ? { columnGap: 'calc(var(--fold-hinge-gap, 0px) + 1rem)' } : undefined}>
+              <div className={`${display.isBookPosture || display.isWideOrUnfolded ? 'md:col-span-7 lg:col-span-8' : ''} bg-[#1E1E1E] p-3.5 rounded-2xl border border-neutral-800 space-y-3`}>
+                <div className="flex items-center justify-between">
+                  <h3 className="text-white font-bold flex items-center gap-2 text-sm"><Info size={16} className="text-[#FF1744]"/> قصة الأنمي</h3>
                 </div>
-                <div className="flex-1">
-                   {/* 10 Stars Display */}
-                   <div className="flex gap-0.5 mb-1.5" onMouseLeave={() => setHoverRating(0)}>
-                     {[...Array(10)].map((_, i) => {
-                       const starVal = i + 1;
-                       const isActive = hoverRating ? starVal <= hoverRating : starVal <= (userEntry?.score || 0);
-                       return (
-                         <Star 
-                           key={i} 
-                           size={14} 
-                           className={`cursor-pointer transition-colors ${isActive ? "text-yellow-500" : "text-neutral-700"} hover:scale-110`} 
-                           fill={isActive ? "currentColor" : "none"} 
-                           onMouseEnter={() => setHoverRating(starVal)}
-                           onClick={() => handleUpdateScore(starVal)}
-                         />
-                       );
-                     })}
-                   </div>
-                   <p className="text-[10px] text-[#B0B0B0] font-bold mb-1">
-                     {userEntry?.score ? `تقييمك: ${userEntry.score} من 10` : 'التقييم يعتمد بالكامل على مستخدمي التطبيق فقط.'}
-                   </p>
+                <p className="text-neutral-300 text-xs leading-relaxed">{anime.description}</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {anime.genres?.map((g: string, idx: number) => (
+                    <span key={`${g}-${idx}`} className="text-[10px] bg-[#121212] border border-neutral-800 px-2.5 py-1 rounded-full text-neutral-300 font-bold">
+                      {toArabicGenre(g)}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              <div className={`${display.isBookPosture || display.isWideOrUnfolded ? 'md:col-span-5 lg:col-span-4' : ''} bg-[#1E1E1E] p-3.5 rounded-2xl border border-neutral-800 space-y-3`}>
+                <h3 className="text-white font-bold flex items-center gap-2 text-sm"><Star size={16} className="text-yellow-500"/> تقييم المستخدمين</h3>
+                <div className="flex gap-4 items-center">
+                  <div className="flex flex-col items-center justify-center p-3 rounded-xl bg-[#121212] border border-yellow-500/20 shadow-[0_0_15px_rgba(234,179,8,0.1)] min-w-[80px]">
+                     <span className="text-3xl font-black text-yellow-500 leading-none tabular-nums">{appRating.score || '?'}</span>
+                     <span className="text-[10px] font-bold text-neutral-500 mt-1 tabular-nums">من {appRating.count} تقييم</span>
+                  </div>
+                  <div className="flex-1">
+                     <div className="flex gap-0.5 mb-1.5" onMouseLeave={() => setHoverRating(0)}>
+                       {[...Array(10)].map((_, i) => {
+                         const starVal = i + 1;
+                         const isActive = hoverRating ? starVal <= hoverRating : starVal <= (userEntry?.score || 0);
+                         return (
+                           <Star
+                             key={i}
+                             size={14}
+                             className={`cursor-pointer transition-colors ${isActive ? "text-yellow-500" : "text-neutral-700"} hover:scale-110`}
+                             fill={isActive ? "currentColor" : "none"}
+                             onMouseEnter={() => setHoverRating(starVal)}
+                             onClick={() => handleUpdateScore(starVal)}
+                           />
+                         );
+                       })}
+                     </div>
+                     <p className="text-[10px] text-[#B0B0B0] font-bold mb-1">
+                       {userEntry?.score ? `تقييمك: ${userEntry.score} من 10` : 'التقييم يعتمد بالكامل على مستخدمي التطبيق فقط.'}
+                     </p>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1344,7 +1565,7 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
                 }
 
                 return (
-                  <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-3 pt-1">
+                  <div className={`grid gap-3 pt-1 ${display.isCoverScreen ? 'grid-cols-2' : 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6'}`}>
                     {rawCombined.map((rel: any, idx: number) => (
                       <RelatedAnimeCard
                         key={`${rel.mal_id || idx}-${idx}`}
@@ -1400,7 +1621,7 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
                         <Trash2 size={12} />
                       </button>
                     )}
-                    <div className="w-28 h-40 rounded-xl overflow-hidden bg-[#121212] border border-neutral-800 shadow-lg group-hover:border-[#FF1744] transition-colors relative">
+                    <div className="theme-keep-dark w-28 h-40 rounded-xl overflow-hidden bg-[#121212] border border-neutral-800 shadow-lg group-hover:border-[#FF1744] transition-colors relative">
                        {rec.posterUrl ? (
                          <img src={rec.posterUrl} alt={rec.title} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300" referrerPolicy="no-referrer" />
                        ) : (
@@ -1463,83 +1684,102 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
 
         {activeTab === 'episodes' && (
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-3">
-             {activeSeasonEpisodes && activeSeasonEpisodes.length > 6 && (
-               <div className="flex items-center gap-2">
-                 <input
-                   type="text"
-                   value={episodeFilterQuery}
-                   onChange={(e) => setEpisodeFilterQuery(e.target.value)}
-                   placeholder="ابحث برقم الحلقة..."
-                   className="flex-1 bg-[#1E1E1E] border border-neutral-800 rounded-xl px-3.5 py-2 text-xs font-bold text-white placeholder-neutral-500 focus:outline-none focus:border-[#FF1744] transition text-right"
-                 />
-                 <button
-                   type="button"
-                   onClick={() => setEpisodeSortDesc(!episodeSortDesc)}
-                   className="px-3.5 py-2 rounded-xl bg-[#1E1E1E] hover:bg-neutral-800 border border-neutral-800 text-xs font-black text-neutral-300 transition shrink-0 cursor-pointer"
-                 >
-                   {episodeSortDesc ? 'الأحدث أولاً ↓' : 'الأقدم أولاً ↑'}
-                 </button>
+             {activeSeasonEpisodes && activeSeasonEpisodes.length > 0 && (
+               <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                 {activeSeasonEpisodes.length > 6 && (
+                   <input
+                     type="text"
+                     value={episodeFilterQuery}
+                     onChange={(e) => setEpisodeFilterQuery(e.target.value)}
+                     placeholder="ابحث برقم الحلقة..."
+                     className="flex-1 min-h-[44px] bg-[#1E1E1E] border border-neutral-800 rounded-xl px-3.5 py-2 text-xs font-bold text-white placeholder-neutral-500 focus:outline-none focus:border-[#FF1744] transition text-right"
+                   />
+                 )}
+                 <div className="flex items-center gap-2 sm:mr-auto">
+                   {activeSeasonEpisodes.length > 6 && (
+                     <button
+                       type="button"
+                       onClick={() => setEpisodeSortDesc(!episodeSortDesc)}
+                       className="min-h-[44px] px-3.5 py-2 rounded-xl bg-[#1E1E1E] hover:bg-neutral-800 border border-neutral-800 text-xs font-black text-neutral-300 transition shrink-0 cursor-pointer whitespace-nowrap"
+                     >
+                       {episodeSortDesc ? 'الأحدث أولاً ↓' : 'الأقدم أولاً ↑'}
+                     </button>
+                   )}
+                   <button
+                     type="button"
+                     onClick={() => setShowBatchDownloadModal(true)}
+                     className="min-h-[44px] px-4 py-2 rounded-xl bg-[#FF1744] hover:bg-red-600 text-white text-xs font-black flex items-center justify-center gap-1.5 transition shrink-0 cursor-pointer whitespace-nowrap shadow-md shadow-red-600/20"
+                   >
+                     <Download size={15} />
+                     <span>تنزيل عدة حلقات</span>
+                   </button>
+                 </div>
                </div>
              )}
-             {activeSeasonEpisodes && activeSeasonEpisodes.length > 0 ? (() => {
-               let list = [...activeSeasonEpisodes];
-               if (episodeFilterQuery.trim()) {
-                 const q = episodeFilterQuery.trim().toLowerCase();
-                 list = list.filter((ep: any) => String(ep.num || '').includes(q) || String(ep.title || '').toLowerCase().includes(q));
-               }
-               if (episodeSortDesc) {
-                 list.reverse();
-               }
-               return list;
-               })().map((ep: any, idx: number) => {
-               const epIdx = normalizeEpisodeNum(ep.num, idx + 1, ep.title);
-               const isWatched = isEpisodeWatched(epIdx);
-               return (
-               <motion.div 
-                 key={`${ep.id}-${idx}`}
-                 onClick={() => handleEnterEpisode(ep, idx + 1)}
-                 whileHover={{ scale: 1.01, x: -4 }}
-                 whileTap={{ scale: 0.99 }}
-                 className={`w-full bg-[#1E1E1E] border ${isWatched ? 'border-green-500/35' : 'border-neutral-800'} rounded-xl p-4 flex justify-between items-center transition-all duration-300 group shadow-md cursor-pointer relative overflow-hidden gpu-accelerated`}
-               >
-                 {/* Left Side: Title & Info aligned appropriately */}
-                 <div className="flex flex-col text-right dir-rtl min-w-0 pr-1">
-                   <div className="flex items-center gap-2">
-                     <h4 className="font-bold text-white text-sm group-hover:text-red-500 transition line-clamp-1">
-                       {ep.title || `الحلقة ${epIdx}`}
-                     </h4>
-                     {isWatched && (
-                       <span className="text-[9px] font-black bg-green-500/15 text-green-400 border border-green-500/30 px-1.5 py-0.5 rounded-md shrink-0">
-                         تمت المشاهدة
+             {activeSeasonEpisodes && activeSeasonEpisodes.length > 0 ? (
+               <div className={`grid gap-3 ${display.isCoverScreen ? 'grid-cols-1' : 'grid-cols-1 md:grid-cols-2 lg:grid-cols-3'}`}>
+                 {(() => {
+                   let list = [...activeSeasonEpisodes];
+                   if (episodeFilterQuery.trim()) {
+                     const q = episodeFilterQuery.trim().toLowerCase();
+                     list = list.filter((ep: any) => String(ep.num || '').includes(q) || String(ep.title || '').toLowerCase().includes(q));
+                   }
+                   if (episodeSortDesc) {
+                     list.reverse();
+                   }
+                   return list;
+                 })().map((ep: any, idx: number) => {
+                   const epIdx = normalizeEpisodeNum(ep.num, idx + 1, ep.title);
+                   const isWatched = isEpisodeWatched(epIdx);
+                   return (
+                   <motion.div 
+                     key={`${ep.id}-${idx}`}
+                     onClick={() => handleEnterEpisode(ep, idx + 1)}
+                     whileHover={{ scale: 1.01, y: -2 }}
+                     whileTap={{ scale: 0.99 }}
+                     className={`w-full bg-[#1E1E1E] border ${isWatched ? 'border-green-500/35' : 'border-neutral-800'} rounded-xl ${display.isCoverScreen ? 'p-3' : 'p-4'} flex justify-between items-center gap-2 transition-all duration-300 group shadow-md cursor-pointer relative overflow-hidden gpu-accelerated`}
+                   >
+                     {/* Left Side: Title & Info aligned appropriately */}
+                     <div className="flex flex-col text-right dir-rtl min-w-0 pr-1">
+                       <div className="flex items-center gap-2 flex-wrap">
+                         <h4 className="font-bold text-white text-sm group-hover:text-red-500 transition line-clamp-1">
+                           {ep.title || `الحلقة ${epIdx}`}
+                         </h4>
+                         {isWatched && (
+                           <span className="text-[9px] font-black bg-green-500/15 text-green-400 border border-green-500/30 px-1.5 py-0.5 rounded-md shrink-0">
+                             تمت المشاهدة
+                           </span>
+                         )}
+                       </div>
+                       <span className="text-[10px] text-neutral-400 mt-0.5 truncate">
+                         {anime.seasonsList && anime.seasonsList.length > 1 ? `الموسم ${selectedSeasonNum} • ` : ''}رقم الحلقة {epIdx} مترجمة للعربية
                        </span>
-                     )}
-                   </div>
-                   <span className="text-[10px] text-neutral-400 mt-0.5">
-                     {anime.seasonsList && anime.seasonsList.length > 1 ? `الموسم ${selectedSeasonNum} • ` : ''}رقم الحلقة {epIdx} مترجمة للعربية
-                   </span>
-                 </div>
+                     </div>
 
-                 {/* Right Side: Episode marking toggle (Opposite edge checkbox layout) */}
-                 <button 
-                   onClick={(e) => {
-                     e.stopPropagation();
-                     handleToggleWatchedEpisode(epIdx, e);
-                   }}
-                   className={`p-2.5 shrink-0 rounded-xl border transition-all ${
-                     isWatched 
-                       ? 'bg-green-500/20 text-green-500 border-green-500/30' 
-                       : 'bg-neutral-800 text-neutral-400 border-neutral-700 hover:border-neutral-500 hover:text-white'
-                   } z-10 active:scale-95`}
-                   title={isWatched ? "إلغاء تحديد المشاهدة" : "تحديد كمشاهدة"}
-                 >
-                   {isWatched ? (
-                     <CheckSquare size={18} />
-                   ) : (
-                     <div className="w-[18px] h-[18px] border-2 border-neutral-500 rounded transition group-hover:border-neutral-400" />
-                   )}
-                 </button>
-               </motion.div>
-             )}) : (
+                     {/* Right Side: Episode marking toggle (Opposite edge checkbox layout) */}
+                     <button 
+                       onClick={(e) => {
+                         e.stopPropagation();
+                         handleToggleWatchedEpisode(epIdx, e);
+                       }}
+                       className={`min-w-[42px] min-h-[42px] flex items-center justify-center shrink-0 rounded-xl border transition-all cursor-pointer ${
+                         isWatched 
+                           ? 'bg-green-500/20 text-green-500 border-green-500/30' 
+                           : 'bg-neutral-800 text-neutral-400 border-neutral-700 hover:border-neutral-500 hover:text-white'
+                       } z-10 active:scale-95`}
+                       title={isWatched ? "إلغاء تحديد المشاهدة" : "تحديد كمشاهدة"}
+                     >
+                       {isWatched ? (
+                         <CheckSquare size={18} />
+                       ) : (
+                         <div className="w-[18px] h-[18px] border-2 border-neutral-500 rounded transition group-hover:border-neutral-400" />
+                       )}
+                     </button>
+                   </motion.div>
+                 );
+                 })}
+               </div>
+             ) : (
                <div className="text-center py-10 text-sm font-bold text-neutral-400 bg-[#1E1E1E] rounded-2xl border border-neutral-800 space-y-1.5 p-4">
                  <p className="text-white font-black">
                    {anime.status === 'قادم'
@@ -1568,7 +1808,7 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
                 لا توجد صور متوفرة لهذا الأنمي حالياً.
               </div>
             ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              <div className={`grid gap-3 ${display.isCoverScreen ? 'grid-cols-1' : 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4'}`}>
                 {pictures.map((picUrl, idx) => (
                   <motion.div
                     key={idx}
@@ -1595,6 +1835,7 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
 
       </div>
 
+      <ViewportPortal>
       <AnimatePresence>
         {selectedPhoto && (
           <motion.div 
@@ -1602,7 +1843,12 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={() => setSelectedPhoto(null)}
-            className="fixed inset-0 max-w-md sm:max-w-xl md:max-w-3xl lg:max-w-5xl xl:max-w-7xl mx-auto z-[120] bg-black/95 backdrop-blur-md flex flex-col items-center justify-center p-4"
+            style={{
+              height: 'var(--vv-height, 100dvh)',
+              paddingTop: 'calc(var(--safe-top, 0px) + 1rem)',
+              paddingBottom: 'calc(var(--safe-bottom, 0px) + 1rem)',
+            }}
+            className="theme-keep-dark fixed inset-0 z-[120] bg-black/95 backdrop-blur-md flex flex-col items-center justify-center p-4"
           >
             <div 
               onClick={(e) => e.stopPropagation()} 
@@ -1649,7 +1895,12 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={() => setShowAddRecModal(false)}
-            className="fixed inset-0 max-w-md sm:max-w-xl md:max-w-3xl lg:max-w-5xl xl:max-w-7xl mx-auto z-[100] bg-black/90 backdrop-blur flex items-center justify-center p-4"
+            style={{
+              height: 'var(--vv-height, 100dvh)',
+              paddingTop: 'calc(var(--safe-top, 0px) + 1rem)',
+              paddingBottom: 'calc(var(--safe-bottom, 0px) + 1rem)',
+            }}
+            className="fixed inset-0 z-[100] bg-black/90 backdrop-blur flex items-center justify-center p-4"
           >
             <motion.div 
               initial={{ scale: 0.9, y: 20 }}
@@ -1788,14 +2039,21 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
           </motion.div>
         )}
       </AnimatePresence>
+      </ViewportPortal>
 
+      <ViewportPortal>
       <AnimatePresence>
         {showListModal && user && (
           <motion.div 
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 max-w-md sm:max-w-xl md:max-w-3xl lg:max-w-5xl xl:max-w-7xl mx-auto z-[100] bg-black/90 backdrop-blur flex items-center justify-center p-4"
+            style={{
+              height: 'var(--vv-height, 100dvh)',
+              paddingTop: 'calc(var(--safe-top, 0px) + 1rem)',
+              paddingBottom: 'calc(var(--safe-bottom, 0px) + 1rem)',
+            }}
+            className="fixed inset-0 z-[100] bg-black/90 backdrop-blur flex items-center justify-center p-4"
           >
             <motion.div 
               initial={{ scale: 0.9, y: 20 }}
@@ -1917,7 +2175,12 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
             initial={{ opacity: 0 }} 
             animate={{ opacity: 1 }} 
             exit={{ opacity: 0 }}
-            className="fixed inset-0 max-w-md sm:max-w-xl md:max-w-3xl lg:max-w-5xl xl:max-w-7xl mx-auto bg-black/95 z-[150] flex items-center justify-center p-4 backdrop-blur-md"
+            style={{
+              height: 'var(--vv-height, 100dvh)',
+              paddingTop: 'calc(var(--safe-top, 0px) + 1rem)',
+              paddingBottom: 'calc(var(--safe-bottom, 0px) + 1rem)',
+            }}
+            className="theme-keep-dark fixed inset-0 bg-black/95 z-[150] flex items-center justify-center p-4 backdrop-blur-md"
           >
             <div className="bg-[#0b0c10] w-full max-w-md rounded-3xl border border-yellow-500/30 overflow-hidden shadow-[0_0_50px_rgba(234,179,8,0.15)] relative text-center text-white font-sans">
               <div className="absolute top-0 right-0 left-0 h-1.5 bg-gradient-to-r from-yellow-500 via-amber-400 to-orange-500" />
@@ -1973,7 +2236,12 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
             initial={{ opacity: 0 }} 
             animate={{ opacity: 1 }} 
             exit={{ opacity: 0 }}
-            className="fixed inset-0 max-w-md sm:max-w-xl md:max-w-3xl lg:max-w-5xl xl:max-w-7xl mx-auto bg-black/90 z-[150] flex items-center justify-center p-4 backdrop-blur-sm"
+            style={{
+              height: 'var(--vv-height, 100dvh)',
+              paddingTop: 'calc(var(--safe-top, 0px) + 1rem)',
+              paddingBottom: 'calc(var(--safe-bottom, 0px) + 1rem)',
+            }}
+            className="fixed inset-0 bg-black/90 z-[150] flex items-center justify-center p-4 backdrop-blur-sm"
           >
             <div className="bg-[#0f0f13] w-full max-w-md rounded-2xl border border-red-500/30 overflow-hidden shadow-2xl relative">
               <div className="absolute top-0 right-0 left-0 h-1 bg-gradient-to-r from-red-500 to-orange-500 opacity-50" />
@@ -2061,6 +2329,23 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
           </motion.div>
         )}
       </AnimatePresence>
+      </ViewportPortal>
+      {anime && activeSeasonEpisodes && activeSeasonEpisodes.length > 0 && (
+        <BatchDownloadModal
+          isOpen={showBatchDownloadModal}
+          onClose={() => setShowBatchDownloadModal(false)}
+          anime={anime}
+          episodes={activeSeasonEpisodes}
+          seasonNumber={selectedSeasonNum}
+          isEpisodeWatched={isEpisodeWatched}
+          onStartDownloads={() => {
+            if (onNavigate) {
+              onNavigate('downloads');
+            }
+          }}
+        />
+      )}
     </motion.div>
+    </PullToRefresh>
   );
 }

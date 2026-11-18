@@ -1,6 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { motion } from 'motion/react';
-import { ArrowRight, Loader2, MessageCircle, Send, Eye, EyeOff, AlertCircle } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { ArrowRight, Loader2, MessageCircle, Send, EyeOff, AlertCircle, ChevronDown } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { db } from '../firebase';
 import { collection, query, where, getDocs } from 'firebase/firestore';
@@ -8,6 +7,7 @@ import { getComments, addComment } from '../services/animeInteractionService';
 import { notificationsService } from '../services/notificationsService';
 import { clientCache } from '../utils/clientCache';
 import AnimeCommentItem from '../components/AnimeCommentItem';
+import PullToRefresh from '../components/PullToRefresh';
 
 interface AnimeCommentsViewProps {
   animeId: string;
@@ -23,6 +23,9 @@ export default function AnimeCommentsView({ animeId, focusCommentId, onBack, onA
   const [loadingAnime, setLoadingAnime] = useState(true);
   const [comments, setComments] = useState<any[]>([]);
   const [loadingComments, setLoadingComments] = useState(true);
+  const [commentsError, setCommentsError] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(25);
+  const [formNotice, setFormNotice] = useState<string | null>(null);
 
   // New Comment Form state
   const [newComment, setNewComment] = useState('');
@@ -32,11 +35,13 @@ export default function AnimeCommentsView({ animeId, focusCommentId, onBack, onA
   const loadComments = async () => {
     if (!animeId) return;
     try {
+      setCommentsError(false);
       setLoadingComments(true);
       const data = await getComments(animeId);
       setComments(data);
     } catch (err) {
       console.error('Error fetching comments:', err);
+      setCommentsError(true);
     } finally {
       setLoadingComments(false);
     }
@@ -48,13 +53,15 @@ export default function AnimeCommentsView({ animeId, focusCommentId, onBack, onA
     const fetchAnime = async () => {
       try {
         setLoadingAnime(true);
-        const cached = clientCache.get<any>(`client_anime_details_${animeId}`);
+        const cached =
+          clientCache.get<any>(`client_anime_details_v8_${animeId}`) ||
+          clientCache.get<any>(`client_anime_details_${animeId}`);
         if (cached) {
           setAnime(cached);
           setLoadingAnime(false);
         }
         await clientCache.fetchWithRevalidate(
-          `client_anime_details_${animeId}`,
+          `client_anime_details_v8_${animeId}`,
           `/api/anime/details/${animeId}`,
           (data: any) => {
             setAnime(data);
@@ -67,22 +74,23 @@ export default function AnimeCommentsView({ animeId, focusCommentId, onBack, onA
       }
     };
 
-    fetchAnime();
-    loadComments();
+    void fetchAnime();
+    void loadComments();
   }, [animeId]);
 
   useEffect(() => {
     if (comments.length > 0 && focusCommentId) {
+      setVisibleCount((prev) => Math.max(prev, comments.length));
       const timer = setTimeout(() => {
         const el = document.getElementById(`comment-${focusCommentId}`);
         if (el) {
           el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          el.classList.add('bg-[#FF1744]/15', 'rounded-xl', 'p-3', 'border', 'border-[#FF1744]/30', 'transition-all', 'duration-500');
+          el.classList.add('bg-[#FF1744]/15', 'rounded-xl', 'p-2.5', 'border', 'border-[#FF1744]/30', 'transition-all', 'duration-500');
           setTimeout(() => {
             el.classList.remove('bg-[#FF1744]/15', 'border-[#FF1744]/30');
           }, 3000);
         }
-      }, 800);
+      }, 600);
       return () => clearTimeout(timer);
     }
   }, [comments, focusCommentId]);
@@ -90,9 +98,9 @@ export default function AnimeCommentsView({ animeId, focusCommentId, onBack, onA
   const parseMentionsAndNotify = async (text: string, currentAnimeId: string, commentId: string, currentUserId: string, animeTitle: string) => {
     const words = text.match(/@[^\s]+/g);
     if (!words) return;
-    
-    const uniqueTags = Array.from(new Set(words)).map(w => w.substring(1).trim());
-    
+
+    const uniqueTags = Array.from(new Set(words)).map(w => w.substring(1).trim()).slice(0, 5);
+
     for (const tag of uniqueTags) {
       try {
         const qUsers = query(collection(db, 'users'), where('displayName', '==', tag));
@@ -121,12 +129,13 @@ export default function AnimeCommentsView({ animeId, focusCommentId, onBack, onA
   const handleAddComment = async (e: any, parentCommentId?: string, replyText?: string, replySpoiler?: boolean) => {
     if (e && e.preventDefault) e.preventDefault();
     if (!user || !anime) return;
+
     if (userData?.isMuted) {
-      alert('تم تقييد حسابك من الكتابة والنشر بواسطة الإدارة! 🔇');
+      setFormNotice('تم تقييد حسابك من الكتابة والنشر بواسطة الإدارة');
       return;
     }
     if ((userData?.level || 1) < 2) {
-      alert('تحتاج للوصول إلى المستوى 2 على الأقل للتمكن من التعليق ونشر الآراء! 🚀');
+      setFormNotice('تحتاج للوصول إلى المستوى 2 على الأقل للمشاركة في التعليقات');
       return;
     }
 
@@ -136,6 +145,7 @@ export default function AnimeCommentsView({ animeId, focusCommentId, onBack, onA
 
     if (!textToSubmit || !textToSubmit.trim()) return;
 
+    setFormNotice(null);
     setSubmittingComment(true);
     try {
       const commentPayload: any = {
@@ -160,12 +170,11 @@ export default function AnimeCommentsView({ animeId, focusCommentId, onBack, onA
       }
 
       const newId = await addComment(commentPayload);
-      
+
       import('../services/gamificationService').then(({ incrementInteraction }) => {
         incrementInteraction(user.id, 'comment');
       });
 
-      // Notify parent author if this is a reply and not tagging themselves
       if (isReply) {
         const parentComment = comments.find(c => c.id === parentCommentId);
         if (parentComment && parentComment.userId !== user.id) {
@@ -182,7 +191,6 @@ export default function AnimeCommentsView({ animeId, focusCommentId, onBack, onA
         }
       }
 
-      // Notify any explicitly tagged users
       await parseMentionsAndNotify(textToSubmit, anime._id, newId, user.id, anime.title);
 
       if (!isReply) {
@@ -190,81 +198,100 @@ export default function AnimeCommentsView({ animeId, focusCommentId, onBack, onA
         setIsSpoiler(false);
       }
 
-      // Refetch comments
       const updated = await getComments(anime._id);
       setComments(updated);
     } catch (err) {
       console.error(err);
+      setFormNotice('حدث خطأ أثناء نشر التعليق، حاول مجدداً');
     } finally {
       setSubmittingComment(false);
     }
   };
 
-  const mainComments = comments.filter(c => !c.parentCommentId);
+  const mainComments = useMemo(() => comments.filter(c => !c.parentCommentId), [comments]);
+  const visibleMainComments = useMemo(() => mainComments.slice(0, visibleCount), [mainComments, visibleCount]);
 
   return (
-    <div className="min-h-screen bg-black text-white pb-28 font-sans selection:bg-[#FF1744]/50 text-right" dir="rtl" id="anime_comments_screen">
-      {/* Top Navigation */}
-      <div className="sticky top-0 bg-black/90 backdrop-blur-md z-40 border-b border-neutral-900 pb-3.5 pt-4 px-4 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <button 
-            onClick={onBack}
-            className="w-9 h-9 bg-[#1E1E1E] rounded-xl flex items-center justify-center text-neutral-400 hover:text-white transition hover:bg-neutral-800"
-          >
-            <ArrowRight size={18} />
-          </button>
-          
-          {anime ? (
-            <div className="flex items-center gap-2.5">
-              <img 
-                src={anime.posterUrl} 
-                alt={anime.title} 
-                className="w-8 h-10 object-cover rounded-lg shrink-0 border border-neutral-800"
-                referrerPolicy="no-referrer"
-              />
-              <div>
-                <h2 
-                  onClick={() => onAnimeClick?.(anime._id)}
-                  className="text-xs font-black line-clamp-1 text-white hover:text-[#FF1744] transition cursor-pointer"
-                >
-                  {anime.title}
-                </h2>
-                <p className="text-[10px] text-neutral-500 font-bold">نقاش وتعليقات الأعضاء</p>
-              </div>
-            </div>
-          ) : (
-            <div className="h-4 w-28 bg-neutral-900 rounded animate-pulse" />
-          )}
-        </div>
-        
-        <div className="flex items-center gap-1 bg-[#FF1744]/10 text-[#FF1744] px-2.5 py-1 rounded-full text-[10px] font-bold border border-[#FF1744]/20">
-          <MessageCircle size={12} />
-          <span>{comments.length} تعليق</span>
-        </div>
-      </div>
+    <PullToRefresh onRefresh={loadComments}>
+      <div className="min-h-screen bg-black text-white pb-28 font-sans selection:bg-[#FF1744]/50 text-right" dir="rtl" id="anime_comments_screen">
+        {/* Top Navigation */}
+        <div className="sticky top-0 bg-black/90 backdrop-blur-md z-40 border-b border-neutral-900 pb-3 pt-4 px-4 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-3 min-w-0">
+            <button
+              onClick={onBack}
+              className="w-9 h-9 bg-[#1E1E1E] rounded-xl flex items-center justify-center text-neutral-300 hover:text-white transition hover:bg-neutral-800 shrink-0 cursor-pointer"
+            >
+              <ArrowRight size={18} />
+            </button>
 
-      {loadingAnime ? (
-        <div className="flex flex-col items-center justify-center py-20 gap-3">
-          <Loader2 className="animate-spin text-[#FF1744]" size={24} />
-          <p className="text-neutral-500 text-xs font-bold">جاري تحميل النقاشات...</p>
-        </div>
-      ) : (
-        <div className="max-w-3xl mx-auto px-4 mt-5 space-y-6">
-          {/* Comments list container */}
-          <div className="space-y-4">
-            <h4 className="text-white text-xs font-black select-none">النقاشات والأفكار ({mainComments.length})</h4>
-            
-            {loadingComments ? (
-              <div className="flex justify-center py-10">
-                <Loader2 className="animate-spin text-neutral-600" size={20} />
-              </div>
-            ) : mainComments.length === 0 ? (
-              <div className="text-center py-12 text-neutral-500 font-bold bg-[#1E1E1E] text-xs rounded-2xl border border-neutral-800">
-                كن أول من يعلق ويبدأ النقاش حول هذا العمل! ✨
+            {anime ? (
+              <div className="flex items-center gap-2.5 min-w-0">
+                <img
+                  src={anime.posterUrl}
+                  alt={anime.title}
+                  className="w-8 h-10 object-cover rounded-lg shrink-0 border border-neutral-800"
+                  referrerPolicy="no-referrer"
+                />
+                <div className="min-w-0">
+                  <h2
+                    onClick={() => onAnimeClick?.(anime._id)}
+                    className="text-xs font-black line-clamp-1 text-white hover:text-[#FF1744] transition cursor-pointer"
+                  >
+                    {anime.title}
+                  </h2>
+                  <p className="text-[11px] text-neutral-400 font-bold">نقاش وتعليقات الأعضاء</p>
+                </div>
               </div>
             ) : (
-              <div className="space-y-3 pb-8">
-                {mainComments.map((comment, cIdx) => {
+              <div className="h-4 w-28 bg-neutral-900 rounded" />
+            )}
+          </div>
+
+          <div className="flex items-center gap-1.5 text-neutral-300 text-xs font-bold shrink-0 tabular-nums">
+            <MessageCircle size={14} className="text-[#FF1744]" />
+            <span>{comments.length}</span>
+          </div>
+        </div>
+
+        {loadingAnime && !anime ? (
+          <div className="flex flex-col items-center justify-center py-20 gap-3">
+            <Loader2 className="animate-spin text-[#FF1744]" size={24} />
+            <p className="text-neutral-400 text-xs font-bold">جاري تحميل النقاشات...</p>
+          </div>
+        ) : (
+          <div className="max-w-3xl mx-auto px-4 mt-4 space-y-4">
+            <div className="flex items-center justify-between">
+              <h4 className="text-white text-xs font-black select-none tabular-nums">
+                النقاشات ({mainComments.length})
+              </h4>
+            </div>
+
+            {commentsError && (
+              <div className="bg-rose-500/10 border border-rose-500/30 rounded-2xl p-3.5 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 text-right min-w-0">
+                  <AlertCircle size={17} className="text-rose-400 shrink-0" />
+                  <p className="text-xs font-bold text-white truncate">تعذر تحميل التعليقات</p>
+                </div>
+                <button
+                  onClick={loadComments}
+                  className="min-h-[36px] px-3 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-black shrink-0 cursor-pointer"
+                >
+                  إعادة المحاولة
+                </button>
+              </div>
+            )}
+
+            {loadingComments ? (
+              <div className="flex justify-center py-10">
+                <Loader2 className="animate-spin text-neutral-500" size={20} />
+              </div>
+            ) : mainComments.length === 0 ? (
+              <div className="text-center py-12 text-neutral-400 font-bold bg-[#141418] text-xs rounded-2xl border border-neutral-800/80">
+                كن أول من يعلق ويبدأ النقاش حول هذا العمل
+              </div>
+            ) : (
+              <div className="space-y-1 pb-8">
+                {visibleMainComments.map((comment, cIdx) => {
                   const commentReplies = comments
                     .filter(c => c.parentCommentId === comment.id)
                     .sort((a, b) => {
@@ -273,90 +300,108 @@ export default function AnimeCommentsView({ animeId, focusCommentId, onBack, onA
                       return timeA - timeB;
                     });
                   return (
-                    <AnimeCommentItem 
-                      key={`${comment.id || cIdx}-${cIdx}`} 
-                      comment={comment} 
-                      user={user} 
-                      onReply={(c: any) => setNewComment(`@${c.userDisplayName} `)} 
-                      onDeleteLocally={(id: string) => setComments(comments.filter(c => c.id !== id))} 
+                    <AnimeCommentItem
+                      key={`${comment.id || cIdx}-${cIdx}`}
+                      comment={comment}
+                      user={user}
+                      onReply={(c: any) => setNewComment(`@${c.userDisplayName} `)}
+                      onDeleteLocally={(id: string) => setComments(prev => prev.filter(c => c.id !== id))}
                       replies={commentReplies}
                       onAddReply={(parentId: string, text: string, spoiler: boolean) => handleAddComment(null, parentId, text, spoiler)}
                       onUserClick={onUserClick}
                     />
                   );
                 })}
+
+                {mainComments.length > visibleCount && (
+                  <div className="pt-4 flex justify-center">
+                    <button
+                      onClick={() => setVisibleCount(prev => prev + 25)}
+                      className="min-h-[40px] px-5 bg-[#121218] hover:bg-[#1a1a24] border border-white/10 rounded-xl text-xs font-black text-neutral-200 transition flex items-center gap-2 cursor-pointer"
+                    >
+                      <span>عرض تعليقات أقدم ({mainComments.length - visibleCount}+)</span>
+                      <ChevronDown size={14} />
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Bottom Fixed Comment Form bar */}
-      {!loadingAnime && (
-        <div className="fixed bottom-0 left-0 right-0 max-w-3xl mx-auto px-4 pb-4 pt-2 bg-gradient-to-t from-black via-black/95 to-transparent z-40">
-          {user ? (
-            <form onSubmit={(e) => handleAddComment(e)} className="flex flex-col gap-2 w-full">
-              {isSpoiler && (
-                <div className="text-[10px] text-amber-400 bg-amber-500/10 border border-amber-500/15 px-3 py-1 rounded-full self-start font-bold inline-flex items-center gap-1.5 animate-pulse">
-                  <EyeOff size={11} />
-                  <span>سيتم نشر هذا التعليق كحرق للأحداث!</span>
+        {/* Bottom Fixed Comment Form bar */}
+        {!loadingAnime && (
+          <div
+            className="fixed bottom-0 left-0 right-0 max-w-3xl mx-auto px-4 pt-2 bg-gradient-to-t from-black via-black/95 to-transparent z-40"
+            style={{ paddingBottom: 'calc(var(--safe-bottom, 0px) + 1rem)' }}
+          >
+            {user ? (
+              <form onSubmit={(e) => handleAddComment(e)} className="flex flex-col gap-1.5 w-full">
+                {formNotice && (
+                  <div className="text-[11px] text-rose-300 bg-rose-500/15 border border-rose-500/30 px-3 py-1.5 rounded-xl font-bold flex items-center gap-1.5">
+                    <AlertCircle size={13} />
+                    <span>{formNotice}</span>
+                  </div>
+                )}
+                {isSpoiler && (
+                  <div className="text-[11px] text-amber-300 bg-amber-500/15 border border-amber-500/25 px-3 py-1 rounded-xl self-start font-bold inline-flex items-center gap-1.5">
+                    <EyeOff size={12} />
+                    <span>سيتم نشر هذا التعليق كحرق للأحداث</span>
+                  </div>
+                )}
+                <div className="bg-[#12161E]/95 border border-neutral-800 px-2.5 py-1.5 rounded-2xl flex items-center justify-between gap-2.5 shadow-[0_-8px_32px_rgba(0,0,0,0.8)] w-full">
+                  <button
+                    type="button"
+                    title="تنبيه حرق"
+                    onClick={() => setIsSpoiler(!isSpoiler)}
+                    className={`p-2 rounded-xl transition shrink-0 flex items-center justify-center cursor-pointer ${isSpoiler ? 'text-amber-400 bg-amber-500/15 border border-amber-500/25' : 'text-neutral-500 hover:text-neutral-300 hover:bg-neutral-900'}`}
+                  >
+                    <EyeOff size={16} />
+                  </button>
+
+                  <input
+                    type="text"
+                    value={newComment}
+                    onChange={e => setNewComment(e.target.value)}
+                    placeholder={
+                      userData?.isMuted
+                        ? "تم تقييد حسابك من النشر والتعليق"
+                        : (userData?.level || 1) < 2
+                          ? "المستوى 2 مطلوب على الأقل للتعليق"
+                          : "اكتب تعليقاً... (للإشارة استخدم @اسمه)"
+                    }
+                    className="flex-1 bg-transparent text-white text-xs py-2 focus:outline-none placeholder-neutral-500 font-sans text-right disabled:opacity-50 font-bold"
+                    dir="rtl"
+                    disabled={submittingComment || userData?.isMuted || (userData?.level || 1) < 2}
+                  />
+
+                  <button
+                    type="submit"
+                    disabled={!newComment.trim() || submittingComment || userData?.isMuted || (userData?.level || 1) < 2}
+                    className="w-9 h-9 rounded-xl bg-[#FF1744] hover:bg-red-600 disabled:opacity-35 text-white flex items-center justify-center transition shrink-0 shadow-md cursor-pointer"
+                  >
+                    {submittingComment ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <Send size={14} className="transform rotate-180" />
+                    )}
+                  </button>
                 </div>
-              )}
-              <div className="bg-[#12161E]/95 border border-neutral-850 px-2.5 py-1.5 rounded-full flex items-center justify-between gap-3 shadow-[0_-8px_32px_rgba(0,0,0,0.8)] w-full">
-                {/* Flame/Spoiler toggle button */}
+              </form>
+            ) : (
+              <div className="bg-[#12161E]/95 border border-neutral-800 px-3 py-2.5 rounded-2xl flex items-center justify-between gap-3 shadow-[0_-8px_32px_rgba(0,0,0,0.8)] w-full">
+                <span className="text-neutral-300 text-xs font-bold px-1">تسجيل الدخول مطلوب للمشاركة في التعليقات</span>
                 <button
-                  type="button"
-                  title="تنبيه حرق"
-                  onClick={() => setIsSpoiler(!isSpoiler)}
-                  className={`p-2 rounded-full transition shrink-0 flex items-center justify-center ${isSpoiler ? 'text-amber-400 bg-amber-500/10 border border-amber-500/20' : 'text-neutral-500 hover:text-neutral-300 hover:bg-neutral-900'}`}
+                  onClick={() => signIn('login')}
+                  className="bg-[#FF1744] hover:bg-red-600 text-white font-black px-4 py-2 rounded-xl text-xs cursor-pointer transition shadow-md shrink-0"
                 >
-                  <EyeOff size={16} />
-                </button>
-
-                {/* TextInput in middle */}
-                <input
-                  type="text"
-                  value={newComment}
-                  onChange={e => setNewComment(e.target.value)}
-                  placeholder={
-                    userData?.isMuted 
-                      ? "تم كتم حسابك من النشر والتعليق بواسطة الإدارة 🔇" 
-                      : (userData?.level || 1) < 2 
-                        ? "المستوى 2 مطلوب على الأقل للتعليق ونشر الآراء 🚀" 
-                        : "اكتب تعليقاً... (للإشارة استخدم @اسمه)"
-                  }
-                  className="flex-1 bg-transparent text-white text-xs py-2 focus:outline-none placeholder-neutral-500 font-sans text-right disabled:opacity-50 font-bold"
-                  dir="rtl"
-                  disabled={submittingComment || userData?.isMuted || (userData?.level || 1) < 2}
-                />
-
-                {/* Submit button */}
-                <button
-                  type="submit"
-                  disabled={!newComment.trim() || submittingComment || userData?.isMuted || (userData?.level || 1) < 2}
-                  className="w-8 h-8 rounded-full bg-[#FF1744] hover:bg-red-600 disabled:opacity-35 text-white flex items-center justify-center transition shrink-0 shadow-md"
-                >
-                  {submittingComment ? (
-                    <Loader2 size={13} className="animate-spin" />
-                  ) : (
-                    <Send size={13} className="transform rotate-180" />
-                  )}
+                  سجل الدخول
                 </button>
               </div>
-            </form>
-          ) : (
-            <div className="bg-[#12161E]/95 border border-neutral-850 px-3 py-2.5 rounded-full flex items-center justify-between gap-3 shadow-[0_-8px_32px_rgba(0,0,0,0.8)] w-full">
-              <span className="text-neutral-400 text-xs font-bold px-2">تسجيل الدخول مطلوب للمشاركة في التعليقات ونقاش الأنمي</span>
-              <button
-                onClick={signIn}
-                className="bg-[#FF1744] hover:bg-red-600 text-white font-black px-4 py-1.5 rounded-full text-[11px] cursor-pointer transition shadow-md shrink-0"
-              >
-                سجل الدخول
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
+            )}
+          </div>
+        )}
+      </div>
+    </PullToRefresh>
   );
 }

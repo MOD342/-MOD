@@ -26,6 +26,7 @@ import {
   BookOpen
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import ViewportPortal from '../components/ViewportPortal';
 import {
   collection,
   doc,
@@ -1046,22 +1047,28 @@ export default function OtakuArenaHubView({
       )}
 
       {/* إشعار حالة عائم */}
-      <AnimatePresence>
-        {statusMessage && (
-          <motion.div
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -20 }}
-            className="fixed top-4 left-1/2 -translate-x-1/2 z-[9998] bg-[#14141f] border border-[#FF1744]/50 text-white text-xs font-bold px-4 py-2.5 rounded-2xl shadow-2xl flex items-center gap-2"
-          >
-            <Sparkles size={15} className="text-[#FF1744] shrink-0" />
-            <span>{statusMessage}</span>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <ViewportPortal>
+        <AnimatePresence>
+          {statusMessage && (
+            <motion.div
+              initial={{ opacity: 0, y: -20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              style={{ top: 'calc(var(--safe-top, 0px) + 0.75rem)' }}
+              className="fixed left-1/2 -translate-x-1/2 z-[9998] bg-[#14141f] border border-[#FF1744]/50 text-white text-xs font-bold px-4 py-2.5 rounded-2xl shadow-2xl flex items-center gap-2 pointer-events-none"
+            >
+              <Sparkles size={15} className="text-[#FF1744] shrink-0" />
+              <span>{statusMessage}</span>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </ViewportPortal>
 
       {/* 1. الشريط العلوي الموحد (الرتبة + كأس وشعار الحلبة 3D في المنتصف + الكوينز + التبويبات الـ 4) */}
-      <div className="sticky top-0 z-40 bg-[#06060a]/95 backdrop-blur-xl border-b border-white/5 px-3.5 py-2.5">
+      <div
+        className="sticky top-0 z-40 bg-[#06060a]/95 backdrop-blur-xl border-b border-white/5 px-3.5 py-2.5"
+        style={{ paddingTop: 'calc(var(--safe-top, 0px) + 0.625rem)' }}
+      >
         <div className="max-w-5xl mx-auto flex flex-col gap-2.5">
           <div className="grid grid-cols-3 items-center gap-2">
             {/* اليمين: زر الرجوع + عنوان الساحة والرتبة */}
@@ -1147,7 +1154,7 @@ export default function OtakuArenaHubView({
       <div className="max-w-5xl mx-auto px-3.5 md:px-6 pt-4 space-y-5">
         {/* لافتة الحدث الوحيد النشط حالياً (قاعدة عدم التداخل) مع لوحة فنية سينمائية وفضاء Three.js 3D */}
         <div
-          className={`relative overflow-hidden rounded-3xl p-5 border-2 border-[#FF1744]/40 shadow-[0_0_45px_rgba(255,23,68,0.2)]`}
+          className={`theme-keep-dark relative overflow-hidden rounded-3xl p-5 border-2 border-[#FF1744]/40 shadow-[0_0_45px_rgba(255,23,68,0.2)]`}
         >
           <img
             src={
@@ -1259,7 +1266,7 @@ export default function OtakuArenaHubView({
                         setActiveVisualGame(g.id);
                       }}
                       style={{ borderColor: `${g.accentColor}66` }}
-                      className="relative min-h-[180px] rounded-3xl overflow-hidden border-2 hover:border-[#FF1744] text-right p-4 flex flex-col justify-between group cursor-pointer shadow-[0_14px_35px_rgba(0,0,0,0.75)]"
+                      className="theme-keep-dark relative min-h-[180px] rounded-3xl overflow-hidden border-2 hover:border-[#FF1744] text-right p-4 flex flex-col justify-between group cursor-pointer shadow-[0_14px_35px_rgba(0,0,0,0.75)]"
                     >
                       <img
                         src={g.worldArt}
@@ -1474,7 +1481,7 @@ export default function OtakuArenaHubView({
                         setActiveStoryChapter(null);
                         setActiveVisualGame(g.id);
                       }}
-                      className="relative h-44 rounded-3xl overflow-hidden border-2 border-white/15 hover:border-[#FF1744] text-right p-3.5 flex flex-col justify-between group cursor-pointer shadow-[0_12px_30px_rgba(0,0,0,0.65)]"
+                      className="theme-keep-dark relative h-44 rounded-3xl overflow-hidden border-2 border-white/15 hover:border-[#FF1744] text-right p-3.5 flex flex-col justify-between group cursor-pointer shadow-[0_12px_30px_rgba(0,0,0,0.65)]"
                     >
                       <img
                         src={g.worldArt}
@@ -1527,7 +1534,7 @@ export default function OtakuArenaHubView({
             {/* 2. فضاء حلبة المصارعة الملكية (غرف اللعب الجماعي 2-4 لاعبين) */}
             {currentRoom ? (
               <div
-                className={`relative overflow-hidden border-2 rounded-3xl p-4 sm:p-5 space-y-4 transition-transform shadow-[0_0_50px_rgba(255,23,68,0.25)] ${
+                className={`theme-keep-dark relative overflow-hidden border-2 rounded-3xl p-4 sm:p-5 space-y-4 transition-transform shadow-[0_0_50px_rgba(255,23,68,0.25)] ${
                   screenShake ? 'translate-x-1.5 -translate-y-1 border-[#FF1744]' : 'border-amber-400/50'
                 }`}
               >
@@ -1752,7 +1759,7 @@ export default function OtakuArenaHubView({
             ) : (
               /* ردهة حلبة المصارعة الجماعية (إنشاء غرفة 2-4 لاعبين أو دخول غرفة حية) */
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-                <div className="relative overflow-hidden lg:col-span-7 bg-[#101018] border-2 border-amber-500/30 rounded-3xl p-4 sm:p-5 space-y-4 shadow-2xl">
+                <div className="theme-keep-dark relative overflow-hidden lg:col-span-7 bg-[#101018] border-2 border-amber-500/30 rounded-3xl p-4 sm:p-5 space-y-4 shadow-2xl">
                   <img
                     src={ANIME_WORLD_BACKGROUNDS.colosseum}
                     alt=""
@@ -1975,7 +1982,7 @@ export default function OtakuArenaHubView({
             )}
 
             {/* 1. حزام بطل الحلبة المتوهج (The Undisputed Belt) */}
-            <div className="relative overflow-hidden border-2 border-amber-400/60 rounded-3xl p-5 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-[0_0_45px_rgba(245,158,11,0.2)]">
+            <div className="theme-keep-dark relative overflow-hidden border-2 border-amber-400/60 rounded-3xl p-5 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-[0_0_45px_rgba(245,158,11,0.2)]">
               <img
                 src={ANIME_WORLD_BACKGROUNDS.throne}
                 alt=""

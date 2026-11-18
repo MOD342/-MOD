@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { ChevronRight, Loader2, Clock, Search, AlertCircle, Star, Tv, Calendar, Layers } from 'lucide-react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { ChevronRight, Loader2, Clock, Search, AlertCircle, Star, Tv, Calendar, Layers, RefreshCw } from 'lucide-react';
 import { cleanAnimeTitle } from '../utils/animeTitleCleaner';
+import PullToRefresh from '../components/PullToRefresh';
 import {
   useGlobalLayoutMode,
   LayoutModeToggleButton,
@@ -102,73 +103,87 @@ export default function ScheduleView({ onBack, onAnimeClick, initialDay }: Sched
 
   const [schedule, setSchedule] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [fetchError, setFetchError] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [viewMode, setViewMode] = useState<'daily' | 'all-week'>('daily');
   const [allWeekData, setAllWeekData] = useState<Record<string, any[]>>({});
   const [weekLoading, setWeekLoading] = useState(false);
   const [layoutMode, cycleLayoutMode] = useGlobalLayoutMode();
 
-  useEffect(() => {
-    let active = true;
-    const fetchSchedule = async () => {
-      if (active) setLoading(true);
-      try {
-        const res = await fetch(`/api/anime/jikan-schedule?day=${selectedDay}`, {
-          cache: 'no-store'
-        });
-        const json = await res.json();
-        if (json.success && json.data && active) {
-          setSchedule(json.data);
-        }
-      } catch (e) {
-        console.error(e);
+  const fetchDailySchedule = useCallback(async (forceBypass = false) => {
+    setFetchError(false);
+    if (forceBypass) setRefreshing(true);
+    else setLoading(true);
+    try {
+      const ts = forceBypass ? `&_t=${Date.now()}` : '';
+      const res = await fetch(`/api/anime/jikan-schedule?day=${selectedDay}${ts}`, {
+        cache: 'no-store'
+      });
+      const json = await res.json();
+      if (json.success && Array.isArray(json.data)) {
+        setSchedule(json.data);
+      } else if (schedule.length === 0) {
+        setFetchError(true);
       }
-      if (active) setLoading(false);
-    };
-
-    if (viewMode === 'daily') {
-      fetchSchedule();
+    } catch (e) {
+      console.error(e);
+      if (schedule.length === 0) setFetchError(true);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
     }
-    return () => {
-      active = false;
-    };
-  }, [selectedDay, viewMode]);
+  }, [selectedDay]);
+
+  const fetchFullWeek = useCallback(async (forceBypass = false) => {
+    setFetchError(false);
+    if (forceBypass) setRefreshing(true);
+    else setWeekLoading(true);
+    const dataMap: Record<string, any[]> = {};
+    try {
+      const ts = forceBypass ? `&_t=${Date.now()}` : '';
+      await Promise.all(
+        DAYS.map(async (day) => {
+          try {
+            const res = await fetch(`/api/anime/jikan-schedule?day=${day.id}${ts}`, {
+              cache: 'no-store'
+            });
+            const json = await res.json();
+            dataMap[day.id] = json.success && json.data ? json.data : [];
+          } catch {
+            dataMap[day.id] = [];
+          }
+        })
+      );
+      setAllWeekData(dataMap);
+    } catch (e) {
+      console.error('Failed loading full week', e);
+      setFetchError(true);
+    } finally {
+      setWeekLoading(false);
+      setRefreshing(false);
+    }
+  }, []);
 
   useEffect(() => {
-    let active = true;
-    if (viewMode === 'all-week' && Object.keys(allWeekData).length === 0) {
-      const fetchFullWeek = async () => {
-        setWeekLoading(true);
-        const dataMap: Record<string, any[]> = {};
-        try {
-          await Promise.all(
-            DAYS.map(async (day) => {
-              try {
-                const res = await fetch(`/api/anime/jikan-schedule?day=${day.id}`, {
-                  cache: 'no-store'
-                });
-                const json = await res.json();
-                dataMap[day.id] = json.success && json.data ? json.data : [];
-              } catch {
-                dataMap[day.id] = [];
-              }
-            })
-          );
-          if (active) {
-            setAllWeekData(dataMap);
-          }
-        } catch (e) {
-          console.error('Failed loading full week', e);
-        } finally {
-          if (active) setWeekLoading(false);
-        }
-      };
-      fetchFullWeek();
+    if (viewMode === 'daily') {
+      fetchDailySchedule(false);
     }
-    return () => {
-      active = false;
-    };
-  }, [viewMode]);
+  }, [selectedDay, viewMode, fetchDailySchedule]);
+
+  useEffect(() => {
+    if (viewMode === 'all-week' && Object.keys(allWeekData).length === 0) {
+      fetchFullWeek(false);
+    }
+  }, [viewMode, fetchFullWeek]);
+
+  const handleRefreshSchedule = async () => {
+    if (viewMode === 'all-week') {
+      await fetchFullWeek(true);
+    } else {
+      await fetchDailySchedule(true);
+    }
+  };
 
   const filteredSchedule = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -210,8 +225,8 @@ export default function ScheduleView({ onBack, onAnimeClick, initialDay }: Sched
     if (isListMode) {
       return (
         <div
-          key={`${keyPrefix}-${anime.mal_id || idx}-${idx}`}
-          onClick={() => onAnimeClick(String(anime.mal_id || anime._id))}
+          key={`${keyPrefix}-${anime._id || anime.mal_id || idx}-${idx}`}
+          onClick={() => onAnimeClick(String(anime._id || anime.slug || anime.mal_id))}
           className="cursor-pointer group flex items-stretch bg-neutral-900/95 border border-neutral-800/90 hover:border-blue-500/60 rounded-xl transition-all overflow-hidden shadow-md min-h-[124px] sm:min-h-[132px]"
         >
           <div className="w-24 sm:w-28 shrink-0 bg-neutral-950 relative border-l border-white/10 overflow-hidden">
@@ -288,9 +303,9 @@ export default function ScheduleView({ onBack, onAnimeClick, initialDay }: Sched
     // عرض الشبكة بدون فراغات + الاسم على البوستر + التقييم والنوع باختصار إنجليزي 3 حروف
     return (
       <div
-        key={`${keyPrefix}-${anime.mal_id || idx}-${idx}`}
-        onClick={() => onAnimeClick(String(anime.mal_id || anime._id))}
-        className="cursor-pointer group relative aspect-[3/4] overflow-hidden bg-neutral-950 border-b border-l border-white/10"
+        key={`${keyPrefix}-${anime._id || anime.mal_id || idx}-${idx}`}
+        onClick={() => onAnimeClick(String(anime._id || anime.slug || anime.mal_id))}
+        className="theme-keep-dark cursor-pointer group relative aspect-[3/4] overflow-hidden bg-neutral-950 border-b border-l border-white/10"
       >
         <img
           src={poster}
@@ -336,6 +351,7 @@ export default function ScheduleView({ onBack, onAnimeClick, initialDay }: Sched
   };
 
   return (
+    <PullToRefresh onRefresh={handleRefreshSchedule}>
     <div className="min-h-screen bg-black flex flex-col font-sans text-white pb-20" dir="rtl">
       <div className="bg-black border-b border-white/5 px-4 py-3 flex items-center justify-between max-w-7xl w-full mx-auto">
         <div className="flex items-center gap-2.5">
@@ -445,10 +461,22 @@ export default function ScheduleView({ onBack, onAnimeClick, initialDay }: Sched
               );
             })}
 
-            {Object.keys(allWeekData).length > 0 &&
-              Object.values(allWeekData).flat().length === 0 && (
-                <div className="text-center py-20 text-neutral-500 text-xs font-bold">
-                  لا توجد بيانات متاحة حالياً.
+            {(Object.keys(allWeekData).length === 0 ||
+              Object.values(allWeekData).flat().length === 0) && (
+                <div className="flex flex-col items-center justify-center py-20 px-4 text-center space-y-3">
+                  <AlertCircle className={fetchError ? 'text-rose-400' : 'text-neutral-600'} size={34} />
+                  <p className="text-neutral-300 text-sm font-black">
+                    {fetchError ? 'تعذر جلب جدول الأسبوع' : 'لا توجد بيانات متاحة حالياً'}
+                  </p>
+                  {fetchError && (
+                    <button
+                      onClick={handleRefreshSchedule}
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-black transition cursor-pointer"
+                    >
+                      <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+                      <span>إعادة المحاولة</span>
+                    </button>
+                  )}
                 </div>
               )}
           </div>
@@ -459,12 +487,24 @@ export default function ScheduleView({ onBack, onAnimeClick, initialDay }: Sched
             )}
           </div>
         ) : (
-          <div className="flex flex-col items-center justify-center py-24 text-center text-neutral-500">
-            <AlertCircle className="text-neutral-600 mb-2" size={32} />
-            <h4 className="font-bold text-sm text-neutral-400">لا توجد نتائج مطابقة</h4>
+          <div className="flex flex-col items-center justify-center py-24 px-4 text-center text-neutral-500 space-y-3">
+            <AlertCircle className={fetchError ? 'text-rose-400' : 'text-neutral-600'} size={34} />
+            <h4 className="font-black text-sm text-neutral-300">
+              {fetchError ? 'تعذر الاتصال بخادم الجدول' : 'لا توجد نتائج مطابقة'}
+            </h4>
+            {fetchError && (
+              <button
+                onClick={handleRefreshSchedule}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-black transition cursor-pointer"
+              >
+                <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+                <span>إعادة المحاولة</span>
+              </button>
+            )}
           </div>
         )}
       </div>
     </div>
+    </PullToRefresh>
   );
 }

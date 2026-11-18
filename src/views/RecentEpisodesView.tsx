@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { ChevronRight, ChevronLeft, RefreshCw, Play, Star, Calendar, Tv } from 'lucide-react';
+import { ChevronRight, ChevronLeft, RefreshCw, Play, Star, Calendar, Tv, AlertCircle } from 'lucide-react';
 import { clientCache } from '../utils/clientCache';
 import { cleanAnimeTitle } from '../utils/animeTitleCleaner';
+import PullToRefresh from '../components/PullToRefresh';
 import {
   useGlobalLayoutMode,
   LayoutModeToggleButton,
@@ -17,10 +18,12 @@ export default function RecentEpisodesView({ onBack, onAnimeClick }: { onBack: (
   const [episodes, setEpisodes] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [fetchError, setFetchError] = useState(false);
   const [layoutMode, cycleLayoutMode] = useGlobalLayoutMode();
 
   const loadEpisodes = async (targetPage = 1, forceBypass = false) => {
     const safePage = Math.max(1, targetPage);
+    setFetchError(false);
     if (forceBypass) {
       setRefreshing(true);
     } else {
@@ -96,8 +99,14 @@ export default function RecentEpisodesView({ onBack, onAnimeClick }: { onBack: (
           }
         }
       }
+      if (episodes.length === 0) {
+        setFetchError(true);
+      }
     } catch (e) {
       console.warn("Failed to load recent episodes:", e);
+      if (episodes.length === 0) {
+        setFetchError(true);
+      }
     } finally {
       setRefreshing(false);
       setLoading(false);
@@ -124,6 +133,7 @@ export default function RecentEpisodesView({ onBack, onAnimeClick }: { onBack: (
   const isLargeGrid = layoutMode === 'grid2';
 
   return (
+    <PullToRefresh onRefresh={() => loadEpisodes(page, true)}>
     <div className="min-h-screen bg-black text-white pb-24" dir="rtl">
       {/* شريط العنوان العلوي - مدمج وغير ثابت */}
       <div className="bg-black border-b border-white/5 px-4 py-3 flex items-center justify-between max-w-7xl mx-auto">
@@ -142,14 +152,6 @@ export default function RecentEpisodesView({ onBack, onAnimeClick }: { onBack: (
 
         <div className="flex items-center gap-2">
           <LayoutModeToggleButton mode={layoutMode} onToggle={cycleLayoutMode} />
-          <button
-            onClick={() => loadEpisodes(page, true)}
-            disabled={refreshing || loading}
-            title="تحديث"
-            className="p-2 rounded-xl bg-neutral-900 border border-neutral-800 text-neutral-300 hover:text-white hover:border-neutral-700 transition active:scale-95 disabled:opacity-50 cursor-pointer"
-          >
-            <RefreshCw size={15} className={refreshing ? 'animate-spin text-red-500' : ''} />
-          </button>
         </div>
       </div>
       
@@ -258,7 +260,7 @@ export default function RecentEpisodesView({ onBack, onAnimeClick }: { onBack: (
                   key={`recent-p${page}-${ep._id || idx}-${idx}`} 
                   onClick={() => onAnimeClick(String(animeTargetId), String(epNumber))}
                   onMouseEnter={() => clientCache.prefetchDetails(animeTargetId)}
-                  className="cursor-pointer group relative aspect-[3/4] overflow-hidden bg-neutral-950 border-b border-l border-white/10"
+                  className="theme-keep-dark cursor-pointer group relative aspect-[3/4] overflow-hidden bg-neutral-950 border-b border-l border-white/10"
                 >
                   <img 
                     src={epPoster} 
@@ -307,6 +309,30 @@ export default function RecentEpisodesView({ onBack, onAnimeClick }: { onBack: (
             })
           )}
         </div>
+
+        {!loading && displayEpisodes.length === 0 && (
+          <div className="text-center py-16 m-4 bg-neutral-900/20 rounded-2xl border border-neutral-800/40 space-y-3">
+            <AlertCircle className={`mx-auto ${fetchError ? 'text-rose-500' : 'text-neutral-500'}`} size={36} />
+            <div className="space-y-1">
+              <h3 className="text-sm font-bold text-neutral-300">
+                {fetchError ? 'تعذر تحميل الحلقات الحديثة' : 'لا توجد حلقات متوفرة في هذه الصفحة'}
+              </h3>
+              {fetchError && (
+                <p className="text-xs text-neutral-500">تحقق من اتصالك بالإنترنت ثم أعد المحاولة</p>
+              )}
+            </div>
+            {fetchError && (
+              <button
+                onClick={() => loadEpisodes(page, true)}
+                disabled={refreshing}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-black transition active:scale-95 cursor-pointer"
+              >
+                <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+                <span>إعادة المحاولة</span>
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* أزرار التنقل بين الصفحات */}
@@ -338,5 +364,6 @@ export default function RecentEpisodesView({ onBack, onAnimeClick }: { onBack: (
         )}
       </div>
     </div>
+    </PullToRefresh>
   );
 }

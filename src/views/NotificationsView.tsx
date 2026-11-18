@@ -218,7 +218,7 @@ export default function NotificationsView({ onBack, onNavigate }: NotificationsV
 
   return (
     <div className="min-h-screen bg-black pb-20 pt-4 font-sans text-right select-none" dir="rtl">
-      <div className="max-w-2xl mx-auto px-4">
+      <div className="max-w-4xl mx-auto px-4">
         {/* Clean Header */}
         <div className="flex items-center justify-between border-b border-white/10 pb-4 mb-5">
           <div className="flex items-center gap-3">

@@ -10,7 +10,12 @@ import {
   Flame,
   CalendarDays,
   Trash2,
-  Clock
+  Clock,
+  AlertCircle,
+  Loader2,
+  Shuffle,
+  Film,
+  Crown
 } from 'lucide-react';
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence, useMotionValue, animate } from 'motion/react';
@@ -19,6 +24,10 @@ import { db } from '../firebase';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { handleFirestoreError, OperationType } from '../firebaseUtils';
 import { cleanAnimeTitle } from '../utils/animeTitleCleaner';
+import PullToRefresh from '../components/PullToRefresh';
+import { useAuth } from '../contexts/AuthContext';
+import { listService } from '../services/listService';
+import { useDeviceDisplay } from '../hooks/useDeviceDisplay';
 
 interface HomeViewProps {
   onAnimeClick?: (animeId: string, epNum?: string) => void;
@@ -26,6 +35,8 @@ interface HomeViewProps {
   onNavigateToSchedule?: (targetDay?: string) => void;
   onNavigateToRecent?: () => void;
   onNavigateToSeason?: () => void;
+  onNavigateToMovies?: () => void;
+  onNavigateToTopAnime?: () => void;
 }
 
 interface LegendaryAnimeQuote {
@@ -103,9 +114,14 @@ export default function HomeView({
   onSearchCategory,
   onNavigateToSchedule,
   onNavigateToRecent,
-  onNavigateToSeason
+  onNavigateToSeason,
+  onNavigateToMovies,
+  onNavigateToTopAnime
 }: HomeViewProps) {
+  const { user } = useAuth();
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [dashboardError, setDashboardError] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(true);
 
   // Selected schedule day on Home View (defaults to today)
   const todayKey = WEEK_DAYS[new Date().getDay()].key;
@@ -124,7 +140,9 @@ export default function HomeView({
     recentEpisodes: [],
     popular: [],
     currentSeason: [],
-    schedule: []
+    schedule: [],
+    movies: [],
+    topAnime: []
   });
 
   const [dashboard, setDashboard] = useState<{
@@ -133,9 +151,22 @@ export default function HomeView({
     popular: any[];
     currentSeason: any[];
     schedule: any[];
+    movies: any[];
+    topAnime: any[];
   }>(() => getFallbackDashboard());
 
-  const [history, setHistory] = useState<any[]>([]);
+  const watchHistoryKey = `local_watch_history_${user?.id || 'guest'}`;
+
+  const [history, setHistory] = useState<any[]>(() => {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const raw = localStorage.getItem(`local_watch_history_${user?.id || 'guest'}`);
+        const parsed = raw ? JSON.parse(raw) : [];
+        return Array.isArray(parsed) ? parsed : [];
+      }
+    } catch {}
+    return [];
+  });
   const [animeCuration, setAnimeCuration] = useState<{
     pinnedAnime: any[];
     hiddenAnime: any[];
@@ -206,7 +237,7 @@ export default function HomeView({
       const clientDay = daysMap[new Date().getDay()];
       const activeSeason = customSeason || sliderSettings.season || 'auto';
       const activeMode = customSliderMode || sliderSettings.sliderMode || 'best_season';
-      const cacheKey = `direct_dashboard_v4_${activeSeason}_${activeMode}_${clientDay}`;
+      const cacheKey = `direct_dashboard_v5_${activeSeason}_${activeMode}_${clientDay}`;
 
       const applyDashboardData = async (data: any) => {
         if (!data) return;
@@ -215,9 +246,12 @@ export default function HomeView({
           data.recentEpisodes?.length > 0 ||
           data.popular?.length > 0 ||
           data.currentSeason?.length > 0 ||
-          data.schedule?.length > 0;
+          data.schedule?.length > 0 ||
+          data.movies?.length > 0 ||
+          data.topAnime?.length > 0;
         if (hasAnyContent) {
           setDashboard(data);
+          setDashboardError(false);
         }
 
         if (!Array.isArray(data.recentEpisodes) || data.recentEpisodes.length === 0) {
@@ -247,6 +281,7 @@ export default function HomeView({
               const nextData = { ...data, recentEpisodes: mappedRecent };
               clientCache.set(cacheKey, nextData, 10 * 60 * 1000);
               setDashboard(nextData);
+              setDashboardError(false);
             }
           } catch {}
         }
@@ -264,15 +299,25 @@ export default function HomeView({
         `/api/dashboard?day=${clientDay}&season=${activeSeason}&sliderMode=${activeMode}`,
         (data) => {
           void safeApply(data);
+        },
+        60 * 60 * 1000,
+        {
+          onError: () => {
+            setDashboardError(true);
+          }
         }
       );
       if (freshData) {
         await safeApply(freshData);
+      } else {
+        setDashboardError(true);
       }
     } catch (e) {
       console.warn('Direct dashboard fetch notice:', e);
+      setDashboardError(true);
     } finally {
       setIsRefreshing(false);
+      setInitialLoading(false);
     }
   };
 
@@ -284,7 +329,7 @@ export default function HomeView({
       const clientDay = daysMap[new Date().getDay()];
       const activeSeason = sliderSettings.season || 'auto';
       const activeMode = sliderSettings.sliderMode || 'best_season';
-      const cacheKey = `direct_dashboard_v4_${activeSeason}_${activeMode}_${clientDay}`;
+      const cacheKey = `direct_dashboard_v5_${activeSeason}_${activeMode}_${clientDay}`;
 
       const ts = Date.now();
       const [dashRes, recentRes] = await Promise.all([
@@ -338,19 +383,94 @@ export default function HomeView({
         };
         clientCache.set(cacheKey, updatedDashboard, 10 * 60 * 1000);
         setDashboard(updatedDashboard);
+        setDashboardError(false);
       } else if (freshRecent.length > 0) {
         setDashboard((prev) => {
           const next = { ...prev, recentEpisodes: freshRecent };
           clientCache.set(cacheKey, next, 10 * 60 * 1000);
           return next;
         });
+        setDashboardError(false);
       }
     } catch (e) {
       console.warn('On-demand refresh fallback:', e);
     } finally {
       setIsRefreshing(false);
+      setInitialLoading(false);
     }
   };
+
+  // Load Continue Watching from scoped localStorage and cloud entries when signed in
+  useEffect(() => {
+    let active = true;
+    const syncHistory = async () => {
+      let localList: any[] = [];
+      try {
+        if (typeof localStorage !== 'undefined') {
+          let raw = localStorage.getItem(watchHistoryKey);
+          // Migrate legacy unscoped watch history once for guest session only
+          if (!raw && !user?.id) {
+            const legacy = localStorage.getItem('local_watch_history');
+            if (legacy) {
+              localStorage.setItem(watchHistoryKey, legacy);
+              localStorage.removeItem('local_watch_history');
+              raw = legacy;
+            }
+          }
+          const parsed = raw ? JSON.parse(raw) : [];
+          if (Array.isArray(parsed)) localList = parsed;
+        }
+      } catch {}
+
+      if (active) setHistory(localList);
+
+      if (user?.id) {
+        try {
+          const entries = await listService.getAnimeEntries(user.id);
+          const cloudItems = entries
+            .filter((e) => (Array.isArray(e.watchedEpisodes) && e.watchedEpisodes.length > 0) || e.status === 'watching')
+            .map((e) => {
+              const watched = Array.isArray(e.watchedEpisodes) ? e.watchedEpisodes : [];
+              const lastEp = watched.length > 0 ? Math.max(...watched.map(Number).filter((n) => !isNaN(n))) : (e.progress || 1);
+              const total = Number(e.episodesCount || 0);
+              const pct = total > 0 ? Math.min(95, Math.max(15, Math.round((lastEp / total) * 100))) : 35;
+              const ts = typeof e.updatedAt?.toMillis === 'function'
+                ? e.updatedAt.toMillis()
+                : (e.updatedAt?.seconds ? e.updatedAt.seconds * 1000 : new Date(e.updatedAt || 0).getTime() || 0);
+              return {
+                id: String((e as any).animeId || e.id),
+                title: e.title,
+                posterUrl: e.posterUrl,
+                lastEpisode: String(lastEp || 1),
+                progress: pct,
+                updatedAt: ts
+              };
+            });
+
+          const mergedMap = new Map<string, any>();
+          [...cloudItems, ...localList].forEach((item) => {
+            const key = String(item.id);
+            const prev = mergedMap.get(key);
+            if (!prev || (item.updatedAt || 0) > (prev.updatedAt || 0)) {
+              mergedMap.set(key, item);
+            }
+          });
+          const merged = Array.from(mergedMap.values())
+            .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+            .slice(0, 20);
+          if (active) setHistory(merged);
+          return;
+        } catch {}
+      }
+
+      if (active) setHistory(localList);
+    };
+
+    void syncHistory();
+    return () => {
+      active = false;
+    };
+  }, [user?.id, watchHistoryKey]);
 
   // Load schedule for a specific day when user clicks a day chip in HomeView
   const handleSelectScheduleDay = async (dayKey: string) => {
@@ -374,11 +494,20 @@ export default function HomeView({
 
   const handleRemoveHistoryItem = (e: React.MouseEvent, itemId: string | number) => {
     e.stopPropagation();
-    setHistory((prev) => prev.filter((h) => String(h.id) !== String(itemId)));
+    setHistory((prev) => {
+      const next = prev.filter((h) => String(h.id) !== String(itemId));
+      try {
+        localStorage.setItem(watchHistoryKey, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
   };
 
   const handleClearAllHistory = () => {
     setHistory([]);
+    try {
+      localStorage.removeItem(watchHistoryKey);
+    } catch {}
   };
 
   useEffect(() => {
@@ -524,6 +653,22 @@ export default function HomeView({
     return list.filter((a: any) => !isHiddenByAdmin(a));
   }, [dashboard.currentSeason, animeCuration]);
 
+  const displayTopAnime = useMemo(() => {
+    const list =
+      dashboard.topAnime && dashboard.topAnime.length > 0
+        ? dashboard.topAnime
+        : [];
+    return list.filter((a: any) => !isHiddenByAdmin(a));
+  }, [dashboard.topAnime, animeCuration]);
+
+  const displayMovies = useMemo(() => {
+    const list =
+      dashboard.movies && dashboard.movies.length > 0
+        ? dashboard.movies
+        : [];
+    return list.filter((a: any) => !isHiddenByAdmin(a));
+  }, [dashboard.movies, animeCuration]);
+
   // Compute displayed schedule for selectedScheduleDay
   const displaySchedule = useMemo(() => {
     if (selectedScheduleDay === todayKey && dashboard.schedule && dashboard.schedule.length > 0) {
@@ -535,16 +680,20 @@ export default function HomeView({
     return [];
   }, [selectedScheduleDay, todayKey, dashboard.schedule, customDaySchedule]);
 
+  const display = useDeviceDisplay();
+
   return (
+    <PullToRefresh onRefresh={handleOnDemandRefresh}>
     <div className="pb-8 space-y-5 md:space-y-7">
+
       {/* Global alert banner if configured by admins */}
       {sliderSettings.globalAnnouncement && (
         <motion.div
           initial={{ opacity: 0, y: -20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="mx-4 md:mx-8 p-3 bg-gradient-to-r from-purple-500/10 via-pink-500/10 to-purple-500/10 border border-purple-500/15 rounded-2xl flex items-center gap-2.5 text-xs text-purple-200 justify-center font-bold text-center leading-relaxed"
+          className="mx-3 sm:mx-4 md:mx-8 p-3 bg-gradient-to-r from-purple-500/10 via-pink-500/10 to-purple-500/10 border border-purple-500/15 rounded-2xl flex items-center gap-2.5 text-xs text-purple-200 justify-center font-bold text-center leading-relaxed"
         >
-          <Sparkles size={14} className="text-pink-400 animate-pulse shrink-0" />
+          <Sparkles size={14} className="text-pink-400 shrink-0" />
           <span>{sliderSettings.globalAnnouncement}</span>
         </motion.div>
       )}
@@ -622,7 +771,13 @@ export default function HomeView({
                   if (dragPreventClickRef.current) return;
                   onAnimeClick?.(anime._id);
                 }}
-                className="w-full flex-[0_0_100%] cursor-pointer relative aspect-[4/5] sm:aspect-[16/9] md:aspect-[21/9] group"
+                className={`theme-keep-dark w-full flex-[0_0_100%] cursor-pointer relative group ${
+                  display.isCoverScreen
+                    ? 'aspect-[3/4] max-h-[58vh]'
+                    : display.isLandscape && display.isPhone
+                    ? 'aspect-[21/9] max-h-[75vh]'
+                    : 'aspect-[4/5] sm:aspect-[16/9] md:aspect-[21/9] max-h-[560px]'
+                }`}
                 dir="rtl"
               >
                 <img
@@ -635,9 +790,11 @@ export default function HomeView({
                   className="w-full h-full object-cover pointer-events-none select-none"
                   alt={anime.title}
                 />
-                <div className="absolute inset-0 bg-gradient-to-t from-black via-black/40 to-transparent flex flex-col justify-end p-6 md:p-12 pb-10 pointer-events-none">
-                  <div className="w-full max-w-5xl mx-auto flex flex-col gap-3">
-                    <span className="self-start bg-yellow-500 text-black text-xs md:text-sm font-black px-3 py-1 rounded-full shadow-lg border border-yellow-400">
+                <div className={`absolute inset-0 bg-gradient-to-t from-black via-black/40 to-transparent flex flex-col justify-end pointer-events-none ${
+                  display.isCoverScreen ? 'p-4 pb-9' : 'p-6 md:p-12 pb-10'
+                }`}>
+                  <div className="w-full max-w-5xl mx-auto flex flex-col gap-2 sm:gap-3">
+                    <span className="self-start bg-yellow-500 text-black text-[11px] sm:text-xs md:text-sm font-black px-2.5 sm:px-3 py-1 rounded-full shadow-lg border border-yellow-400">
                       #{idx + 1}{' '}
                       {sliderSettings.sliderMode === 'custom'
                         ? 'مختارات السلايدر'
@@ -649,14 +806,14 @@ export default function HomeView({
                         ? 'الأنميات التاريخية'
                         : 'الأفضل هذا الموسم'}
                     </span>
-                    <h4 className="text-3xl md:text-5xl text-white font-black drop-shadow-lg truncate">
+                    <h4 className={`${display.isCoverScreen ? 'text-xl leading-tight' : 'text-2xl sm:text-3xl md:text-5xl'} text-white font-black drop-shadow-lg truncate`}>
                       {anime.title}
                     </h4>
-                    <div className="flex items-center gap-3">
-                      <span className="text-sm bg-black/50 backdrop-blur text-yellow-400 px-2 py-1 rounded-lg font-bold flex items-center gap-1">
+                    <div className="flex items-center gap-2.5 sm:gap-3">
+                      <span className="text-xs sm:text-sm bg-black/50 backdrop-blur text-yellow-400 px-2 py-1 rounded-lg font-bold flex items-center gap-1 tabular-nums">
                         <Star size={14} fill="currentColor" /> {anime.rating || 0}
                       </span>
-                      <span className="text-sm text-neutral-200 drop-shadow-md font-bold">
+                      <span className="text-xs sm:text-sm text-neutral-200 drop-shadow-md font-bold truncate">
                         {anime.genres?.[0] || 'أنمي'}
                       </span>
                     </div>
@@ -685,9 +842,36 @@ export default function HomeView({
             ))}
           </div>
         </section>
+      ) : initialLoading ? (
+        <div className="pt-4 px-4 md:px-8">
+          <div className="aspect-[3/4] md:aspect-[21/9] rounded-2xl bg-neutral-900 animate-pulse border border-neutral-800 w-full"></div>
+        </div>
       ) : (
-        <div className="pt-24 px-4 md:px-8">
-          <div className="aspect-[3/4] md:aspect-[21/9] rounded-none bg-neutral-900 animate-pulse border-b border-neutral-800 w-full"></div>
+        <div className="pt-4 px-4 md:px-8">
+          <div className="rounded-2xl bg-neutral-900/50 border border-white/10 p-6 text-center space-y-3 max-w-5xl mx-auto">
+            <AlertCircle className={`mx-auto ${dashboardError ? 'text-rose-500' : 'text-amber-400'}`} size={32} />
+            <div className="space-y-1">
+              <h4 className="text-sm font-black text-white">
+                {dashboardError ? 'تعذر تحميل الواجهة الرئيسية حالياً' : 'لا تتوفر بيانات للعرض حالياً'}
+              </h4>
+              <p className="text-xs text-neutral-400">
+                {dashboardError
+                  ? 'تحقق من اتصالك بالإنترنت ثم أعد المحاولة'
+                  : 'لم يتم العثور على عناصر للعرض في هذا القسم حالياً'}
+              </p>
+            </div>
+            {dashboardError && (
+              <button
+                type="button"
+                onClick={handleOnDemandRefresh}
+                disabled={isRefreshing}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-black transition active:scale-95 cursor-pointer"
+              >
+                <RefreshCw size={14} className={isRefreshing ? 'animate-spin' : ''} />
+                <span>إعادة المحاولة</span>
+              </button>
+            )}
+          </div>
         </div>
       )}
 
@@ -747,7 +931,7 @@ export default function HomeView({
                     onMouseEnter={() => prefetchDetails(item.id)}
                     whileHover={{ y: -6, scale: 1.02, borderColor: '#3b82f6' }}
                     whileTap={{ scale: 0.98 }}
-                    className="cursor-pointer w-[175px] md:w-[230px] lg:w-[260px] flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 transition-all duration-300 aspect-[16/9] bg-neutral-900 gpu-accelerated shadow-lg"
+                    className={`theme-keep-dark cursor-pointer ${display.isCoverScreen ? 'w-[155px]' : 'w-[175px] md:w-[230px] lg:w-[260px]'} flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 transition-all duration-300 aspect-[16/9] bg-neutral-900 gpu-accelerated shadow-lg`}
                   >
                     <img
                       src={item.posterUrl || 'https://via.placeholder.com/300x168?text=Anime'}
@@ -807,15 +991,6 @@ export default function HomeView({
             <h3 className="text-white font-black text-lg border-r-4 border-red-500 pr-2">
               أحدث الحلقات
             </h3>
-            <button
-              onClick={handleOnDemandRefresh}
-              className={`text-neutral-400 hover:text-white transition p-1.5 rounded-full hover:bg-neutral-800 cursor-pointer ${
-                isRefreshing ? 'animate-spin text-purple-500' : ''
-              }`}
-              title="تحديث الحلقات الآن"
-            >
-              <RefreshCw size={14} />
-            </button>
           </div>
           <button
             onClick={onNavigateToRecent}
@@ -851,9 +1026,9 @@ export default function HomeView({
                 onMouseEnter={() => prefetchDetails(animeTargetId)}
                 whileHover={{ y: -4, scale: 1.02 }}
                 whileTap={{ scale: 0.98 }}
-                className="cursor-pointer w-[125px] sm:w-[150px] md:w-[170px] lg:w-[185px] flex-shrink-0 flex flex-col group"
+                className={`cursor-pointer ${display.isCoverScreen ? 'w-[114px]' : 'w-[128px] sm:w-[150px] md:w-[170px] lg:w-[188px]'} flex-shrink-0 flex flex-col group`}
               >
-                <div className="relative aspect-[3/4] rounded-2xl overflow-hidden border border-neutral-800/80 group-hover:border-red-500/60 transition-all duration-300 bg-neutral-900 shadow-md group-hover:shadow-red-950/20">
+                <div className="theme-keep-dark relative aspect-[3/4] rounded-2xl overflow-hidden border border-neutral-800/80 group-hover:border-red-500/60 transition-all duration-300 bg-neutral-900 shadow-md group-hover:shadow-red-950/20">
                   <img
                     src={epPoster}
                     onError={(e) => {
@@ -910,7 +1085,7 @@ export default function HomeView({
                 onMouseEnter={() => prefetchDetails(anime._id)}
                 whileHover={{ y: -6, scale: 1.02, borderColor: '#f97316' }}
                 whileTap={{ scale: 0.98 }}
-                className="cursor-pointer w-[140px] md:w-[185px] lg:w-[215px] flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 transition-all duration-300 aspect-[3/4] bg-neutral-900 gpu-accelerated shadow-lg"
+                className={`theme-keep-dark cursor-pointer ${display.isCoverScreen ? 'w-[122px]' : 'w-[140px] md:w-[185px] lg:w-[215px]'} flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 transition-all duration-300 aspect-[3/4] bg-neutral-900 gpu-accelerated shadow-lg`}
               >
                 <img
                   src={anime.posterUrl || 'https://via.placeholder.com/200x300?text=Anime'}
@@ -989,7 +1164,7 @@ export default function HomeView({
               onMouseEnter={() => prefetchDetails(anime._id)}
               whileHover={{ y: -6, scale: 1.02, borderColor: '#a855f7' }}
               whileTap={{ scale: 0.98 }}
-              className="cursor-pointer w-[130px] md:w-[180px] lg:w-[220px] flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 transition-all duration-300 aspect-[3/4] bg-neutral-900 gpu-accelerated"
+              className={`theme-keep-dark cursor-pointer ${display.isCoverScreen ? 'w-[118px]' : 'w-[130px] md:w-[180px] lg:w-[220px]'} flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 transition-all duration-300 aspect-[3/4] bg-neutral-900 gpu-accelerated`}
             >
               <img
                 src={anime.posterUrl || 'https://via.placeholder.com/200x300?text=Anime'}
@@ -1013,6 +1188,109 @@ export default function HomeView({
           ))}
         </div>
       </section>
+
+      {/* 7.5. Top Anime Section */}
+      {displayTopAnime.length > 0 && (
+        <section className="px-4 md:px-8">
+          <div className="flex justify-between items-end mb-3 max-w-7xl mx-auto">
+            <h3 className="text-white font-black text-lg border-r-4 border-amber-500 pr-2 flex items-center gap-2">
+              <Crown size={18} className="text-amber-400" />
+              <span>أفضل الأنميات</span>
+            </h3>
+            <button
+              onClick={onNavigateToTopAnime}
+              className="text-[10px] md:text-xs font-bold text-neutral-400 hover:text-white flex items-center gap-1 group cursor-pointer"
+            >
+              عرض الكل <ChevronLeft size={14} className="transition-transform group-hover:-translate-x-1" />
+            </button>
+          </div>
+          <div className="flex gap-3 overflow-x-auto pb-4 hide-scrollbar max-w-7xl mx-auto">
+            {displayTopAnime.map((anime: any, idx: number) => {
+              const targetId = String(anime._id || anime.slug || anime.id || `search-${anime.title}`);
+              return (
+                <motion.div
+                  key={`top-anime-${targetId}-${idx}`}
+                  onClick={() => onAnimeClick?.(targetId)}
+                  onMouseEnter={() => prefetchDetails(targetId)}
+                  whileHover={{ y: -6, scale: 1.02, borderColor: '#f59e0b' }}
+                  whileTap={{ scale: 0.98 }}
+                  className={`theme-keep-dark cursor-pointer ${display.isCoverScreen ? 'w-[118px]' : 'w-[130px] md:w-[180px] lg:w-[220px]'} flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 transition-all duration-300 aspect-[3/4] bg-neutral-900 gpu-accelerated`}
+                >
+                  <img
+                    src={anime.posterUrl || 'https://via.placeholder.com/200x300?text=Anime'}
+                    referrerPolicy="no-referrer"
+                    loading="lazy"
+                    className="w-full h-full object-cover opacity-95 group-hover:opacity-100 group-hover:scale-[1.03] transition-all duration-500"
+                    alt={anime.title}
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black via-black/25 to-transparent flex flex-col justify-end p-3 pointer-events-none">
+                    <span className="absolute top-2 right-2 bg-amber-500 text-black px-2 py-0.5 rounded text-[10px] font-black shadow-lg">
+                      #{idx + 1}
+                    </span>
+                    {anime.episodesCount && (
+                      <span className="absolute top-2 left-2 bg-black/70 backdrop-blur-md text-white px-2 py-0.5 rounded text-[10px] font-bold border border-white/10">
+                        {anime.episodesCount} حلقة
+                      </span>
+                    )}
+                    <h5 className="font-bold text-xs md:text-sm text-white drop-shadow line-clamp-2 text-right dir-rtl">
+                      {anime.title}
+                    </h5>
+                  </div>
+                </motion.div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {/* 7.6. Anime Movies Section */}
+      {displayMovies.length > 0 && (
+        <section className="px-4 md:px-8">
+          <div className="flex justify-between items-end mb-3 max-w-7xl mx-auto">
+            <h3 className="text-white font-black text-lg border-r-4 border-rose-500 pr-2 flex items-center gap-2">
+              <Film size={18} className="text-rose-400" />
+              <span>أفلام الأنمي</span>
+            </h3>
+            <button
+              onClick={onNavigateToMovies}
+              className="text-[10px] md:text-xs font-bold text-neutral-400 hover:text-white flex items-center gap-1 group cursor-pointer"
+            >
+              عرض الكل <ChevronLeft size={14} className="transition-transform group-hover:-translate-x-1" />
+            </button>
+          </div>
+          <div className="flex gap-3 overflow-x-auto pb-4 hide-scrollbar max-w-7xl mx-auto">
+            {displayMovies.map((anime: any, idx: number) => {
+              const targetId = String(anime._id || anime.slug || anime.id || `search-${anime.title}`);
+              return (
+                <motion.div
+                  key={`movie-anime-${targetId}-${idx}`}
+                  onClick={() => onAnimeClick?.(targetId)}
+                  onMouseEnter={() => prefetchDetails(targetId)}
+                  whileHover={{ y: -6, scale: 1.02, borderColor: '#f43f5e' }}
+                  whileTap={{ scale: 0.98 }}
+                  className={`theme-keep-dark cursor-pointer ${display.isCoverScreen ? 'w-[118px]' : 'w-[130px] md:w-[180px] lg:w-[220px]'} flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 transition-all duration-300 aspect-[3/4] bg-neutral-900 gpu-accelerated`}
+                >
+                  <img
+                    src={anime.posterUrl || 'https://via.placeholder.com/200x300?text=Anime'}
+                    referrerPolicy="no-referrer"
+                    loading="lazy"
+                    className="w-full h-full object-cover opacity-95 group-hover:opacity-100 group-hover:scale-[1.03] transition-all duration-500"
+                    alt={anime.title}
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black via-black/25 to-transparent flex flex-col justify-end p-3 pointer-events-none">
+                    <span className="absolute top-2 left-2 bg-rose-600 text-white px-2 py-0.5 rounded text-[10px] font-black shadow-lg">
+                      فيلم
+                    </span>
+                    <h5 className="font-bold text-xs md:text-sm text-white drop-shadow line-clamp-2 text-right dir-rtl">
+                      {anime.title}
+                    </h5>
+                  </div>
+                </motion.div>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       {/* 8. Interactive Broadcast Schedule with Instant Day Switcher */}
       <section className="px-4 md:px-8">
@@ -1075,33 +1353,42 @@ export default function HomeView({
           <div className="relative">
             {scheduleDayLoading && (
               <div className="absolute inset-0 bg-black/40 backdrop-blur-[2px] z-20 rounded-2xl flex items-center justify-center">
-                <RefreshCw size={20} className="animate-spin text-blue-400" />
+                <Loader2 size={20} className="animate-spin text-blue-400" />
               </div>
             )}
             <div className="flex gap-3 overflow-x-auto pb-4 hide-scrollbar">
-              {[...displaySchedule].reverse().map((anime: any, idx: number) => (
-                <motion.div
-                  key={`schedule-${selectedScheduleDay}-${anime._id}-${idx}`}
-                  onClick={() => onAnimeClick?.(anime._id || `search-${anime.title}`)}
-                  onMouseEnter={() => prefetchDetails(anime._id || `search-${anime.title}`)}
-                  whileHover={{ y: -6, scale: 1.02, borderColor: '#3b82f6' }}
-                  whileTap={{ scale: 0.98 }}
-                  className="cursor-pointer w-[130px] md:w-[180px] lg:w-[220px] flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 transition-all duration-300 aspect-[3/4] bg-neutral-900 gpu-accelerated"
-                >
-                  <img
-                    src={anime.posterUrl || 'https://via.placeholder.com/200x300?text=Anime'}
-                    referrerPolicy="no-referrer"
-                    loading="lazy"
-                    className="w-full h-full object-cover opacity-95 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500"
-                    alt="poster"
-                  />
-                  <div className="absolute inset-0 bg-gradient-to-t from-black via-black/20 to-transparent flex flex-col justify-end p-3 pointer-events-none">
-                    <h5 className="font-bold text-xs md:text-sm text-white truncate drop-shadow text-center">
-                      {anime.title}
-                    </h5>
-                  </div>
-                </motion.div>
-              ))}
+              {displaySchedule.map((anime: any, idx: number) => {
+                const targetId = String(anime._id || anime.slug || anime.mal_id || `search-${anime.title}`);
+                return (
+                  <motion.div
+                    key={`schedule-${selectedScheduleDay}-${targetId}-${idx}`}
+                    onClick={() => onAnimeClick?.(targetId)}
+                    onMouseEnter={() => prefetchDetails(targetId)}
+                    whileHover={{ y: -6, scale: 1.02, borderColor: '#3b82f6' }}
+                    whileTap={{ scale: 0.98 }}
+                    className={`theme-keep-dark cursor-pointer ${display.isCoverScreen ? 'w-[118px]' : 'w-[130px] md:w-[180px] lg:w-[220px]'} flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 transition-all duration-300 aspect-[3/4] bg-neutral-900 gpu-accelerated`}
+                  >
+                    <img
+                      src={anime.posterUrl || 'https://via.placeholder.com/200x300?text=Anime'}
+                      referrerPolicy="no-referrer"
+                      loading="lazy"
+                      className="w-full h-full object-cover opacity-95 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500"
+                      alt={anime.title}
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-t from-black via-black/20 to-transparent flex flex-col justify-end p-3 pointer-events-none">
+                      {anime.broadcast?.time && (
+                        <span className="absolute top-2 left-2 bg-blue-600/90 backdrop-blur-md text-white px-2 py-0.5 rounded text-[10px] font-black shadow flex items-center gap-1">
+                          <Clock size={9} />
+                          <span>{anime.broadcast.time}</span>
+                        </span>
+                      )}
+                      <h5 className="font-bold text-xs md:text-sm text-white truncate drop-shadow text-center">
+                        {anime.title}
+                      </h5>
+                    </div>
+                  </motion.div>
+                );
+              })}
             </div>
           </div>
         </div>
@@ -1117,13 +1404,6 @@ export default function HomeView({
             <p className="text-[10px] text-neutral-400 mt-1">
               تصفّح أحدث الحلقات، تابع جدول البث، وشارك تقييماتك وآراءك مع مجتمع الأوتاكو من أي جهاز.
             </p>
-          </div>
-          <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 px-3.5 py-1.5 rounded-2xl flex items-center gap-2 text-xs font-bold leading-none">
-            <span className="relative flex h-2 w-2 shrink-0">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-            </span>
-            <span>تحديث تلقائي مباشر</span>
           </div>
         </div>
       </section>
@@ -1154,7 +1434,7 @@ export default function HomeView({
                 onClick={() => setQuoteIndex((prev) => (prev + 1) % LEGENDARY_ANIME_QUOTES.length)}
                 className="text-[11px] font-bold text-neutral-300 hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition cursor-pointer"
               >
-                <RefreshCw size={12} />
+                <Shuffle size={12} />
                 <span>اقتباس آخر</span>
               </button>
             </div>
@@ -1194,5 +1474,6 @@ export default function HomeView({
         </div>
       </section>
     </div>
+    </PullToRefresh>
   );
 }

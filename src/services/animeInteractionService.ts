@@ -1,5 +1,5 @@
 import { db } from '../firebase';
-import { collection, addDoc, getDocs, query, where, orderBy, serverTimestamp, updateDoc, doc } from 'firebase/firestore';
+import { collection, addDoc, getDocs, query, where, orderBy, limit, serverTimestamp, updateDoc, doc } from 'firebase/firestore';
 import { handleFirestoreError, OperationType } from '../firebaseUtils';
 
 export interface Comment {
@@ -37,11 +37,12 @@ export interface Recommendation {
   createdAt?: any;
 }
 
-export const getComments = async (animeId: string): Promise<Comment[]> => {
+export const getComments = async (animeId: string, maxComments = 120): Promise<Comment[]> => {
   const q = query(
     collection(db, 'comments'),
     where('animeId', '==', animeId),
-    orderBy('createdAt', 'desc')
+    orderBy('createdAt', 'desc'),
+    limit(maxComments)
   );
   try {
     const snap = await getDocs(q);
@@ -79,12 +80,14 @@ export const getApprovedRecommendations = async (animeId: string): Promise<Recom
     const q1 = query(
       collection(db, 'recommendations'),
       where('animeId', '==', animeId),
-      where('status', '==', 'approved')
+      where('status', '==', 'approved'),
+      limit(25)
     );
     const q2 = query(
       collection(db, 'recommendations'),
       where('targetAnimeId', '==', animeId),
-      where('status', '==', 'approved')
+      where('status', '==', 'approved'),
+      limit(25)
     );
     
     const [snap1, snap2] = await Promise.all([getDocs(q1), getDocs(q2)]);
@@ -106,12 +109,16 @@ export const getApprovedRecommendations = async (animeId: string): Promise<Recom
       return bTime - aTime;
     });
 
-    // Resolve any missing animeTitle or posterUrls from API so older recommendations never show "أنمي"
+    // Resolve any missing animeTitle or posterUrls cleanly (capped to first 6 items to avoid burst load)
+    const missingItems = recs
+      .filter((r) => ((!r.animeTitle || r.animeTitle === 'أنمي' || !r.animePosterUrl) && r.animeId) || (!r.targetAnimePosterUrl && r.targetAnimeId))
+      .slice(0, 6);
+
     await Promise.all(
-      recs.map(async (r) => {
+      missingItems.map(async (r) => {
         if ((!r.animeTitle || r.animeTitle === 'أنمي' || !r.animePosterUrl) && r.animeId) {
           try {
-            const res = await fetch(`/api/anime/details/${encodeURIComponent(String(r.animeId))}`);
+            const res = await fetch(`/api/anime/details/${encodeURIComponent(String(r.animeId))}`, { signal: AbortSignal.timeout(4000) });
             const json = await res.json();
             const d = json?.data || json;
             if (d) {
@@ -122,7 +129,7 @@ export const getApprovedRecommendations = async (animeId: string): Promise<Recom
         }
         if (!r.targetAnimePosterUrl && r.targetAnimeId) {
           try {
-            const res = await fetch(`/api/anime/details/${encodeURIComponent(String(r.targetAnimeId))}`);
+            const res = await fetch(`/api/anime/details/${encodeURIComponent(String(r.targetAnimeId))}`, { signal: AbortSignal.timeout(4000) });
             const json = await res.json();
             const d = json?.data || json;
             if (d && d.posterUrl) {

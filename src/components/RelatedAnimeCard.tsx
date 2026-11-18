@@ -69,7 +69,7 @@ export default function RelatedAnimeCard({ rel, onClick }: any) {
       onClick={onClick}
       className="w-full relative group cursor-pointer"
     >
-      <div className="w-full aspect-[2/3] rounded-xl overflow-hidden bg-[#121212] border border-neutral-800/80 shadow-md group-hover:border-[#FF1744] transition-all duration-300 flex flex-col relative">
+      <div className="theme-keep-dark w-full aspect-[2/3] rounded-xl overflow-hidden bg-[#121212] border border-neutral-800/80 shadow-md group-hover:border-[#FF1744] transition-all duration-300 flex flex-col relative">
         {poster ? (
           <img
             src={poster}

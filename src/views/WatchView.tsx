@@ -1,45 +1,47 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { 
-  ChevronRight, 
-  Settings, 
-  MessageSquare, 
-  Download, 
-  Share2, 
-  Server, 
-  Play, 
-  ListVideo, 
-  Tv, 
-  ThumbsUp, 
-  Trash2, 
-  Send, 
-  Loader2, 
+import {
+  ChevronRight,
+  MessageSquare,
+  Download,
+  Server,
+  Play,
+  ListVideo,
+  Tv,
+  ThumbsUp,
+  Trash2,
+  Send,
+  Loader2,
   Lock,
-  ExternalLink,
-  RefreshCw,
   Copy,
   Check,
   AlertCircle,
-  Sparkles,
-  ShieldCheck,
-  Shield
+  ExternalLink,
+  FolderDown
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { isStaffEmail } from '../services/moderationService';
 import { recordEpisodeWatch } from '../services/gamificationService';
 import { db } from '../firebase';
-import { 
-  collection, 
-  query, 
-  where, 
-  onSnapshot, 
-  addDoc, 
+import {
+  collection,
+  query,
+  where,
+  onSnapshot,
+  addDoc,
   serverTimestamp,
   doc,
   updateDoc
 } from 'firebase/firestore';
 import { STORE_ITEMS_SORTED, getAvatarShapeClass } from '../data/storeItems';
 import { clientCache } from '../utils/clientCache';
+import {
+  resolveApiUrl,
+  resolveAbsoluteApiUrlForExternalIntent,
+} from '../utils/apiUrl';
+import { openDownloadManager, openExternalPlayer } from '../utils/externalNavigation';
+import { downloadManagerService } from '../services/downloadManagerService';
+import { useDeviceDisplay } from '../hooks/useDeviceDisplay';
 
 interface WatchViewProps {
   onBack: () => void;
@@ -47,19 +49,22 @@ interface WatchViewProps {
   anime?: any;
   onEpisodeSelect?: (ep: any) => void;
   onAnimeClick?: () => void;
+  onOpenDownloads?: () => void;
 }
 
-export default function WatchView({ onBack, episode: initialEpisode, anime, onEpisodeSelect, onAnimeClick }: WatchViewProps) {
+export default function WatchView({ onBack, episode: initialEpisode, anime, onEpisodeSelect, onAnimeClick, onOpenDownloads }: WatchViewProps) {
   const [episode, setEpisode] = useState(initialEpisode);
   const [activeTab, setActiveTab] = useState<'servers' | 'episodes' | 'comments'>('servers');
   const [serverSubTab, setServerSubTab] = useState<'watch' | 'download'>('watch');
   const [servers, setServers] = useState<any[]>([]);
   const [activeServerUrl, setActiveServerUrl] = useState<string | null>(null);
+  const [extractedStream, setExtractedStream] = useState<{ url: string; type: string } | null>(null);
   const [loadingServers, setLoadingServers] = useState(false);
-  const [hasPlaybackError, setHasPlaybackError] = useState(false);
-  const [strictAdShield, setStrictAdShield] = useState(false);
   const [copiedDownloadUrl, setCopiedDownloadUrl] = useState<string | null>(null);
   const [downloadingKey, setDownloadingKey] = useState<string | null>(null);
+  const [launchingExternalPlayer, setLaunchingExternalPlayer] = useState(false);
+  const [launchingExternalDownload, setLaunchingExternalDownload] = useState(false);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [downloadFeedback, setDownloadFeedback] = useState<{
     type: 'error' | 'success';
     text: string;
@@ -67,9 +72,10 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
     actionLabel?: string;
   } | null>(null);
   const activeBlobUrlRef = React.useRef<string | null>(null);
-  const [launchingExternal, setLaunchingExternal] = useState<'player' | 'adm' | null>(null);
-  const [externalFeedback, setExternalFeedback] = useState<string | null>(null);
+  const extractAbortRef = React.useRef<AbortController | null>(null);
   const { user, userData, userRole } = useAuth();
+  const display = useDeviceDisplay();
+  const [confirmDeleteChatId, setConfirmDeleteChatId] = useState<string | null>(null);
   const MIN_COMMENT_LEVEL = 5;
   const userLevel = userData?.level || 1;
   const isMod = userRole === 'owner' || userRole === 'admin' || userRole === 'moderator' || isStaffEmail(user?.email);
@@ -78,10 +84,8 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
   const [liveComments, setLiveComments] = useState<any[]>([]);
   const [newChatText, setNewChatText] = useState('');
   const [sendingChat, setSendingChat] = useState(false);
-  const [selectedQualityFilter, setSelectedQualityFilter] = useState<'ALL' | '1080p' | '720p' | '480p'>('ALL');
-  const [copiedServerUrl, setCopiedServerUrl] = useState<string | null>(null);
   const [episodeSearchQuery, setEpisodeSearchQuery] = useState('');
-  const [watchSeasonNum, setWatchSeasonNum] = useState<number>(() => {
+  const [watchSeasonNum] = useState<number>(() => {
     return Number(initialEpisode?.seasonNumber || anime?.activeSeason || anime?.seasonsList?.[0]?.seasonNumber || 1);
   });
 
@@ -97,18 +101,42 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
   
   useEffect(() => {
     if (anime && episode) {
+      const parseEpisodeNumber = (numVal: any, titleStr: string): number => {
+        if (numVal !== undefined && numVal !== null && !isNaN(Number(numVal))) return Number(numVal);
+        const text = String(numVal || titleStr || '');
+        const match = text.match(/\d+/);
+        if (match) {
+          const parsed = parseInt(match[0], 10);
+          if (!isNaN(parsed)) return parsed;
+        }
+        return 1;
+      };
+      const epNum = parseEpisodeNumber(episode?.num, episode?.title || '');
+
+      // Save to user-scoped Continue Watching history immediately (works for guests & cloud users without leaking across accounts)
+      try {
+        if (typeof localStorage !== 'undefined' && anime?._id) {
+          const watchHistoryKey = `local_watch_history_${user?.id || 'guest'}`;
+          const raw = localStorage.getItem(watchHistoryKey);
+          const list = raw ? JSON.parse(raw) : [];
+          const filtered = Array.isArray(list)
+            ? list.filter((item: any) => String(item.id) !== String(anime._id))
+            : [];
+          const totalEps = Number(anime?.episodesCount || anime?.episodes?.length || 0);
+          const pct = totalEps > 0 ? Math.min(95, Math.max(15, Math.round((epNum / totalEps) * 100))) : 35;
+          const entry = {
+            id: String(anime._id),
+            title: anime.title || 'أنمي',
+            posterUrl: anime.posterUrl || anime.thumbnailUrl || '',
+            lastEpisode: String(epNum),
+            progress: pct,
+            updatedAt: Date.now()
+          };
+          localStorage.setItem(watchHistoryKey, JSON.stringify([entry, ...filtered].slice(0, 20)));
+        }
+      } catch {}
+
       if (user) {
-        const parseEpisodeNumber = (numVal: any, titleStr: string): number => {
-          if (numVal !== undefined && numVal !== null && !isNaN(Number(numVal))) return Number(numVal);
-          const text = String(numVal || titleStr || '');
-          const match = text.match(/\d+/);
-          if (match) {
-            const parsed = parseInt(match[0], 10);
-            if (!isNaN(parsed)) return parsed;
-          }
-          return 1;
-        };
-        const epNum = parseEpisodeNumber(episode?.num, episode?.title || '');
         recordEpisodeWatch(user.id, anime, epNum).catch(console.error);
       }
     }
@@ -117,26 +145,27 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
     if (episode) {
       window.scrollTo({ top: 0, behavior: 'smooth' });
       const activeSeasonNumber = episode?.seasonNumber || watchSeasonNum || 1;
-      const serversCacheKey = `servers_v11_${anime?._id || 'unknown'}_s_${activeSeasonNumber}_ep_${episode?.num || episode?.id || '1'}`;
+      const serversCacheKey = `servers_v13_${anime?._id || 'unknown'}_s_${activeSeasonNumber}_ep_${episode?.num || episode?.id || '1'}`;
       const cachedServers = clientCache.get<any[]>(serversCacheKey);
-      
-      if (cachedServers && Array.isArray(cachedServers) && cachedServers.length > 0 && cachedServers.some((s: any) => s.category === 'download')) {
+
+      if (cachedServers && Array.isArray(cachedServers) && cachedServers.length > 0) {
         setServers(cachedServers);
         setLoadingServers(false);
         const firstWatch = cachedServers.find((s: any) => s.category !== 'download') || cachedServers[0];
-        handleServerSelect(firstWatch.url);
+        if (firstWatch?.url) handleServerSelect(firstWatch.url);
       } else {
         setLoadingServers(true);
         setServers([]);
         setActiveServerUrl(null);
+        setExtractedStream(null);
       }
-      
+
       fetch('/api/anime/servers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          url: episode.id || episode.link,
-          animeId: anime?.malId || anime?._id,
+        body: JSON.stringify({
+          url: episode.id || episode.link || '',
+          animeId: anime?._id || anime?.malId,
           animeTitle: anime?.englishTitle || anime?.title,
           seasonNumber: activeSeasonNumber,
           episodeNum: episode?.num
@@ -146,12 +175,12 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
       .then(data => {
         if (data && data.success && data.data && Array.isArray(data.data) && data.data.length > 0) {
           setServers(data.data);
-          clientCache.set(serversCacheKey, data.data, 2 * 60 * 60 * 1000); // 2 hours cache
-          if (!cachedServers || cachedServers.length === 0 || !cachedServers.some((s: any) => s.category === 'download')) {
+          clientCache.set(serversCacheKey, data.data, 2 * 60 * 60 * 1000);
+          if (!cachedServers || cachedServers.length === 0) {
             const firstWatch = data.data.find((s: any) => s.category !== 'download') || data.data[0];
-            handleServerSelect(firstWatch.url);
+            if (firstWatch?.url) handleServerSelect(firstWatch.url);
           }
-        } else if (!cachedServers) {
+        } else if (!cachedServers || cachedServers.length === 0) {
           setServers([]);
           setActiveServerUrl(null);
         }
@@ -200,7 +229,7 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
     if (lowerUrl.includes('videa.hu')) return 'Videa';
     if (lowerUrl.includes('4shared.com')) return '4Shared';
     if (lowerUrl.includes('dailymotion.com')) return 'Dailymotion';
-    if (lowerUrl.includes('upns.online') || lowerUrl.includes('risto')) return 'Risto';
+    if (lowerUrl.includes('upns.online')) return 'Direct Mirror';
     if (lowerUrl.includes('sendvid')) return 'Sendvid';
     if (lowerUrl.includes('mp4upload')) return 'MP4Upload';
     if (lowerUrl.includes('uqload')) return 'Uqload';
@@ -228,6 +257,8 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
     if (lowerUrl.includes('workupload')) return 'WorkUpload';
     if (lowerUrl.includes('krakenfiles')) return 'KrakenFiles';
     if (lowerUrl.includes('hexupload') || lowerUrl.includes('hexload')) return 'HexUpload';
+    if (lowerUrl.includes('megamax') || lowerUrl.includes('share4max')) return 'MegaMax';
+    if (lowerUrl.includes('yourupload')) return 'YourUpload';
     if (lowerUrl.includes('drop.download')) return 'DropDownload';
     if (lowerUrl.includes('megaup')) return 'MegaUp';
 
@@ -240,7 +271,7 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
       .replace(/\s+/g, ' ')
       .trim();
 
-    return cleaned || `Server ${idx + 1}`;
+    return cleaned || `سيرفر ${idx + 1}`;
   };
 
   // دالة توحيد رمز الجودة ليكون فقط FHD أو HD أو SD بدون أي أرقام
@@ -251,7 +282,7 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
     return 'HD';
   };
 
-  // درع حجب النوافذ المنبثقة والإعلانات (AdGuard DNS Ad-Blocking & Popup Shield)
+  // حظر صامت للنوافذ المنبثقة والإعلانات غير المرغوبة
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const originalOpen = window.open;
@@ -266,7 +297,6 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
     window.open = function(url?: string | URL, target?: string, features?: string) {
       const urlStr = String(url || '').toLowerCase();
       if (!urlStr || urlStr === 'about:blank' || AD_BLOCK_KEYWORDS.some(k => urlStr.includes(k))) {
-        console.warn('🛡️ تم حظر نافذة/إعلان منبثق عبر درع DNS لحجب الإعلانات:', urlStr);
         return null;
       }
       return originalOpen.call(window, url, target, features);
@@ -274,6 +304,9 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
 
     return () => {
       window.open = originalOpen;
+      if (extractAbortRef.current) {
+        try { extractAbortRef.current.abort(); } catch (_) {}
+      }
       if (activeBlobUrlRef.current) {
         try { URL.revokeObjectURL(activeBlobUrlRef.current); } catch (_) {}
         activeBlobUrlRef.current = null;
@@ -283,34 +316,52 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
 
   const handleServerSelect = (url: string) => {
     setActiveServerUrl(url);
-    setHasPlaybackError(false);
-  };
-
-  // دالة التبديل التلقائي إلى السيرفر التالي عند تعطل السيرفر الحالي
-  const handleNextServerFailover = () => {
-    const watchList = servers.filter(s => s.category !== 'download');
-    if (watchList.length <= 1) return;
-    const currentIdx = watchList.findIndex(s => s.url === activeServerUrl);
-    const nextIdx = (currentIdx + 1) % watchList.length;
-    const nextServer = watchList[nextIdx];
-    if (nextServer) {
-      handleServerSelect(nextServer.url);
+    setExtractedStream(null);
+    if (extractAbortRef.current) {
+      try { extractAbortRef.current.abort(); } catch (_) {}
+      extractAbortRef.current = null;
     }
-  };
 
-  // فتح السيرفر في نافذة أو متصفح خارجي (مفيد جداً للهواتف وأجهزة أندرويد)
-  const handleOpenExternal = () => {
-    if (activeServerUrl) {
-      window.open(activeServerUrl, '_blank', 'noopener,noreferrer');
-    }
-  };
+    const lower = (url || '').toLowerCase();
+    const isExtractableHost =
+      lower.includes('sendvid') ||
+      lower.includes('mp4upload') ||
+      lower.includes('yourupload') ||
+      lower.includes('videa.hu') ||
+      lower.includes('vidmoly') ||
+      lower.includes('mixdrop') ||
+      lower.includes('vidoza') ||
+      lower.includes('filemoon') ||
+      lower.includes('dood') ||
+      lower.includes('d000d') ||
+      lower.includes('lulustream') ||
+      lower.includes('streamtape') ||
+      lower.includes('ok.ru');
 
-  const handleCopyLink = (url: string) => {
-    if (navigator?.clipboard?.writeText) {
-      navigator.clipboard.writeText(url).then(() => {
-        setCopiedServerUrl(url);
-        setTimeout(() => setCopiedServerUrl(null), 2000);
-      }).catch(() => {});
+    if (isExtractableHost && typeof AbortController !== 'undefined') {
+      const ctrl = new AbortController();
+      extractAbortRef.current = ctrl;
+      fetch('/api/anime/extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+        signal: ctrl.signal
+      })
+        .then(r => r.json())
+        .then(res => {
+          if (ctrl.signal.aborted) return;
+          const directUrl = res?.data?.directUrl;
+          const streamType = res?.data?.type;
+          if (
+            res?.success &&
+            typeof directUrl === 'string' &&
+            (directUrl.startsWith('http') || directUrl.startsWith('/api/')) &&
+            streamType === 'direct'
+          ) {
+            setExtractedStream({ url: resolveApiUrl(directUrl), type: streamType });
+          }
+        })
+        .catch(() => {});
     }
   };
 
@@ -331,13 +382,13 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
   ) => {
     setDownloadFeedback({
       type: 'success',
-      text: 'جاري بدء سحب ملف الفيديو...',
+      text: 'جاري تجهيز الملف للتحميل...',
     });
 
     const resp = await fetch(downloadUrl, { credentials: 'include' });
     const ct = (resp.headers.get('content-type') || '').toLowerCase();
     if (!resp.ok || ct.includes('text/html') || !resp.body) {
-      throw new Error('استجاب الخادم بملف غير صالح للتحميل.');
+      throw new Error('تعذر بدء تحميل الملف، يرجى تجربة خيار آخر.');
     }
 
     const totalBytes = Number(resp.headers.get('content-length') || expectedSizeBytes || 0);
@@ -460,194 +511,191 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
       if (!data?.success || !data?.downloadUrl) {
         setDownloadFeedback({
           type: 'error',
-          text: data?.message || 'لم يتم العثور على رابط MP4 مباشر لهذه الحلقة حالياً، جرب سيرفراً آخر.',
+          text: data?.message || 'تعذر تجهيز رابط التحميل لهذه الحلقة، يرجى تجربة خيار آخر.',
         });
         return;
       }
 
       const filename = data.filename || `Anime-Ep-${episode?.num || 1}.mp4`;
+      const resolvedDownloadUrl = resolveApiUrl(data.downloadUrl);
 
-      // 1. خارج الإطارات المقيدة والأصل المحلي، يبدأ التنزيل المباشر للمتصفح فوراً
       if (!isRestrictedPreviewContext) {
-        triggerHiddenAnchor(data.downloadUrl, filename);
+        triggerHiddenAnchor(resolvedDownloadUrl, filename);
         setDownloadFeedback({
           type: 'success',
-          text: `بدأ التنزيل المباشر: ${filename}`,
-          actionUrl: data.downloadUrl,
-          actionLabel: 'إعادة التنزيل',
+          text: `بدأ التحميل: ${filename}`,
+          actionUrl: resolvedDownloadUrl,
+          actionLabel: 'إعادة التحميل',
         });
         return;
       }
 
-      // 2. على أندرويد عند توفر رابط CDN مباشر نمرره مباشرة دون تخزين الملف بالذاكرة
-      if (isAndroid && data.externalDirectUrl) {
-        const directCdnUrl = data.externalDirectUrl as string;
+      if (isAndroid) {
+        const directTargetUrl =
+          (data.externalDirectUrl as string | null) ||
+          resolveAbsoluteApiUrlForExternalIntent(data.downloadUrl);
         const admMime = data.externalDirectMime || 'video/mp4';
-        try {
-          const parsed = new URL(directCdnUrl);
-          const scheme = parsed.protocol.replace(':', '');
-          const hostAndPath = `${parsed.host}${parsed.pathname}${parsed.search}`;
-          const intentUri = `intent://${hostAndPath}#Intent;scheme=${scheme};action=android.intent.action.VIEW;package=com.dv.adm;type=${admMime};S.title=${encodeURIComponent(filename)};S.filename=${encodeURIComponent(filename)};S.browser_fallback_url=${encodeURIComponent(directCdnUrl)};end`;
-          triggerHiddenAnchor(intentUri);
-        } catch {
-          window.open(directCdnUrl, '_blank', 'noopener,noreferrer');
+        if (directTargetUrl && /^https?:\/\//i.test(directTargetUrl)) {
+          const launched = await openDownloadManager(directTargetUrl, filename, admMime);
+          if (launched) {
+            setDownloadFeedback({
+              type: 'success',
+              text: `تم بدء التحميل: ${filename}`,
+              actionUrl: directTargetUrl,
+              actionLabel: 'إعادة المحاولة',
+            });
+            return;
+          }
         }
-        setDownloadFeedback({
-          type: 'success',
-          text: `تم إرسال الملف المباشر للتنزيل: ${filename}`,
-          actionUrl: directCdnUrl,
-          actionLabel: 'فتح / حفظ يدوي',
-        });
-        return;
       }
 
-      // 3. للكمبيوتر أو للسيرفرات التي تتطلب فك تشفير الخادم (مثل Mega و MP4Upload): سحب موثّق بالكوكيز مع زر حفظ فوري بعد الاكتمال
-      await downloadViaAuthenticatedFetch(data.downloadUrl, filename, data.sizeBytes);
+      await downloadViaAuthenticatedFetch(resolvedDownloadUrl, filename, data.sizeBytes);
     } catch {
       setDownloadFeedback({
         type: 'error',
-        text: 'تعذر إكمال تنزيل الفيديو، حاول مجدداً أو اختر سيرفراً آخر.',
+        text: 'تعذر إكمال التحميل، يرجى المحاولة مرة أخرى أو اختيار خيار آخر.',
       });
     } finally {
       setDownloadingKey(null);
     }
   };
 
-  const handleExternalPlayerLaunch = async () => {
-    if (launchingExternal) return;
-    setLaunchingExternal('player');
-    setExternalFeedback(null);
+  const handleLaunchExternalPlayer = async () => {
+    if (launchingExternalPlayer) return;
+    setActionNotice(null);
 
+    if (extractedStream?.url && extractedStream.type === 'direct') {
+      const absUrl = resolveAbsoluteApiUrlForExternalIntent(extractedStream.url);
+      const epTitle = `${anime?.title || 'أنمي'} - ${episode?.title || `الحلقة ${episode?.num || 1}`}`;
+      const ok = await openExternalPlayer(absUrl, epTitle, 'video/*');
+      if (!ok) {
+        setActionNotice('تعذر فتح المشغل الخارجي على هذا الجهاز.');
+      }
+      return;
+    }
+
+    const candidates = Array.from(
+      new Set([
+        ...(activeServerUrl ? [activeServerUrl] : []),
+        ...servers.filter((s) => s.category !== 'download').map((s) => s.url),
+        ...servers.filter((s) => s.category === 'download').map((s) => s.url),
+      ]),
+    ).filter(Boolean);
+
+    if (candidates.length === 0) {
+      setActionNotice('لا تتوفر روابط تشغيل حالياً.');
+      return;
+    }
+
+    setLaunchingExternalPlayer(true);
     try {
-      const candidateUrls = Array.from(
-        new Set([
-          ...(activeServerUrl ? [activeServerUrl] : []),
-          ...servers.filter((s) => s.category !== 'download').map((s) => s.url),
-          ...servers.filter((s) => s.category === 'download').map((s) => s.url),
-        ])
-      ).filter(Boolean);
-
       const resp = await fetch('/api/anime/resolve-play', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          url: activeServerUrl || candidateUrls[0],
-          fallbackUrls: candidateUrls,
+          url: candidates[0],
+          fallbackUrls: candidates.slice(1),
           title: anime?.englishTitle || anime?.title || 'Anime',
           ep: episode?.num || 1,
         }),
       });
-
       const data = await resp.json();
-      if (!data?.success || !data?.streamUrl) {
-        setExternalFeedback(data?.message || 'تعذر تجهيز رابط بث مباشر للمشغل الخارجي، جرب سيرفراً آخر.');
-        setTimeout(() => setExternalFeedback(null), 5000);
-        return;
-      }
-
-      const isRestrictedPreviewContext =
-        (typeof window !== 'undefined' && window.self !== window.top) ||
-        window.location.protocol === 'capacitor:' ||
-        window.location.protocol === 'file:' ||
-        (window.location.hostname === 'localhost' && !window.location.port);
-
-      if (!data.isDirectCdn && isRestrictedPreviewContext) {
-        setExternalFeedback('السيرفر المتاح لهذه الحلقة محمي ولا يدعم البث الخارجي مباشرة، استخدم زر التنزيل أو جرب سيرفراً آخر.');
-        setTimeout(() => setExternalFeedback(null), 6000);
-        return;
-      }
-
-      const fullStreamUrl = data.streamUrl.startsWith('/')
-        ? `${window.location.origin}${data.streamUrl}`
-        : data.streamUrl;
-      const mediaTitle = `${anime?.title || 'Anime'} - Ep ${episode?.num || 1}`;
-      const isAndroid = /Android/i.test(navigator.userAgent);
-
-      if (isAndroid) {
-        try {
-          const parsed = new URL(fullStreamUrl);
-          const scheme = parsed.protocol.replace(':', '');
-          const hostAndPath = `${parsed.host}${parsed.pathname}${parsed.search}`;
-          const mimeType = 'video/*';
-          const intentUri = `intent://${hostAndPath}#Intent;scheme=${scheme};action=android.intent.action.VIEW;type=${mimeType};S.title=${encodeURIComponent(mediaTitle)};S.browser_fallback_url=${encodeURIComponent(fullStreamUrl)};end`;
-          triggerHiddenAnchor(intentUri);
-        } catch {
-          triggerHiddenAnchor(fullStreamUrl);
-        }
+      const epTitle = `${anime?.title || 'أنمي'} - ${episode?.title || `الحلقة ${episode?.num || 1}`}`;
+      if (data?.success && data?.streamUrl) {
+        const targetUrl = resolveAbsoluteApiUrlForExternalIntent(data.streamUrl);
+        await openExternalPlayer(targetUrl, epTitle, data.mimeType || 'video/*');
+      } else if (activeServerUrl) {
+        await openExternalPlayer(activeServerUrl, epTitle, 'video/*');
       } else {
-        window.open(fullStreamUrl, '_blank', 'noopener,noreferrer');
+        setActionNotice('تعذر تجهيز رابط التشغيل الخارجي، يرجى تجربة سيرفر آخر.');
       }
     } catch {
-      setExternalFeedback('تعذر الاتصال بخادم البث الخارجي، حاول مجدداً.');
-      setTimeout(() => setExternalFeedback(null), 5000);
+      if (activeServerUrl) {
+        await openExternalPlayer(activeServerUrl, anime?.title || 'Anime', 'video/*');
+      } else {
+        setActionNotice('تعذر فتح المشغل الخارجي، يرجى المحاولة مجدداً.');
+      }
     } finally {
-      setLaunchingExternal(null);
+      setLaunchingExternalPlayer(false);
     }
   };
 
-  const handleAdmDownloadLaunch = async () => {
-    if (launchingExternal) return;
-    setLaunchingExternal('adm');
-    setExternalFeedback(null);
+  const handleLaunchExternalDownload = async () => {
+    if (launchingExternalDownload) return;
+    setActionNotice(null);
 
+    const dlCandidates = servers.filter((s) => s.category === 'download').map((s) => s.url);
+    const watchCandidates = servers.filter((s) => s.category !== 'download').map((s) => s.url);
+    const candidates = Array.from(new Set([...dlCandidates, ...watchCandidates])).filter(Boolean);
+
+    if (candidates.length === 0) {
+      setActionNotice('لا تتوفر روابط تنزيل لهذه الحلقة حالياً.');
+      return;
+    }
+
+    setLaunchingExternalDownload(true);
     try {
-      const candidateUrls = Array.from(
-        new Set([
-          ...(activeServerUrl ? [activeServerUrl] : []),
-          ...servers.filter((s) => s.category === 'download').map((s) => s.url),
-          ...servers.filter((s) => s.category !== 'download').map((s) => s.url),
-        ])
-      ).filter(Boolean);
-
       const resp = await fetch('/api/anime/resolve-download', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          url: activeServerUrl || candidateUrls[0],
-          fallbackUrls: candidateUrls,
+          url: candidates[0],
+          fallbackUrls: candidates.slice(1),
+          serverCandidates: servers.map((s) => ({
+            url: s.url,
+            quality: s.quality,
+            serverName: s.serverName,
+            category: s.category,
+          })),
+          preferredQuality: 'auto',
           title: anime?.englishTitle || anime?.title || 'Anime',
           ep: episode?.num || 1,
           preferExternal: true,
         }),
       });
-
       const data = await resp.json();
       if (!data?.success || !data?.downloadUrl) {
-        setExternalFeedback(data?.message || 'لم يتم العثور على رابط MP4 مباشر لهذه الحلقة.');
-        setTimeout(() => setExternalFeedback(null), 5000);
+        setActionNotice(data?.message || 'تعذر تجهيز رابط التنزيل الخارجي، يرجى المحاولة مجدداً.');
         return;
       }
-
-      const isRestrictedPreviewContext =
-        (typeof window !== 'undefined' && window.self !== window.top) ||
-        window.location.protocol === 'capacitor:' ||
-        window.location.protocol === 'file:' ||
-        (window.location.hostname === 'localhost' && !window.location.port);
-      const mediaTitle = data.filename || `${anime?.title || 'Anime'}_Ep${episode?.num || 1}.mp4`;
-      const isAndroid = /Android/i.test(navigator.userAgent);
-
-      const externalTarget = data.externalDirectUrl;
-      if (isAndroid && (externalTarget || !isRestrictedPreviewContext)) {
-        const admUrl = externalTarget || `${window.location.origin}${data.downloadUrl}`;
-        const admMime = data.externalDirectMime || 'video/mp4';
-        try {
-          const parsed = new URL(admUrl);
-          const scheme = parsed.protocol.replace(':', '');
-          const hostAndPath = `${parsed.host}${parsed.pathname}${parsed.search}`;
-          const intentUri = `intent://${hostAndPath}#Intent;scheme=${scheme};action=android.intent.action.VIEW;package=com.dv.adm;type=${admMime};S.title=${encodeURIComponent(mediaTitle)};S.filename=${encodeURIComponent(mediaTitle)};S.browser_fallback_url=${encodeURIComponent(admUrl)};end`;
-          triggerHiddenAnchor(intentUri);
-          return;
-        } catch (_) {}
-      }
-
-      setActiveTab('servers');
-      setServerSubTab('download');
-      await downloadViaAuthenticatedFetch(data.downloadUrl, mediaTitle, data.sizeBytes);
+      const filename = data.filename || `Anime-Ep-${episode?.num || 1}.mp4`;
+      const targetUrl =
+        (data.externalDirectUrl as string | null) ||
+        resolveAbsoluteApiUrlForExternalIntent(data.downloadUrl);
+      await openDownloadManager(targetUrl, filename, data.externalDirectMime || 'video/mp4');
     } catch {
-      setExternalFeedback('تعذر تجهيز رابط التنزيل المباشر.');
-      setTimeout(() => setExternalFeedback(null), 5000);
+      setActionNotice('تعذر بدء التنزيل الخارجي، يرجى المحاولة مرة أخرى.');
     } finally {
-      setLaunchingExternal(null);
+      setLaunchingExternalDownload(false);
+    }
+  };
+
+  const handleQueueCurrentEpisode = () => {
+    if (!episode) return;
+    downloadManagerService.enqueueBatch(
+      {
+        _id: anime?._id || anime?.malId || 'anime',
+        malId: anime?.malId,
+        title: anime?.title || 'أنمي',
+        englishTitle: anime?.englishTitle,
+        posterUrl: anime?.posterUrl || anime?.thumbnailUrl,
+      },
+      [
+        {
+          id: episode.id,
+          link: episode.link,
+          num: episode.num || 1,
+          title: episode.title || `الحلقة ${episode.num || 1}`,
+          seasonNumber: watchSeasonNum,
+        },
+      ],
+      'auto',
+      'internal',
+    );
+    if (onOpenDownloads) {
+      onOpenDownloads();
+    } else {
+      setActionNotice('تمت إضافة الحلقة إلى مدير التنزيلات الداخلي.');
     }
   };
 
@@ -704,10 +752,10 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
   };
 
   const handleDeleteComment = async (chatId: string) => {
-    if (!window.confirm("هل أنت متأكد من حذف هذا التعليق؟")) return;
     try {
       const { moderationService } = await import('../services/moderationService');
       await moderationService.deleteComment(chatId);
+      setConfirmDeleteChatId(null);
     } catch (e) {
       console.error("Error deleting comment", e);
     }
@@ -740,144 +788,121 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
   };
 
   const { prevEpisode, nextEpisode } = getAdjacentEpisodes();
+  const isSplitWatchLayout = !display.isTabletopPosture && (display.isBookPosture || display.isDesktop || display.viewportWidth >= 1024);
 
   return (
-    <motion.div 
-      initial={{ opacity: 0, scale: 0.98, y: 10 }}
-      animate={{ opacity: 1, scale: 1, y: 0 }}
-      exit={{ opacity: 0, y: 20 }}
-      transition={{ duration: 0.3 }}
-      className="bg-[#050505] min-h-screen flex flex-col"
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.2 }}
+      className={`bg-[#050505] min-h-[var(--vv-height,100dvh)] ${
+        isSplitWatchLayout
+          ? 'grid grid-cols-12 items-start max-w-[1600px] mx-auto px-4 lg:px-6 pt-4 pb-10'
+          : 'flex flex-col'
+      }`}
+      style={
+        isSplitWatchLayout
+          ? { columnGap: 'calc(var(--fold-hinge-gap, 0px) + 1.25rem)' }
+          : undefined
+      }
+      dir="rtl"
     >
-      {/* Video Player Area */}
-      <div className="w-full aspect-video bg-black relative flex flex-col justify-between border-b border-neutral-900 sticky top-0 z-50 overflow-hidden group shadow-2xl">
-        <button onClick={onBack} className="absolute top-4 right-4 w-10 h-10 bg-black/60 backdrop-blur-md rounded-full flex items-center justify-center text-white z-20 border border-white/10 hover:bg-white/20 transition-all opacity-0 group-hover:opacity-100 shadow-lg select-none">
-          <ChevronRight size={22} className="-translate-x-0.5" />
-        </button>
-        
-        {/* Actual Player: Direct iframe with DNS Ad-Block Shield */}
-        <div className="absolute inset-0 flex items-center justify-center bg-neutral-950">
-          {loadingServers ? (
-              <div className="flex flex-col items-center gap-3">
-                 <div className="w-12 h-12 rounded-full border-2 border-purple-500 border-t-transparent animate-spin"/>
-                 <span className="text-sm font-bold text-neutral-400">جاري الاتصال بالسيرفر عبر درع حجب الإعلانات...</span>
-              </div>
-          ) : activeServerUrl ? (
-            <div className="w-full h-full relative bg-black">
-              <iframe
-                key={`${activeServerUrl}_${strictAdShield ? 'strict' : 'standard'}`}
-                src={activeServerUrl}
-                title={episode?.title || `الحلقة ${episode?.num}`}
-                className="w-full h-full border-0"
-                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
-                allowFullScreen
-                referrerPolicy="no-referrer"
-                {...(strictAdShield
-                  ? { sandbox: 'allow-scripts allow-same-origin allow-forms allow-presentation' }
-                  : {})}
-              />
+      {/* Video Player Column / Tabletop Upper Pane */}
+      <div
+        className={
+          isSplitWatchLayout
+            ? `${display.isBookPosture ? 'col-span-6' : 'col-span-7 xl:col-span-8'} sticky top-4 space-y-4`
+            : 'contents'
+        }
+      >
+        <div
+          className={`w-full bg-black border-b border-neutral-900 shadow-2xl ${
+            isSplitWatchLayout
+              ? 'rounded-2xl overflow-hidden border border-white/10'
+              : 'sticky top-0 z-50'
+          }`}
+          style={{
+            paddingTop: isSplitWatchLayout ? '0px' : 'var(--safe-top, 0px)',
+            height: display.isTabletopPosture ? 'var(--fold-top-pane, 46dvh)' : undefined,
+          }}
+        >
+          <div className={`theme-keep-dark w-full bg-black relative flex flex-col justify-between overflow-hidden group ${
+            display.isTabletopPosture ? 'h-full' : 'aspect-video'
+          }`}>
+            <button onClick={onBack} className="absolute top-3 right-3 w-10 h-10 bg-black/60 backdrop-blur-md rounded-full flex items-center justify-center text-white z-20 border border-white/10 hover:bg-white/20 transition-all opacity-90 sm:opacity-75 group-hover:opacity-100 shadow-lg select-none cursor-pointer">
+              <ChevronRight size={22} className="-translate-x-0.5" />
+            </button>
+
+            <div className="absolute inset-0 flex items-center justify-center bg-neutral-950">
+              {loadingServers ? (
+                <div className="flex flex-col items-center gap-3 px-4 text-center">
+                  <div className="w-10 h-10 rounded-full border-2 border-purple-500 border-t-transparent animate-spin" />
+                  <span className="text-xs sm:text-sm font-bold text-neutral-400">جاري تجهيز الحلقة...</span>
+                </div>
+              ) : extractedStream && extractedStream.type === 'direct' ? (
+                <div className="w-full h-full relative bg-black">
+                  <video
+                    key={extractedStream.url}
+                    src={extractedStream.url}
+                    controls
+                    autoPlay
+                    playsInline
+                    onError={() => setExtractedStream(null)}
+                    className="w-full h-full bg-black"
+                  />
+                </div>
+              ) : activeServerUrl ? (
+                <div className="w-full h-full relative bg-black">
+                  <iframe
+                    key={activeServerUrl}
+                    src={resolveApiUrl(activeServerUrl)}
+                    title={episode?.title || `الحلقة ${episode?.num}`}
+                    className="w-full h-full border-0"
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
+                    allowFullScreen
+                    referrerPolicy="no-referrer"
+                    sandbox="allow-scripts allow-same-origin allow-forms allow-presentation"
+                  />
+                </div>
+              ) : (
+                <div className="text-center">
+                  <div className="w-14 h-14 mx-auto rounded-full bg-neutral-900/80 border border-neutral-800 flex items-center justify-center mb-3">
+                    <Play size={22} fill="currentColor" className="text-neutral-500 ml-1" />
+                  </div>
+                  <p className="text-neutral-500 font-bold text-xs sm:text-sm">لا تتوفر خيارات تشغيل حالياً</p>
+                </div>
+              )}
             </div>
-          ) : (
-            <div className="text-center">
-              <div className="w-16 h-16 mx-auto rounded-full bg-neutral-900/80 backdrop-blur-md border border-neutral-800 flex items-center justify-center mb-4 transition-all duration-300">
-                <Play size={24} fill="currentColor" className="text-neutral-500 ml-1" />
-              </div>
-              <p className="text-neutral-500 font-bold text-sm">لا توجد سيرفرات متاحة</p>
-            </div>
-          )}
+          </div>
         </div>
       </div>
 
-      {/* Info & Controls */}
-      <div className="p-4 flex-1 overflow-y-auto pb-24 transition-all duration-500">
-
-        {/* Failover Alert Banner if server has an issue */}
-        {hasPlaybackError && (
-          <div className="mb-4 p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between gap-3 text-amber-200">
-            <div className="flex items-center gap-2 text-xs font-bold min-w-0">
-              <AlertCircle size={18} className="text-amber-400 shrink-0" />
-              <span className="truncate">السيرفر واجه اعتراضاً أو إعلانات، اضغط للتبديل لسيرفر آخر فورا</span>
-            </div>
-            <button
-              type="button"
-              onClick={handleNextServerFailover}
-              className="px-3 py-1.5 rounded-xl bg-amber-500 text-black font-black text-xs shrink-0 hover:bg-amber-400 transition cursor-pointer flex items-center gap-1.5 shadow-md shadow-amber-500/20"
-            >
-              <RefreshCw size={14} />
-              <span>سيرفر بديل</span>
-            </button>
-          </div>
-        )}
-
-        {/* DNS Ad-Block Active Badge & Player Controls Toolbar */}
-        {activeServerUrl && (
-          <div className="flex flex-wrap items-center justify-between gap-2.5 mb-5 p-2.5 rounded-2xl bg-neutral-900/60 border border-neutral-800/80 backdrop-blur-sm">
-            {/* DNS Protection Status Badge & Strict Shield Toggle */}
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 text-xs font-bold">
-                <ShieldCheck size={16} className="text-emerald-400 shrink-0" />
-                <span>AdGuard DNS (94.140.14.14) لحجب الإعلانات</span>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => setStrictAdShield(prev => !prev)}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition border cursor-pointer ${
-                  strictAdShield
-                    ? 'bg-emerald-600/20 border-emerald-500/50 text-emerald-300'
-                    : 'bg-neutral-800 hover:bg-neutral-700 border-neutral-700/60 text-neutral-300'
-                }`}
-                title="تفعيل أو إيقاف منع النوافذ المنبثقة المشدد داخل المشغل"
-              >
-                <Shield size={14} className={strictAdShield ? 'text-emerald-400' : 'text-neutral-400'} />
-                <span>{strictAdShield ? 'حظر النوافذ: مشدد' : 'حظر النوافذ: قياسي'}</span>
-              </button>
-            </div>
-
-            {/* Actions: External open, Next server, Copy link */}
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={handleOpenExternal}
-                className="px-3 py-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-bold flex items-center gap-1.5 transition border border-neutral-700/60 cursor-pointer"
-                title="فتح السيرفر في متصفح خارجي أو مشغل الهاتف"
-              >
-                <ExternalLink size={14} className="text-blue-400" />
-                <span>فتح خارجي</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={handleNextServerFailover}
-                className="px-3 py-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-bold flex items-center gap-1.5 transition border border-neutral-700/60 cursor-pointer"
-                title="الانتقال إلى السيرفر البديل التالي"
-              >
-                <RefreshCw size={14} className="text-purple-400" />
-                <span>سيرفر آخر</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleCopyLink(activeServerUrl)}
-                className="px-3 py-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-xs font-bold flex items-center gap-1.5 transition border border-neutral-700/50 cursor-pointer"
-                title="نسخ رابط السيرفر المباشر"
-              >
-                {copiedServerUrl ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
-                <span>{copiedServerUrl ? 'تم النسخ!' : 'نسخ الرابط'}</span>
-              </button>
-            </div>
-          </div>
-        )}
-
-        <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
+      {/* Info, Controls, Servers, Episodes & Chat Column */}
+      <div
+        className={
+          isSplitWatchLayout
+            ? `${display.isBookPosture ? 'col-span-6' : 'col-span-5 xl:col-span-4'} overflow-y-auto max-h-[calc(var(--vv-height,100dvh)-2.5rem)] pb-10 pr-1`
+            : 'p-3.5 sm:p-4 flex-1 overflow-y-auto pb-24 transition-all duration-300'
+        }
+      >
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
           <div>
             <h1 className="text-xl sm:text-2xl font-black text-white leading-tight mb-1 tracking-tight">
               {episode?.title || `الحلقة ${episode?.num}`}
             </h1>
-            <p className="text-xs sm:text-sm text-neutral-400 font-bold">
-              {anime?.title || 'أنمي'}
+            <button
+              type="button"
+              onClick={() => {
+                if (onAnimeClick) onAnimeClick();
+                else onBack();
+              }}
+              className="text-xs sm:text-sm text-neutral-400 hover:text-purple-400 font-bold transition inline-flex items-center gap-1.5 cursor-pointer"
+            >
+              <Tv size={13} className="text-purple-400" />
+              <span>{anime?.title || 'أنمي'}</span>
               {anime?.seasonsList?.length > 1 ? ` • الموسم ${watchSeasonNum}` : ''}
-            </p>
+            </button>
           </div>
 
           <div className="flex items-center gap-2">
@@ -910,66 +935,59 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
           </div>
         </div>
 
-        {activeServerUrl && (
-          <div className="mb-6 space-y-2">
-            <div className="grid grid-cols-3 gap-2">
-              <button
-                type="button"
-                disabled={Boolean(launchingExternal)}
-                onClick={handleExternalPlayerLaunch}
-                className="bg-[#1a4b9c] rounded-xl p-3 flex items-center justify-center gap-1.5 text-white text-xs font-bold shadow-lg hover:bg-[#133878] disabled:opacity-60 transition cursor-pointer"
-              >
-                {launchingExternal === 'player' ? (
-                  <>
-                    <Loader2 size={15} className="animate-spin" />
-                    <span>جاري التحويل...</span>
-                  </>
-                ) : (
-                  <>
-                    <Play size={15} />
-                    <span>مشغل خارجي</span>
-                  </>
-                )}
-              </button>
-              <button 
-                type="button"
-                onClick={() => {
-                  if (onAnimeClick) {
-                    onAnimeClick();
-                  } else {
-                    onBack();
-                  }
-                }}
-                className="bg-purple-600 rounded-xl p-3 flex items-center justify-center gap-1.5 text-white text-xs font-bold shadow-lg hover:bg-purple-500 transition cursor-pointer"
-              >
-                 <Tv size={15} /> صفحة الأنمي
-              </button>
-              <button
-                type="button"
-                disabled={Boolean(launchingExternal)}
-                onClick={handleAdmDownloadLaunch}
-                className="bg-[#d84e20] rounded-xl p-3 flex items-center justify-center gap-1.5 text-white text-xs font-bold shadow-lg hover:bg-[#b03d17] disabled:opacity-60 transition cursor-pointer"
-              >
-                {launchingExternal === 'adm' ? (
-                  <>
-                    <Loader2 size={15} className="animate-spin" />
-                    <span>جاري التجهيز...</span>
-                  </>
-                ) : (
-                  <>
-                    <Download size={15} />
-                    <span>ADM</span>
-                  </>
-                )}
-              </button>
-            </div>
-
-            {externalFeedback && (
-              <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs font-bold flex items-center gap-2">
-                <AlertCircle size={14} className="shrink-0" />
-                <span>{externalFeedback}</span>
-              </div>
+        {/* Quick Actions: External Player, Anime Page, External Download */}
+        <div className="grid grid-cols-3 gap-2 mb-4">
+          <button
+            type="button"
+            disabled={launchingExternalPlayer}
+            onClick={handleLaunchExternalPlayer}
+            className="min-h-[44px] px-2.5 py-2 rounded-xl bg-neutral-900/90 hover:bg-neutral-800 border border-neutral-800 text-neutral-100 text-[11px] sm:text-xs font-black flex items-center justify-center gap-1.5 transition cursor-pointer disabled:opacity-60 whitespace-nowrap"
+          >
+            {launchingExternalPlayer ? (
+              <Loader2 size={14} className="animate-spin text-purple-400 shrink-0" />
+            ) : (
+              <ExternalLink size={14} className="text-purple-400 shrink-0" />
             )}
+            <span className="truncate">المشغل الخارجي</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              if (onAnimeClick) onAnimeClick();
+              else onBack();
+            }}
+            className="min-h-[44px] px-2.5 py-2 rounded-xl bg-neutral-900/90 hover:bg-neutral-800 border border-neutral-800 text-neutral-100 text-[11px] sm:text-xs font-black flex items-center justify-center gap-1.5 transition cursor-pointer whitespace-nowrap"
+          >
+            <Tv size={14} className="text-rose-400 shrink-0" />
+            <span className="truncate">صفحة الأنمي</span>
+          </button>
+
+          <button
+            type="button"
+            disabled={launchingExternalDownload}
+            onClick={handleLaunchExternalDownload}
+            className="min-h-[44px] px-2.5 py-2 rounded-xl bg-neutral-900/90 hover:bg-neutral-800 border border-neutral-800 text-neutral-100 text-[11px] sm:text-xs font-black flex items-center justify-center gap-1.5 transition cursor-pointer disabled:opacity-60 whitespace-nowrap"
+          >
+            {launchingExternalDownload ? (
+              <Loader2 size={14} className="animate-spin text-indigo-400 shrink-0" />
+            ) : (
+              <Download size={14} className="text-indigo-400 shrink-0" />
+            )}
+            <span className="truncate">التنزيل الخارجي</span>
+          </button>
+        </div>
+
+        {actionNotice && (
+          <div className="mb-4 px-3.5 py-2.5 rounded-xl bg-neutral-900 border border-neutral-800 text-xs font-bold text-neutral-300 flex items-center justify-between gap-2">
+            <span>{actionNotice}</span>
+            <button
+              type="button"
+              onClick={() => setActionNotice(null)}
+              className="text-neutral-500 hover:text-white text-xs font-black cursor-pointer"
+            >
+              إغلاق
+            </button>
           </div>
         )}
 
@@ -1091,20 +1109,40 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
                                    </p>
                                    
                                    {/* Micro interactions */}
-                                   <div className="flex items-center gap-3 mt-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                                   <div className={`flex items-center gap-3 mt-1.5 transition-opacity ${
+                                     confirmDeleteChatId === chat.id ? 'opacity-100' : 'opacity-85 md:opacity-0 md:group-hover:opacity-100'
+                                   }`}>
                                       <button 
                                         onClick={() => handleLikeComment(chat.id, chat.likes || 0)} 
-                                        className="text-[9px] font-bold text-neutral-500 hover:text-blue-400 transition flex items-center gap-1"
+                                        className="min-h-[32px] px-1.5 text-[10px] font-bold text-neutral-400 hover:text-blue-400 transition flex items-center gap-1 cursor-pointer tabular-nums"
                                       >
-                                         <ThumbsUp size={10} /> {chat.likes || 0}
+                                         <ThumbsUp size={11} /> {chat.likes || 0}
                                       </button>
                                       {isMod && (
-                                         <button 
-                                           onClick={() => handleDeleteComment(chat.id)} 
-                                           className="text-[9px] font-bold text-neutral-500 hover:text-red-500 transition flex items-center gap-1"
-                                         >
-                                            <Trash2 size={10} /> حذف
-                                         </button>
+                                         confirmDeleteChatId === chat.id ? (
+                                           <div className="flex items-center gap-1.5">
+                                             <span className="text-[10px] font-bold text-rose-400">تأكيد الحذف؟</span>
+                                             <button
+                                               onClick={() => handleDeleteComment(chat.id)}
+                                               className="min-h-[28px] px-2 rounded-md bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-black cursor-pointer"
+                                             >
+                                               حذف
+                                             </button>
+                                             <button
+                                               onClick={() => setConfirmDeleteChatId(null)}
+                                               className="min-h-[28px] px-2 rounded-md bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[10px] font-bold cursor-pointer"
+                                             >
+                                               إلغاء
+                                             </button>
+                                           </div>
+                                         ) : (
+                                           <button 
+                                             onClick={() => setConfirmDeleteChatId(chat.id)} 
+                                             className="min-h-[32px] px-1.5 text-[10px] font-bold text-neutral-400 hover:text-red-500 transition flex items-center gap-1 cursor-pointer"
+                                           >
+                                              <Trash2 size={11} /> حذف
+                                           </button>
+                                         )
                                       )}
                                    </div>
                                 </div>
@@ -1221,12 +1259,34 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
                 </button>
               </div>
 
+              {serverSubTab === 'download' && (
+                <div className="flex flex-wrap items-center justify-between gap-2 bg-[#0d0d12] border border-neutral-800/80 rounded-xl p-3">
+                  <button
+                    type="button"
+                    onClick={handleQueueCurrentEpisode}
+                    className="min-h-[40px] flex-1 px-3.5 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-black flex items-center justify-center gap-1.5 transition cursor-pointer whitespace-nowrap"
+                  >
+                    <FolderDown size={15} />
+                    <span>إضافة لمدير التنزيلات</span>
+                  </button>
+                  {onOpenDownloads && (
+                    <button
+                      type="button"
+                      onClick={onOpenDownloads}
+                      className="min-h-[40px] px-3.5 py-2 rounded-xl bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-neutral-200 text-xs font-bold transition cursor-pointer whitespace-nowrap"
+                    >
+                      فتح المدير
+                    </button>
+                  )}
+                </div>
+              )}
+
               {loadingServers ? (
                 <div className="flex flex-col items-center justify-center py-12 text-neutral-500 gap-3">
                    <div className="h-0.5 w-16 bg-neutral-800 rounded overflow-hidden">
                      <div className="h-full bg-purple-500 animate-pulse" style={{ width: '60%'}}></div>
                    </div>
-                   <span className="text-xs font-bold tracking-wide">جاري فحص السيرفرات المتوفرة...</span>
+                   <span className="text-xs font-bold tracking-wide">جاري تحميل خيارات المشاهدة...</span>
                 </div>
               ) : (() => {
                 const displayList = servers.filter(s => {
@@ -1240,9 +1300,9 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
                 if (displayList.length === 0) {
                   return (
                     <div className="text-center text-neutral-400 font-bold p-8 border border-neutral-800/80 rounded-2xl bg-[#0f0f0f]/40">
-                      {serverSubTab === 'download' 
-                        ? 'جاري تجهيز روابط التحميل المباشرة...' 
-                        : 'عذراً، لا توجد سيرفرات بث مباشر متاحة حالياً.'}
+                      {serverSubTab === 'download'
+                        ? 'لا تتوفر روابط تحميل حالياً.'
+                        : 'لا تتوفر خيارات مشاهدة لهذه الحلقة حالياً.'}
                     </div>
                   );
                 }
@@ -1273,6 +1333,15 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
                                 ? `${anime?.englishTitle || anime?.title || 'Anime'}-Ep-${episode?.num || 1}.mp4`
                                 : undefined
                             }
+                            onClick={(e) => {
+                              if (downloadFeedback.actionUrl && /^https?:\/\//i.test(downloadFeedback.actionUrl)) {
+                                e.preventDefault();
+                                void openDownloadManager(
+                                  downloadFeedback.actionUrl,
+                                  `${anime?.englishTitle || anime?.title || 'Anime'}-Ep-${episode?.num || 1}.mp4`
+                                );
+                              }
+                            }}
                             target={downloadFeedback.actionUrl.startsWith('http') ? '_blank' : undefined}
                             rel="noopener noreferrer"
                             className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-black shrink-0 transition"
@@ -1283,7 +1352,7 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
                       </div>
                     )}
 
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className={`grid gap-2.5 ${display.isCoverScreen ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-2'}`}>
                       {displayList.map((s, i) => {
                         const isActive = activeServerUrl === s.url && serverSubTab === 'watch';
                         const mainName = getCleanServerMainName(s.serverName, s.url, i);
@@ -1297,21 +1366,21 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
                         }
 
                         if (serverSubTab === 'download') {
-                          const isModFast = s.url.startsWith('/api/anime/download') || s.serverName.includes('MOD Fast');
+                          const isPrimaryDirect = s.url.startsWith('/api/anime/download');
                           const keyId = `dl_${i}_${s.url}`;
                           const isThisDownloading = downloadingKey === keyId;
                           return (
                             <div
                               key={i}
                               className={`w-full relative overflow-hidden rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 group transition-all duration-300 border ${
-                                isModFast
+                                isPrimaryDirect
                                   ? 'col-span-2 bg-gradient-to-r from-indigo-950/40 via-purple-950/30 to-[#0f0f0f] border-indigo-500/40 shadow-lg shadow-indigo-950/20'
                                   : 'bg-[#0f0f0f] border-neutral-800/80 hover:bg-[#151515] hover:border-indigo-500/50'
                               }`}
                             >
                               <div className="flex items-center gap-2.5 min-w-0">
                                 <div className={`p-2.5 rounded-xl transition-colors shrink-0 ${
-                                  isModFast
+                                  isPrimaryDirect
                                     ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
                                     : 'bg-neutral-800 text-indigo-400 group-hover:bg-indigo-600 group-hover:text-white'
                                 }`}>
@@ -1320,16 +1389,16 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
                                 <div className="flex flex-col min-w-0">
                                   <div className="flex items-center gap-1.5">
                                     <span className="font-black text-xs sm:text-sm text-neutral-100 group-hover:text-white truncate">
-                                      {isModFast ? 'تحميل مباشر فائق السرعة (MOD Fast)' : mainName}
+                                      {isPrimaryDirect ? 'تحميل مباشر' : mainName}
                                     </span>
-                                    {isModFast && (
+                                    {isPrimaryDirect && (
                                       <span className="bg-amber-500/20 text-amber-300 text-[9px] font-black px-1.5 py-0.5 rounded border border-amber-500/30">
                                         موصى به
                                       </span>
                                     )}
                                   </div>
                                   <span className="text-[10px] text-neutral-400">
-                                    {isModFast ? 'تنزيل ملف فيديو MP4 مباشرة لجهازك بنقرة واحدة' : 'تنزيل مباشر بصيغة MP4'}
+                                    {isPrimaryDirect ? 'تحميل الحلقة مباشرة بصيغة MP4' : 'تنزيل مباشر بصيغة MP4'}
                                   </span>
                                 </div>
                               </div>

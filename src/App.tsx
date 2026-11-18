@@ -5,6 +5,9 @@
 
 import { useState, Suspense, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
+import { Capacitor } from '@capacitor/core';
+import { App as CapacitorApp } from '@capacitor/app';
+import { StatusBar, Style } from '@capacitor/status-bar';
 import { AppLayout } from './components/AppLayout';
 import { Loader2, Sparkles, X, Trophy, Play, MessageSquare, Info, Bell, Flame, ShieldAlert } from 'lucide-react';
 import HomeView from './views/HomeView';
@@ -16,11 +19,17 @@ import { db, auth } from './firebase';
 import { isStaffEmail } from './services/moderationService';
 import { consumePendingDiagnosticsTab } from './utils/errorTelemetry';
 import { lazyWithRetry } from './utils/lazyWithRetry';
+import { ViewportPortal } from './components/ViewportPortal';
+import { dispatchNativeSystemNotification } from './utils/systemPermissions';
+import { applyViewportAndCutoutMetrics } from './utils/viewportMetrics';
+import { ViewErrorBoundary } from './components/GlobalErrorBoundary';
 
 const ExploreView = lazyWithRetry(() => import('./views/ExploreView'), 'ExploreView');
 const CommunityView = lazyWithRetry(() => import('./views/CommunityView'), 'CommunityView');
 const MyListsView = lazyWithRetry(() => import('./views/MyListsView'), 'MyListsView');
 const ProfileView = lazyWithRetry(() => import('./views/ProfileView'), 'ProfileView');
+const AccountSecurityView = lazyWithRetry(() => import('./views/AccountSecurityView'), 'AccountSecurityView');
+const ProfileAppearanceView = lazyWithRetry(() => import('./views/ProfileAppearanceView'), 'ProfileAppearanceView');
 const AnimeDetailsView = lazyWithRetry(() => import('./views/AnimeDetailsView'), 'AnimeDetailsView');
 const AnimeCommentsView = lazyWithRetry(() => import('./views/AnimeCommentsView'), 'AnimeCommentsView');
 const WatchView = lazyWithRetry(() => import('./views/WatchView'), 'WatchView');
@@ -29,6 +38,8 @@ const ScheduleView = lazyWithRetry(() => import('./views/ScheduleView'), 'Schedu
 const StoreView = lazyWithRetry(() => import('./views/StoreView'), 'StoreView');
 const RecentEpisodesView = lazyWithRetry(() => import('./views/RecentEpisodesView'), 'RecentEpisodesView');
 const CurrentSeasonView = lazyWithRetry(() => import('./views/CurrentSeasonView'), 'CurrentSeasonView');
+const CatalogCollectionView = lazyWithRetry(() => import('./views/CatalogCollectionView'), 'CatalogCollectionView');
+const DownloadsView = lazyWithRetry(() => import('./views/DownloadsView'), 'DownloadsView');
 const LevelPerksView = lazyWithRetry(() => import('./views/LevelPerksView'), 'LevelPerksView');
 const FavoritesView = lazyWithRetry(() => import('./views/FavoritesView'), 'FavoritesView');
 const RewardsView = lazyWithRetry(() => import('./views/RewardsView'), 'RewardsView');
@@ -38,7 +49,6 @@ const AdSupportView = lazyWithRetry(() => import('./views/AdSupportView'), 'AdSu
 const SupportPortalView = lazyWithRetry(() => import('./views/SupportPortalView'), 'SupportPortalView');
 const OtakuArenaHubView = lazyWithRetry(() => import('./views/OtakuArenaHubView'), 'OtakuArenaHubView');
 
-const AiChatWidget = lazyWithRetry(() => import('./components/AiChatWidget'), 'AiChatWidget');
 import { MascotLoadingScreen, MascotOfflineScreen } from './components/MascotScreens';
 import PermissionPromptModal from './components/PermissionPromptModal';
 
@@ -75,29 +85,14 @@ export default function App() {
       return [...prev, notif];
     });
 
-    // Send native system notification if permission has been granted
-    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
-      try {
-        const title = notif.title || 'إشعار جديد ⚡';
-        const body = notif.body || '';
-        const options: NotificationOptions = {
-          body,
-          icon: '/favicon.ico',
-          dir: 'rtl',
-        };
-        if (notif.imageUrl) {
-          (options as any).image = notif.imageUrl;
-        }
-
-        const nativeNotification = new Notification(title, options);
-        nativeNotification.onclick = () => {
-          window.focus();
-          handleToastClick(notif);
-        };
-      } catch (err) {
-        console.warn('Failed to dispatch native system notification:', err);
-      }
-    }
+    // إرسال إشعار نظام حقيقي على أندرويد أو المتصفح عند تفعيل الصلاحية
+    void dispatchNativeSystemNotification({
+      id: notif.id,
+      title: notif.title || 'إشعار جديد ⚡',
+      body: notif.body || '',
+      imageUrl: notif.imageUrl,
+      onClick: () => handleToastClick(notif),
+    });
 
     // Auto dismiss after 6 seconds
     setTimeout(() => {
@@ -319,7 +314,7 @@ export default function App() {
 
   useEffect(() => {
     const handleOpenChat = () => {
-      setViewStack(prev => [...prev, { name: 'ai_chat' }]);
+      setViewStack(prev => (prev[prev.length - 1]?.name === 'ai_chat' ? prev : [...prev, { name: 'ai_chat' }]));
     };
     const handleOpenPermissions = () => {
       localStorage.removeItem('mod_permissions_prompted');
@@ -365,18 +360,53 @@ export default function App() {
   const currentView = viewStack[viewStack.length - 1];
   const [exitToastVisible, setExitToastVisible] = useState(false);
   const lastBackPressRef = useRef<number>(0);
+  const viewStackRef = useRef(viewStack);
+  const activeTabRef = useRef(activeTab);
+  const askPermissionsRef = useRef(askPermissions);
 
-  const navigateTo = (viewName: string, props?: any) => {
-    setViewStack(prev => [...prev, { name: viewName, props }]);
+  useEffect(() => {
+    viewStackRef.current = viewStack;
+  }, [viewStack]);
+
+  useEffect(() => {
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
+
+  useEffect(() => {
+    askPermissionsRef.current = askPermissions;
+  }, [askPermissions]);
+
+  // تفعيل وضع ملء الشاشة الأصلي في أندرويد (Capacitor StatusBar) مع قراءة أبعاد النتوء والشاشة
+  useEffect(() => {
+    applyViewportAndCutoutMetrics();
+    if (!Capacitor.isNativePlatform()) return;
+    if (!Capacitor.isPluginAvailable('StatusBar')) return;
     try {
-      window.history.pushState({ view: viewName, depth: viewStack.length }, '');
+      StatusBar.setOverlaysWebView({ overlay: true }).catch(() => {});
+      StatusBar.setStyle({ style: Style.Dark }).catch(() => {});
+      StatusBar.hide().catch(() => {});
     } catch {}
+  }, []);
+
+  const navigateTo = (viewName: string, props?: any, options?: { replaceTop?: boolean }) => {
+    setViewStack(prev => {
+      if (options?.replaceTop && prev.length > 0 && prev[prev.length - 1].name === viewName) {
+        return [...prev.slice(0, -1), { name: viewName, props }];
+      }
+      const bounded = prev.length >= 30 ? prev.slice(-29) : prev;
+      return [...bounded, { name: viewName, props }];
+    });
+    if (!Capacitor.isNativePlatform() && !options?.replaceTop) {
+      try {
+        window.history.pushState({ view: viewName, depth: viewStackRef.current.length }, '');
+      } catch {}
+    }
   };
 
   const goBack = () => {
-    if (viewStack.length > 1) {
+    if (viewStackRef.current.length > 1) {
       setViewStack(prev => prev.slice(0, -1));
-    } else if (activeTab !== 'home') {
+    } else if (activeTabRef.current !== 'home') {
       setActiveTab('home');
       setViewStack([{ name: 'home' }]);
     }
@@ -385,75 +415,94 @@ export default function App() {
   const handleTabChange = (tab: string) => {
     setActiveTab(tab);
     setViewStack([{ name: tab }]);
-    try {
-      window.history.pushState({ view: tab, depth: 0 }, '');
-    } catch {}
+    if (!Capacitor.isNativePlatform()) {
+      try {
+        window.history.pushState({ view: tab, depth: 0 }, '');
+      } catch {}
+    }
   };
 
-  // دعم زر الرجوع الفعلي في هواتف أندرويد (Hardware Back Button) والمتصفح لمنع الإغلاق المفاجئ للـ APK
+  // دعم زر الرجوع بالنظام (Android Hardware Back Button عبر @capacitor/app) للرجوع داخل الصفحات والخروج النظيف من الرئيسية
   useEffect(() => {
-    try {
-      window.history.replaceState({ view: 'home', depth: 0 }, '');
-      window.history.pushState({ view: 'home', depth: 0 }, '');
-    } catch {}
+    const isNative = Capacitor.isNativePlatform();
 
     const handleHardwareBackAction = (): boolean => {
-      // 1. إذا كان هناك صفحات فرعية مفتوحة (تفاصيل أنمي، حلقة، ألعاب، إلخ) نرجع خطوة للوراء
-      if (viewStack.length > 1) {
-        setViewStack(prev => prev.slice(0, -1));
-        try {
-          window.history.pushState({ view: viewStack[viewStack.length - 2]?.name || 'home' }, '');
-        } catch {}
+      if (askPermissionsRef.current) {
+        setAskPermissions(false);
         return true;
       }
 
-      // 2. إذا كان المستخدم في تبويب آخر غير الرئيسية، نعيده إلى الرئيسية
-      if (activeTab !== 'home') {
+      // 1. إذا كانت هناك صفحات فرعية مفتوحة نعود خطوة واحدة للخلف داخل التطبيق
+      if (viewStackRef.current.length > 1) {
+        setViewStack(prev => prev.slice(0, -1));
+        return true;
+      }
+
+      // 2. إذا كان المستخدم في تبويب آخر غير الرئيسية نرجعه إلى الرئيسية
+      if (activeTabRef.current !== 'home') {
         setActiveTab('home');
         setViewStack([{ name: 'home' }]);
-        try {
-          window.history.pushState({ view: 'home', depth: 0 }, '');
-        } catch {}
         return true;
       }
 
-      // 3. إذا كان في الصفحة الرئيسية، نطلب ضغطتين متتاليتين للخروج مع إشعار تنبيه أنيق
+      // 3. في الشاشة الرئيسية: ضغطة ثانية سريعة تخرج من التطبيق نهائياً عبر @capacitor/app
       const now = Date.now();
       if (now - lastBackPressRef.current < 2200) {
-        if ((window as any).Capacitor?.Plugins?.App?.exitApp) {
-          (window as any).Capacitor.Plugins.App.exitApp();
-        }
+        CapacitorApp.exitApp().catch(() => {
+          const navApp = (navigator as any)?.app;
+          if (navApp?.exitApp) navApp.exitApp();
+        });
         return false;
       }
 
       lastBackPressRef.current = now;
       setExitToastVisible(true);
       setTimeout(() => setExitToastVisible(false), 2200);
-      try {
-        window.history.pushState({ view: 'home', depth: 0 }, '');
-      } catch {}
+      if (!isNative) {
+        try {
+          window.history.pushState({ view: 'home', depth: 0 }, '');
+        } catch {}
+      }
       return true;
     };
+
+    (window as any).handleAndroidBack = handleHardwareBackAction;
+
+    if (isNative) {
+      let listenerRemoved = false;
+      let listenerHandle: { remove: () => Promise<void> } | null = null;
+      CapacitorApp.addListener('backButton', () => {
+        handleHardwareBackAction();
+      })
+        .then((handle) => {
+          if (listenerRemoved) {
+            handle.remove().catch(() => {});
+          } else {
+            listenerHandle = handle;
+          }
+        })
+        .catch(() => {});
+
+      return () => {
+        listenerRemoved = true;
+        listenerHandle?.remove().catch(() => {});
+      };
+    }
+
+    try {
+      window.history.replaceState({ view: 'home', depth: 0 }, '');
+      window.history.pushState({ view: 'home', depth: 0 }, '');
+    } catch {}
 
     const onPopState = () => {
       handleHardwareBackAction();
     };
 
-    const onDocumentBackButton = (e: Event) => {
-      e.preventDefault();
-      handleHardwareBackAction();
-    };
-
     window.addEventListener('popstate', onPopState);
-    document.addEventListener('backbutton', onDocumentBackButton, false);
-    // توفير دالة عامة يمكن استدعاؤها مباشرة من كود الجافا في Android WebView (MainActivity.onBackPressed)
-    (window as any).handleAndroidBack = handleHardwareBackAction;
-
     return () => {
       window.removeEventListener('popstate', onPopState);
-      document.removeEventListener('backbutton', onDocumentBackButton, false);
     };
-  }, [viewStack, activeTab]);
+  }, []);
 
   if (showSplash) {
     return (
@@ -507,9 +556,9 @@ export default function App() {
   const renderView = () => {
     switch (currentView.name) {
       case 'home':
-        return <HomeView onAnimeClick={(id, epNum) => navigateTo('anime_details', { id, autoplayEpisode: epNum })} onSearchCategory={(cat) => { setActiveTab('watch'); navigateTo('watch', { initialQuery: cat }); }} onNavigateToSchedule={(day) => navigateTo('schedule', { initialDay: day })} onNavigateToRecent={() => navigateTo('recent_episodes')} onNavigateToSeason={() => navigateTo('current_season')} />;
+        return <HomeView onAnimeClick={(id, epNum) => navigateTo('anime_details', { id, autoplayEpisode: epNum })} onSearchCategory={(cat) => { setActiveTab('watch'); navigateTo('watch', { initialQuery: cat }); }} onNavigateToSchedule={(day) => navigateTo('schedule', { initialDay: day })} onNavigateToRecent={() => navigateTo('recent_episodes')} onNavigateToSeason={() => navigateTo('current_season')} onNavigateToMovies={() => navigateTo('anime_movies')} onNavigateToTopAnime={() => navigateTo('top_anime')} />;
       case 'watch': 
-        return <ExploreView onAnimeClick={(id) => navigateTo('anime_details', { id })} initialQuery={currentView.props?.initialQuery} />;
+        return <ExploreView onAnimeClick={(id) => navigateTo('anime_details', { id })} initialQuery={currentView.props?.initialQuery} onNavigate={navigateTo} />;
       case 'community':
         return (
           <CommunityView
@@ -524,7 +573,32 @@ export default function App() {
       case 'more':
         return <MoreView onNavigate={navigateTo} />;
       case 'profile':
-        return <ProfileView openSettingsInitially={currentView.props?.openSettingsInitially} onAdminClick={() => navigateTo('admin')} onRewardsClick={() => navigateTo('rewards')} onLevelPerksClick={() => navigateTo('level_perks')} onBack={viewStack.length > 1 ? goBack : undefined} />;
+        return (
+          <ProfileView
+            openSettingsInitially={currentView.props?.openSettingsInitially}
+            onAdminClick={() => navigateTo('admin')}
+            onRewardsClick={() => navigateTo('rewards')}
+            onLevelPerksClick={() => navigateTo('level_perks')}
+            onOpenAccountSettings={() => navigateTo('account_settings')}
+            onOpenAppearance={() => navigateTo('profile_appearance')}
+            onBack={viewStack.length > 1 ? goBack : undefined}
+          />
+        );
+      case 'account_settings':
+        return (
+          <AccountSecurityView
+            onBack={goBack}
+            onOpenAppearance={() => navigateTo('profile_appearance')}
+            onLogout={() => handleTabChange('home')}
+          />
+        );
+      case 'profile_appearance':
+        return (
+          <ProfileAppearanceView
+            onBack={goBack}
+            onNavigateToStore={() => navigateTo('store')}
+          />
+        );
       case 'tournaments':
         return <OtakuArenaHubView initialTab="tournaments" onBack={goBack} onUserClick={(userId) => navigateTo('other_profile', { userId })} onNavigate={navigateTo} />;
       case 'other_profile':
@@ -538,7 +612,7 @@ export default function App() {
           />
         );
       case 'anime_details':
-        return <AnimeDetailsView key={currentView.props?.t || currentView.props?.id} id={currentView.props?.id} showComments={currentView.props?.showComments} focusCommentId={currentView.props?.focusCommentId} autoplayEpisode={currentView.props?.autoplayEpisode} onBack={goBack} onHome={() => handleTabChange('home')} onWatch={(ep, anime) => navigateTo('watch_episode', { episode: ep, anime })} onAnimeClick={(id, epNum) => navigateTo('anime_details', id === 'random' ? { id: 'random', t: Date.now() } : { id, autoplayEpisode: epNum })} onNavigate={navigateTo} />;
+        return <AnimeDetailsView key={currentView.props?.t || currentView.props?.id} id={currentView.props?.id} showComments={currentView.props?.showComments} focusCommentId={currentView.props?.focusCommentId} autoplayEpisode={currentView.props?.autoplayEpisode} onBack={goBack} onHome={() => handleTabChange('home')} onWatch={(ep, anime) => navigateTo('watch_episode', { episode: ep, anime })} onAnimeClick={(id, epNum) => navigateTo('anime_details', id === 'random' ? { id: 'random', t: Date.now() } : { id, autoplayEpisode: epNum }, id === 'random' ? { replaceTop: true } : undefined)} onNavigate={navigateTo} />;
       case 'anime_comments':
         return <AnimeCommentsView animeId={currentView.props?.animeId} focusCommentId={currentView.props?.focusCommentId} onBack={goBack} onAnimeClick={(id) => navigateTo('anime_details', { id })} onUserClick={(userId) => navigateTo('other_profile', { userId })} />;
       case 'watch_episode':
@@ -559,6 +633,7 @@ export default function App() {
                 goBack();
               }
             }}
+            onOpenDownloads={() => navigateTo('downloads')}
           />
         );
       case 'admin':
@@ -608,6 +683,21 @@ export default function App() {
         return <RecentEpisodesView onBack={goBack} onAnimeClick={(id, epNum) => navigateTo('anime_details', { id, autoplayEpisode: epNum })} />;
       case 'current_season':
         return <CurrentSeasonView onBack={goBack} onAnimeClick={(id) => navigateTo('anime_details', { id })} />;
+      case 'anime_movies':
+        return <CatalogCollectionView mode="movies" onBack={goBack} onAnimeClick={(id) => navigateTo('anime_details', { id })} />;
+      case 'top_anime':
+        return <CatalogCollectionView mode="top" onBack={goBack} onAnimeClick={(id) => navigateTo('anime_details', { id })} />;
+      case 'downloads':
+        return (
+          <DownloadsView
+            onBack={goBack}
+            onExplore={() => {
+              setActiveTab('watch');
+              setViewStack([{ name: 'watch' }]);
+            }}
+            onOpenAnime={(id) => navigateTo('anime_details', { id })}
+          />
+        );
       case 'level_perks':
         return <LevelPerksView onBack={goBack} onNavigateToStore={() => navigateTo('store')} />;
       case 'rewards':
@@ -621,7 +711,7 @@ export default function App() {
       case 'diagnostics':
         return <DiagnosticsView onBack={goBack} initialTab={currentView.props?.initialTab} />;
       case 'ai_chat':
-        return <AiChatView onBack={goBack} />;
+        return <AiChatView onBack={goBack} onNavigate={navigateTo} />;
       case 'ad_support':
         return <SupportPortalView onBack={goBack} initialTab="rewards" />;
       case 'support_help':
@@ -635,31 +725,41 @@ export default function App() {
       case 'support_news':
         return <SupportPortalView onBack={goBack} initialTab="news" />;
       default:
-        return <HomeView onAnimeClick={(id) => navigateTo('anime_details', { id })} onNavigateToSchedule={(day) => navigateTo('schedule', { initialDay: day })} onNavigateToRecent={() => navigateTo('recent_episodes')} onNavigateToSeason={() => navigateTo('current_season')} />;
+        return <HomeView onAnimeClick={(id) => navigateTo('anime_details', { id })} onNavigateToSchedule={(day) => navigateTo('schedule', { initialDay: day })} onNavigateToRecent={() => navigateTo('recent_episodes')} onNavigateToSeason={() => navigateTo('current_season')} onNavigateToMovies={() => navigateTo('anime_movies')} onNavigateToTopAnime={() => navigateTo('top_anime')} />;
     }
   };
 
   // Do not show AppLayout (top/bottom navs) if we are in fullscreen views like details or watch
-  const isFullScreenView = currentView.name === 'diagnostics' || currentView.name === 'suggestions_hub' || currentView.name === 'ai_chat' || currentView.name === 'level_perks' || currentView.name === 'anime_details' || currentView.name === 'anime_comments' || currentView.name === 'watch_episode' || currentView.name === 'admin' || currentView.name === 'games' || currentView.name === 'leaderboard' || currentView.name === 'store' || currentView.name === 'schedule' || currentView.name === 'tournaments' || currentView.name === 'recent_episodes' || currentView.name === 'current_season' || currentView.name === 'rewards' || currentView.name === 'other_profile' || currentView.name === 'favorites' || currentView.name === 'notifications' || currentView.name === 'ad_support' || currentView.name === 'support_help' || currentView.name === 'support_suggestions' || currentView.name === 'support_donate' || currentView.name === 'support_chat' || currentView.name === 'support_news';
+  const isFullScreenView = currentView.name === 'account_settings' || currentView.name === 'profile_appearance' || currentView.name === 'diagnostics' || currentView.name === 'suggestions_hub' || currentView.name === 'ai_chat' || currentView.name === 'level_perks' || currentView.name === 'anime_details' || currentView.name === 'anime_comments' || currentView.name === 'watch_episode' || currentView.name === 'admin' || currentView.name === 'games' || currentView.name === 'leaderboard' || currentView.name === 'store' || currentView.name === 'schedule' || currentView.name === 'tournaments' || currentView.name === 'recent_episodes' || currentView.name === 'current_season' || currentView.name === 'anime_movies' || currentView.name === 'top_anime' || currentView.name === 'downloads' || currentView.name === 'rewards' || currentView.name === 'other_profile' || currentView.name === 'favorites' || currentView.name === 'notifications' || currentView.name === 'ad_support' || currentView.name === 'support_help' || currentView.name === 'support_suggestions' || currentView.name === 'support_donate' || currentView.name === 'support_chat' || currentView.name === 'support_news';
 
   return (
     <>
       <MascotOfflineScreen />
-      <AnimatePresence>
-        {exitToastVisible && (
-          <motion.div
-            initial={{ opacity: 0, y: 30 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 20 }}
-            className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[99999] bg-zinc-900/95 border border-white/15 text-white text-xs font-bold px-5 py-2.5 rounded-full shadow-2xl backdrop-blur-md pointer-events-none whitespace-nowrap"
-            dir="rtl"
-          >
-            اضغط زر الرجوع مرة أخرى للخروج من التطبيق
-          </motion.div>
-        )}
-      </AnimatePresence>
-      {/* Real-time Toast Notifications Overlay */}
-      <div className="fixed top-4 right-4 left-4 sm:left-auto sm:right-6 sm:w-[380px] z-[99999] flex flex-col gap-2.5 pointer-events-none" dir="rtl">
+      <ViewportPortal>
+        <AnimatePresence>
+          {exitToastVisible && (
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 12 }}
+              style={{ bottom: 'calc(var(--safe-bottom, 0px) + 5.75rem)' }}
+              className="fixed left-1/2 -translate-x-1/2 z-[99999] bg-zinc-900/95 border border-white/15 text-white text-xs font-bold px-5 py-2.5 rounded-full shadow-2xl backdrop-blur-md pointer-events-none whitespace-nowrap"
+              dir="rtl"
+            >
+              اضغط زر الرجوع مرة أخرى للخروج من التطبيق
+            </motion.div>
+          )}
+        </AnimatePresence>
+        {/* Real-time Toast Notifications Overlay pinned inside visible screen below camera cutout */}
+        <div
+          style={{
+            top: 'calc(var(--safe-top, 0px) + 0.75rem)',
+            paddingLeft: 'var(--safe-left, 0px)',
+            paddingRight: 'var(--safe-right, 0px)',
+          }}
+          className="fixed right-3 left-3 sm:left-auto sm:right-6 sm:w-[380px] z-[99999] flex flex-col gap-2.5 pointer-events-none"
+          dir="rtl"
+        >
         <AnimatePresence>
           {activeToasts.map((toast, idx) => {
             let badgeColor = "bg-[#FF1744]/10 border-[#FF1744]/30 text-[#FF1744]";
@@ -798,38 +898,54 @@ export default function App() {
           })}
         </AnimatePresence>
       </div>
+      </ViewportPortal>
 
       {isFullScreenView ? (
-        <AnimatePresence mode="popLayout" initial={false}>
-          <motion.div
-            key={`${currentView.name}-${viewStack.length}-${currentView.props?.id || currentView.props?.animeId || currentView.props?.userId || currentView.props?.episode?.id || currentView.props?.episode?.num || currentView.props?.t || ''}`}
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -12 }}
-            transition={{ type: "spring", stiffness: 380, damping: 32 }}
-            className="h-full w-full mx-auto max-w-md sm:max-w-xl md:max-w-3xl lg:max-w-5xl xl:max-w-7xl bg-black min-h-screen relative shadow-[0_0_60px_rgba(0,0,0,0.8)] border-x border-white/5"
+        <motion.div
+          key={`${currentView.name}-${viewStack.length}-${currentView.props?.id || currentView.props?.animeId || currentView.props?.userId || currentView.props?.episode?.id || currentView.props?.episode?.num || currentView.props?.t || ''}`}
+          initial={{ opacity: 0.7 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.12, ease: 'easeOut' }}
+          style={{
+            paddingTop:
+              currentView.name === 'anime_details' || currentView.name === 'watch_episode'
+                ? '0px'
+                : 'var(--safe-top, 0px)',
+            paddingBottom: 'var(--safe-bottom, 0px)',
+            paddingLeft: 'var(--safe-left, 0px)',
+            paddingRight: 'var(--safe-right, 0px)',
+          }}
+          className="h-full w-full bg-black min-h-[var(--vv-height,100dvh)] relative"
+        >
+          <ViewErrorBoundary
+            viewName={currentView.name}
+            resetKey={`${currentView.name}-${viewStack.length}-${currentView.props?.id || ''}`}
+            onGoHome={() => handleTabChange('home')}
           >
-             <Suspense fallback={<ViewFallback />}>
-               {renderView()}
-             </Suspense>
-          </motion.div>
-        </AnimatePresence>
+            <Suspense fallback={<ViewFallback />}>
+              {renderView()}
+            </Suspense>
+          </ViewErrorBoundary>
+        </motion.div>
       ) : (
         <AppLayout activeTab={activeTab} setActiveTab={handleTabChange} onNavigateTo={navigateTo}>
-          <AnimatePresence mode="popLayout" initial={false}>
-            <motion.div
-              key={`${currentView.name}-${viewStack.length}-${currentView.props?.initialQuery || currentView.props?.focusCommentId || ''}`}
-              initial={{ opacity: 0, y: 12 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -12 }}
-              transition={{ type: "spring", stiffness: 380, damping: 32 }}
-              className="h-full w-full gpu-accelerated"
+          <motion.div
+            key={`${currentView.name}-${viewStack.length}-${currentView.props?.initialQuery || currentView.props?.focusCommentId || ''}`}
+            initial={{ opacity: 0.7 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.12, ease: 'easeOut' }}
+            className="h-full w-full"
+          >
+            <ViewErrorBoundary
+              viewName={currentView.name}
+              resetKey={`${currentView.name}-${viewStack.length}-${currentView.props?.initialQuery || ''}`}
+              onGoHome={() => handleTabChange('home')}
             >
               <Suspense fallback={<ViewFallback />}>
                 {renderView()}
               </Suspense>
-            </motion.div>
-          </AnimatePresence>
+            </ViewErrorBoundary>
+          </motion.div>
         </AppLayout>
       )}
     </>

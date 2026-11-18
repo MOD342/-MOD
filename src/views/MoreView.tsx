@@ -10,6 +10,7 @@ import {
   ChevronLeft, 
   Heart, 
   Lock, 
+  Settings,
   Bell,
   Sparkles,
   Coins,
@@ -27,14 +28,22 @@ import {
   Users,
   Newspaper,
   Smartphone,
-  Download
+  Download,
+  Paintbrush,
+  HeartHandshake,
+  Bot,
+  Film,
+  FolderDown
 } from 'lucide-react';
+import ViewportPortal from '../components/ViewportPortal';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAuth } from '../contexts/AuthContext';
 import { moderationService, isStaffEmail } from '../services/moderationService';
 import { STORE_ITEMS_SORTED, getAvatarShapeClass } from '../data/storeItems';
 import { getActiveNonOverlappingEvent } from '../services/arenaCalendarEngine';
 import { Swords } from 'lucide-react';
+import { useDeviceDisplay } from '../hooks/useDeviceDisplay';
+import { useDownloadQueue } from '../services/downloadManagerService';
 
 interface MoreViewProps {
   onNavigate: (view: string, props?: any) => void;
@@ -42,6 +51,15 @@ interface MoreViewProps {
 
 export default function MoreView({ onNavigate }: MoreViewProps) {
   const { user, signIn, logout, userData, userRole } = useAuth();
+  const display = useDeviceDisplay();
+  const downloadQueue = useDownloadQueue();
+  const activeDownloadsCount = useMemo(
+    () =>
+      downloadQueue.filter(
+        (d) => d.status === 'queued' || d.status === 'resolving' || d.status === 'downloading',
+      ).length,
+    [downloadQueue],
+  );
   const isDirectStaff = isStaffEmail(user?.email);
   const [isAdmin, setIsAdmin] = useState(() => isDirectStaff || userRole === 'admin' || userRole === 'owner' || userRole === 'moderator');
   const userLevel = userData?.level || 1;
@@ -157,8 +175,10 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
       title: 'حسابي',
       items: [
         { id: 'profile', label: 'ملفي', icon: UserCircle, color: 'text-sky-400', bg: 'bg-sky-500/10' },
-        { id: 'account_settings', label: 'الأمان', icon: Lock, color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
+        { id: 'account_settings', label: 'الإعدادات', icon: Settings, color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
+        { id: 'profile_appearance', label: 'المظهر', icon: Paintbrush, color: 'text-pink-400', bg: 'bg-pink-500/10' },
         { id: 'favorites', label: 'المفضلة', icon: Heart, color: 'text-rose-400', bg: 'bg-rose-500/10' },
+        { id: 'downloads', label: activeDownloadsCount > 0 ? `التنزيلات (${activeDownloadsCount})` : 'التنزيلات', icon: FolderDown, color: 'text-purple-400', bg: 'bg-purple-500/10' },
         { id: 'notifications', label: 'الإشعارات', icon: Bell, color: 'text-indigo-400', bg: 'bg-indigo-500/10' },
         { id: 'rewards', label: 'المكافآت', icon: Gift, color: 'text-yellow-400', bg: 'bg-yellow-500/10' },
         { id: 'level_perks', label: 'الامتيازات', icon: Zap, color: 'text-amber-400', bg: 'bg-amber-500/10' },
@@ -167,15 +187,19 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
     {
       title: 'الترفيه والمتجر',
       items: [
+        { id: 'ai_chat', label: 'صديقك الأوتاكو', icon: Bot, color: 'text-rose-400', bg: 'bg-rose-500/10' },
         { id: 'games', label: 'حلبة الأوتاكو', icon: Swords, color: 'text-purple-400', bg: 'bg-purple-500/10' },
         { id: 'store', label: 'المتجر', icon: ShoppingCart, color: 'text-orange-400', bg: 'bg-orange-500/10' },
         { id: 'schedule', label: 'المواعيد', icon: CalendarDays, color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
+        { id: 'top_anime', label: 'أفضل الأنميات', icon: Crown, color: 'text-amber-400', bg: 'bg-amber-500/10' },
+        { id: 'anime_movies', label: 'أفلام الأنمي', icon: Film, color: 'text-rose-400', bg: 'bg-rose-500/10' },
       ]
     },
     {
       title: 'النظام والدعم',
       items: [
-        { id: 'support_help', label: 'الدعم', icon: HelpCircle, color: 'text-red-400', bg: 'bg-[#FF1744]/15' },
+        { id: 'ad_support', label: 'ادعم التطبيق', icon: HeartHandshake, color: 'text-amber-400', bg: 'bg-amber-500/10' },
+        { id: 'support_help', label: 'مركز الدعم', icon: HelpCircle, color: 'text-red-400', bg: 'bg-[#FF1744]/15' },
         { id: 'diagnostics', label: 'فحص الأخطاء', icon: LayoutGrid, color: 'text-amber-400', bg: 'bg-amber-500/10' },
         { id: 'app_permissions', label: 'الأذونات', icon: Bell, color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
         { id: 'pwa_install', label: 'تثبيت التطبيق', icon: Smartphone, color: 'text-violet-400', bg: 'bg-violet-500/10' },
@@ -187,7 +211,7 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
   ];
 
   return (
-    <div className="pb-24 pt-4 px-3.5 md:px-6 space-y-4 max-w-3xl mx-auto font-sans text-right" dir="rtl" id="container_more_view">
+    <div className="pb-24 pt-4 px-3.5 md:px-6 space-y-4 max-w-5xl mx-auto font-sans text-right" dir="rtl" id="container_more_view">
       
       {/* شريط عنوان مدمج وأنيق */}
       <div className="flex items-center justify-between border-b border-white/5 pb-3">
@@ -319,7 +343,7 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
       {/* بطاقة الحدث الحي وساحة الأوتاكو الموحدة */}
       <button
         onClick={() => onNavigate('games')}
-        className={`w-full bg-gradient-to-r ${activeArenaEvent.bannerGradient} border border-white/10 hover:border-[#FF1744]/50 rounded-2xl p-3.5 flex items-center justify-between gap-3 text-right transition-all active:scale-[0.99] cursor-pointer shadow-lg`}
+        className={`theme-keep-dark w-full bg-gradient-to-r ${activeArenaEvent.bannerGradient} border border-white/10 hover:border-[#FF1744]/50 rounded-2xl p-3.5 flex items-center justify-between gap-3 text-right transition-all active:scale-[0.99] cursor-pointer shadow-lg`}
       >
         <div className="flex items-center gap-3 min-w-0">
           <div className="w-10 h-10 rounded-xl bg-black/40 border border-white/15 flex items-center justify-center text-[#FF1744] shrink-0">
@@ -345,23 +369,26 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
       </button>
 
       {/* الأقسام والأزرار المدمجة بدون فراغات وبعناوين من كلمة أو كلمتين */}
-      <div className="space-y-4">
+      <div
+        className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start"
+        style={display.isBookPosture ? { gap: 'var(--fold-hinge-gap, 24px)' } : undefined}
+      >
         {categories.map((cat, catIdx) => {
           const visibleItems = cat.items.filter((item) => {
-            const requiresLogin = ['profile', 'account_settings', 'games', 'leaderboard', 'store', 'admin', 'tournaments', 'notifications', 'rewards', 'level_perks'].includes(item.id);
+            const requiresLogin = ['profile', 'profile_appearance', 'games', 'leaderboard', 'store', 'admin', 'tournaments', 'notifications', 'rewards', 'level_perks'].includes(item.id);
             return Boolean(user || !requiresLogin);
           });
 
           if (visibleItems.length === 0) return null;
 
           return (
-            <div key={catIdx} className="bg-[#111115] border border-white/5 rounded-2xl p-3 space-y-2.5">
+            <div key={catIdx} className="bg-[#111115] border border-white/5 rounded-2xl p-3 space-y-2.5 h-full">
               <h4 className="text-xs font-bold text-neutral-400 flex items-center gap-1.5 px-1 select-none">
                 <span className="w-1 h-3 bg-[#FF1744] rounded-full" />
                 <span>{cat.title}</span>
               </h4>
 
-              <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2">
+              <div className={`grid gap-2 ${display.isCoverScreen ? 'grid-cols-2' : 'grid-cols-3 sm:grid-cols-4 md:grid-cols-3 lg:grid-cols-4'}`}>
                 {visibleItems.map((item) => (
                   <button
                     key={item.id}
@@ -370,8 +397,6 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
                         setShowInstallModal(true);
                       } else if (item.id === 'app_permissions') {
                         window.dispatchEvent(new CustomEvent('open-permissions-modal'));
-                      } else if (item.id === 'account_settings') {
-                        onNavigate('profile', { openSettingsInitially: true });
                       } else {
                         onNavigate(item.id);
                       }
@@ -406,9 +431,18 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
       )}
 
       {/* PWA Installation Modal */}
+      <ViewportPortal>
       <AnimatePresence>
         {showInstallModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 font-sans" id="pwa_install_modal_wrapper">
+          <div
+            className="fixed inset-0 z-[120] flex items-center justify-center p-4 font-sans"
+            style={{
+              height: 'var(--vv-height, 100dvh)',
+              paddingTop: 'calc(var(--safe-top, 0px) + 1rem)',
+              paddingBottom: 'calc(var(--safe-bottom, 0px) + 1rem)',
+            }}
+            id="pwa_install_modal_wrapper"
+          >
             {/* Backdrop */}
             <motion.div
               initial={{ opacity: 0 }}
@@ -533,12 +567,13 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
                 onClick={() => setShowInstallModal(false)}
                 className="w-full mt-6 bg-neutral-900 hover:bg-neutral-850 border border-neutral-800 text-neutral-400 hover:text-white font-black py-2.5 rounded-xl text-xs transition cursor-pointer text-center"
               >
-                تحديث / إغلاق
+                إغلاق
               </button>
             </motion.div>
           </div>
         )}
       </AnimatePresence>
+      </ViewportPortal>
     </div>
   );
 }

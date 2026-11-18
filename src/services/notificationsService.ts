@@ -171,5 +171,15 @@ export const notificationsService = {
     } catch(err) {
       console.error("Error creating user notification:", err);
     }
+  },
+
+  clearUserCache: (userId?: string): void => {
+    if (userId) {
+      userNotifsCache.delete(userId);
+      userNotifsPromises.delete(userId);
+    } else {
+      userNotifsCache.clear();
+      userNotifsPromises.clear();
+    }
   }
 };

@@ -1,0 +1,23 @@
+{
+  "name": "أنمي MOD - Otaku Hub",
+  "short_name": "أنمي MOD",
+  "description": "منصة أوتاكو وبوابة الأنمي لتقييم ومناقشة ومتابعة مواسم الأنمي المختلفة",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0a0a0c",
+  "theme_color": "#FF1744",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "./app_icon.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "./app_icon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

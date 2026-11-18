@@ -6,6 +6,7 @@
  * حتى لو كان الخادم السحابي الوسيط متوقفاً أو محجوباً أو في وضع السكون.
  */
 
+import { Capacitor, CapacitorHttp } from '@capacitor/core';
 import {
   CURATED_ANIME_LIST,
   CURATED_GENRES_LIST,
@@ -310,13 +311,15 @@ function cleanAnimedarTitleClient(raw: string): string {
     .trim();
 }
 
-function extractAnimedarSlugClient(href: string): string {
+function extractPrimarySlugClient(href: string): string {
   if (!href) return '';
   try {
-    const u = href.startsWith('http') ? new URL(href) : new URL(href, 'https://animedar.net');
+    const u = href.startsWith('http') ? new URL(href) : new URL(href, 'https://ww3.okanime.xyz');
     const parts = u.pathname.split('/').filter(Boolean);
-    const idx = parts.findIndex(p => p === 'anime-p' || p === 'anime' || p === 'series');
+    const idx = parts.findIndex(p => p === 'anime' || p === 'anime-p' || p === 'series');
     if (idx !== -1 && parts[idx + 1]) return parts[idx + 1];
+    const epIdx = parts.findIndex(p => p === 'episode');
+    if (epIdx !== -1 && parts[epIdx + 1]) return parts[epIdx + 1].replace(/-episode-\d+.*$/i, '');
     return parts.pop() || '';
   } catch {
     return href.split('/').filter(Boolean).pop() || '';
@@ -326,9 +329,11 @@ function extractAnimedarSlugClient(href: string): string {
 async function fetchHtmlDirectInClient(targetUrl: string): Promise<string> {
   // 1. Native CapacitorHttp plugin (bypasses CORS natively in Android APK)
   try {
-    const capHttp = (typeof window !== 'undefined' && (window as any).Capacitor?.Plugins?.CapacitorHttp) || null;
-    if (capHttp && typeof capHttp.get === 'function') {
-      const capRes = await capHttp.get({
+    const nativeHttp = Capacitor.isNativePlatform()
+      ? CapacitorHttp
+      : (typeof window !== 'undefined' && (window as any).Capacitor?.Plugins?.CapacitorHttp) || null;
+    if (nativeHttp && typeof nativeHttp.get === 'function') {
+      const capRes = await nativeHttp.get({
         url: targetUrl,
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
@@ -373,7 +378,77 @@ async function fetchHtmlDirectInClient(targetUrl: string): Promise<string> {
   }
 }
 
-// جلب أحدث الحلقات الحية مباشرة من صندوق .bixbox.ongoing في animedar.net أو ristoanime.cc كاحتياطي
+// جلب أحدث الحلقات الحية مباشرة من ww3.okanime.xyz (الأساسي #1) ثم animedar.net (المساعد #2)
+async function fetchOkanimeRecentClient(page = 1): Promise<any[]> {
+  const safePage = Math.max(1, Number(page) || 1);
+  const targetUrl = safePage > 1
+    ? `https://ww3.okanime.xyz/recently-uploaded-episodes?page=${safePage}`
+    : 'https://ww3.okanime.xyz/recently-uploaded-episodes';
+
+  try {
+    const html = await fetchHtmlDirectInClient(targetUrl);
+    if (html && html.includes('data-track-card') && typeof DOMParser !== 'undefined') {
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      const cards = doc.querySelectorAll('[data-track-card="episode"]');
+      const items: any[] = [];
+      const seen = new Set<string>();
+
+      cards.forEach((el) => {
+        if (el.closest('aside')) return;
+        const aEl = el.querySelector('a[href*="/episode/"]');
+        const href = aEl?.getAttribute('href') || '';
+        const trackSlug = (el.getAttribute('data-track-anime') || '').trim();
+        const slug = trackSlug || extractPrimarySlugClient(href);
+        if (!slug || seen.has(slug)) return;
+
+        const epAttr = (el.getAttribute('data-umami-event-episode_number') || '').trim();
+        const badgeText = (el.querySelector('.ep-number-badge')?.textContent || '').trim();
+        const epMatch = epAttr.match(/^(\d+)$/) || href.match(/-episode-(\d+)/i) || badgeText.match(/(\d+)/);
+        if (!epMatch || !epMatch[1]) return;
+
+        const epNum = epMatch[1];
+        const rawTitle = (
+          el.querySelector('.anime-title h4, .anime-title a, .anime-title')?.textContent ||
+          el.querySelector('img')?.getAttribute('alt') ||
+          slug.replace(/-/g, ' ')
+        )
+          .replace(/\s+/g, ' ')
+          .replace(/\s*الحلقة\s*\d+.*$/i, '')
+          .replace(/\s*مترجمة.*$/i, '')
+          .trim();
+
+        const cleaned = cleanAnimedarTitleClient(rawTitle) || rawTitle;
+        const imgEl = el.querySelector('.episode-image img, img');
+        const img = imgEl?.getAttribute('src') || imgEl?.getAttribute('data-src') || '';
+        const fullLink = href.startsWith('http')
+          ? href
+          : `https://ww3.okanime.xyz/episode/${slug}-episode-${epNum}`;
+
+        seen.add(slug);
+        items.push({
+          id: `${slug}__ep__${epNum}`,
+          _id: `${slug}__ep__${epNum}`,
+          title: cleaned,
+          episode: epNum,
+          episodeNumber: epNum,
+          link: fullLink,
+          imageUrl: img,
+          posterUrl: img,
+          thumbnailUrl: img,
+          rating: 8.6,
+          status: 'يعرض حالياً',
+          type: 'TV',
+          animeId: slug || `search-${cleaned}`
+        });
+      });
+
+      if (items.length > 0) return items;
+    }
+  } catch {}
+
+  return [];
+}
+
 async function fetchAnimedarRecentClient(page = 1): Promise<any[]> {
   const safePage = Math.max(1, Number(page) || 1);
   const targetUrl = safePage > 1 ? `https://animedar.net/page/${safePage}/` : 'https://animedar.net/';
@@ -389,7 +464,7 @@ async function fetchAnimedarRecentClient(page = 1): Promise<any[]> {
       articles.forEach((el) => {
         const aEl = el.querySelector('a');
         const href = aEl?.getAttribute('href') || '';
-        const slug = extractAnimedarSlugClient(href);
+        const slug = extractPrimarySlugClient(href);
         if (!slug || seen.has(slug)) return;
 
         const typezEl = el.querySelector('.typez');
@@ -446,54 +521,206 @@ async function fetchAnimedarRecentClient(page = 1): Promise<any[]> {
     }
   } catch {}
 
-  // احتياطي RistoAnime المباشر عند تعذر animedar
+  return [];
+}
+
+async function fetchPrimaryRecentClient(page = 1): Promise<any[]> {
+  const okItems = await fetchOkanimeRecentClient(page).catch(() => []);
+  if (okItems.length > 0) return okItems;
+  return fetchAnimedarRecentClient(page).catch(() => []);
+}
+
+async function fetchOkanimeScheduleMapClient(): Promise<Record<string, any[]>> {
+  const sectionDayMap: Record<string, string> = {
+    schedule_day_5: 'saturday',
+    schedule_day_6: 'sunday',
+    schedule_day_0: 'monday',
+    schedule_day_1: 'tuesday',
+    schedule_day_2: 'wednesday',
+    schedule_day_3: 'thursday',
+    schedule_day_4: 'friday',
+  };
   try {
-    const ristoUrl = safePage > 1 ? `https://ristoanime.cc/page/${safePage}/` : 'https://ristoanime.cc/';
-    const ristoHtml = await fetchHtmlDirectInClient(ristoUrl);
-    if (ristoHtml && ristoHtml.includes('MovieItem') && typeof DOMParser !== 'undefined') {
-      const doc = new DOMParser().parseFromString(ristoHtml, 'text/html');
-      const items: any[] = [];
-      const seen = new Set<string>();
-      doc.querySelectorAll('.MovieItem a').forEach((aEl) => {
-        const link = (aEl.getAttribute('href') || '').trim();
-        if (!link || link.includes('/series/') || link.includes('/movies/')) return;
-        const rawTitle =
-          aEl.getAttribute('title') ||
-          aEl.querySelector('h4, h3, .title')?.textContent?.trim() ||
-          '';
-        if (!rawTitle) return;
-        const epMatch = rawTitle.match(/الحلقة\s*(\d+)/) || decodeURIComponent(link).match(/الحلقة-(\d+)/);
-        if (!epMatch) return;
-        const epNum = epMatch[1];
-        const cleaned = cleanAnimedarTitleClient(
-          rawTitle.replace(/^مشاهدة\s*/i, '').replace(/^انمي\s*/i, '').replace(/الحلقة\s*\d+.*$/i, '').trim()
-        );
-        if (!cleaned || cleaned.length < 2) return;
-        const imgEl = aEl.querySelector('img');
-        const img = imgEl?.getAttribute('src') || imgEl?.getAttribute('data-src') || '';
-        const ristoSlug = link.split('/').filter(Boolean).pop() || '';
-        if (!ristoSlug || seen.has(ristoSlug)) return;
-        seen.add(ristoSlug);
-        items.push({
-          id: `risto__${ristoSlug}`,
-          _id: `risto__${ristoSlug}`,
-          title: cleaned,
-          episode: epNum,
-          episodeNumber: epNum,
-          link,
-          imageUrl: img,
-          posterUrl: img,
-          thumbnailUrl: img,
-          rating: 8.4,
-          status: 'يعرض حالياً',
-          type: 'TV',
-          animeId: `search-${cleaned}`
+    const html = await fetchHtmlDirectInClient('https://ww3.okanime.xyz/schedule');
+    if (!html || !html.includes('schedule-row') || typeof DOMParser === 'undefined') return {};
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const weekMap: Record<string, any[]> = {
+      saturday: [], sunday: [], monday: [], tuesday: [], wednesday: [], thursday: [], friday: []
+    };
+
+    doc.querySelectorAll('[data-track-section^="schedule_day_"]').forEach((secEl) => {
+      const secAttr = (secEl.getAttribute('data-track-section') || '').trim();
+      let dayKey = sectionDayMap[secAttr];
+      if (!dayKey) {
+        const heading = secEl.querySelector('h2, h3, .schedule-day-title')?.textContent || '';
+        if (heading.includes('السبت')) dayKey = 'saturday';
+        else if (heading.includes('الأحد') || heading.includes('الاحد')) dayKey = 'sunday';
+        else if (heading.includes('الإثنين') || heading.includes('الاثنين')) dayKey = 'monday';
+        else if (heading.includes('الثلاثاء')) dayKey = 'tuesday';
+        else if (heading.includes('الأربعاء') || heading.includes('الاربعاء')) dayKey = 'wednesday';
+        else if (heading.includes('الخميس')) dayKey = 'thursday';
+        else if (heading.includes('الجمعة')) dayKey = 'friday';
+      }
+      if (!dayKey) return;
+
+      secEl.querySelectorAll('.schedule-row').forEach((rowEl) => {
+        const href = (rowEl.getAttribute('href') || '').trim();
+        const slug = (rowEl.getAttribute('data-track-anime') || extractPrimarySlugClient(href)).trim();
+        const malAttr = (rowEl.getAttribute('data-umami-event-mal_id') || '').trim();
+        const malNum = /^\d+$/.test(malAttr) ? Number(malAttr) : undefined;
+        const imgEl = rowEl.querySelector('img.schedule-poster, img');
+        const posterUrl = imgEl?.getAttribute('src') || imgEl?.getAttribute('data-src') || '';
+        const rawTitle = (rowEl.querySelector('.schedule-row-title')?.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!rawTitle && !slug) return;
+        const title = cleanAnimedarTitleClient(rawTitle) || rawTitle || slug;
+        const type = (rowEl.querySelector('.schedule-type-badge')?.textContent || '').replace(/\s+/g, ' ').trim() || 'TV';
+        const timeStr = (rowEl.querySelector('.schedule-row-time')?.textContent || '').trim();
+
+        let epCount: number | undefined;
+        let ratingScore: number | undefined;
+        rowEl.querySelectorAll('span').forEach((spEl) => {
+          const spTxt = (spEl.textContent || '').trim();
+          const epM = spTxt.match(/(\d+)\s*حلقة/);
+          if (epM && !epCount) epCount = parseInt(epM[1], 10);
+          const rateM = spTxt.match(/★\s*(\d+(?:\.\d+)?)/);
+          if (rateM && !ratingScore) ratingScore = parseFloat(rateM[1]);
         });
+
+        const targetId = slug || (malNum ? String(malNum) : title);
+        if (!weekMap[dayKey].some((item) => String(item._id) === String(targetId))) {
+          weekMap[dayKey].push({
+            _id: targetId,
+            id: targetId,
+            slug,
+            mal_id: malNum,
+            title,
+            title_english: title,
+            posterUrl,
+            imageUrl: posterUrl,
+            images: { jpg: { large_image_url: posterUrl, image_url: posterUrl } },
+            rating: ratingScore || null,
+            score: ratingScore || 0,
+            episodes: epCount || undefined,
+            episodesCount: epCount ? String(epCount) : undefined,
+            type,
+            broadcast: { time: timeStr || '', day: dayKey },
+            link: href || `https://ww3.okanime.xyz/anime/${slug}`
+          });
+        }
       });
-      if (items.length > 0) return items;
+    });
+
+    return weekMap;
+  } catch {
+    return {};
+  }
+}
+
+async function fetchOkanimeCatalogClient(
+  pathWithQuery: string,
+  defaultType: string
+): Promise<{ items: any[]; hasNext: boolean }> {
+  try {
+    const html = await fetchHtmlDirectInClient(`https://ww3.okanime.xyz${pathWithQuery}`);
+    if (!html || !html.includes('anime-card') || typeof DOMParser === 'undefined') {
+      return { items: [], hasNext: false };
+    }
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const items: any[] = [];
+    const seen = new Set<string>();
+
+    doc.querySelectorAll('.anime-card').forEach((el) => {
+      if (el.closest('aside')) return;
+      const href = (el.querySelector('a[href*="/anime/"]')?.getAttribute('href') || '').trim();
+      const slug = extractPrimarySlugClient(href);
+      if (!slug || seen.has(slug)) return;
+
+      const rawTitle = (
+        el.querySelector('.anime-title h4 a, .anime-title h4, h4 a, h4')?.textContent ||
+        el.querySelector('img')?.getAttribute('alt') ||
+        slug.replace(/-/g, ' ')
+      ).replace(/\s+/g, ' ').trim();
+      if (!rawTitle) return;
+
+      const imgEl = el.querySelector('img');
+      const posterUrl = imgEl?.getAttribute('src') || imgEl?.getAttribute('data-src') || '';
+      const epText = (el.querySelector('.anime-title h5, h5')?.textContent || '').trim();
+      const epMatch = epText.match(/(\d+)/);
+      const episodesCount = epMatch ? parseInt(epMatch[1], 10) : undefined;
+      const type = (el.querySelector('.anime-details small')?.textContent || '').replace(/\s+/g, ' ').trim() || defaultType;
+      const genres = Array.from(el.querySelectorAll('.anime-details ul li'))
+        .map((li) => (li.textContent || '').replace(/\s+/g, ' ').trim())
+        .filter(Boolean);
+      const description = (el.querySelector('.anime-details p')?.textContent || '').replace(/\s+/g, ' ').trim();
+
+      seen.add(slug);
+      items.push({
+        _id: slug,
+        id: slug,
+        slug,
+        title: cleanAnimedarTitleClient(rawTitle) || rawTitle,
+        posterUrl,
+        imageUrl: posterUrl,
+        type,
+        episodesCount: episodesCount || (defaultType === 'فيلم' ? 1 : undefined),
+        genres,
+        description,
+        link: href.startsWith('http') ? href : `https://ww3.okanime.xyz/anime/${slug}`
+      });
+    });
+
+    const pageMatch = pathWithQuery.match(/[?&]page=(\d+)/);
+    const currentPage = pageMatch ? parseInt(pageMatch[1], 10) : 1;
+    let hasNext = false;
+    doc.querySelectorAll('.pagination a').forEach((aEl) => {
+      const aHref = (aEl.getAttribute('href') || '').trim();
+      const rel = (aEl.getAttribute('rel') || '').toLowerCase();
+      if (rel === 'next' || aHref.includes(`page=${currentPage + 1}`)) {
+        hasNext = true;
+      }
+    });
+    if (!hasNext && items.length >= 28) hasNext = true;
+    return { items, hasNext };
+  } catch {
+    return { items: [], hasNext: false };
+  }
+}
+
+async function fetchJikanRecentFallback(page = 1): Promise<any[]> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 6000);
+    const res = await nativeFetch(`https://api.jikan.moe/v4/seasons/now?page=${page}&limit=18`, {
+      signal: controller.signal
+    });
+    clearTimeout(timer);
+    if (res.ok) {
+      const json = await res.json();
+      const rows = Array.isArray(json?.data) ? json.data : [];
+      if (rows.length > 0) {
+        return rows.map((m: any) => {
+          const malId = String(m.mal_id || '');
+          const title = m.title_english || m.title || 'Anime';
+          const poster = m.images?.jpg?.large_image_url || m.images?.jpg?.image_url || '';
+          const epNum = m.episodes ? String(m.episodes) : '1';
+          return {
+            id: `${malId}__ep__${epNum}`,
+            _id: `${malId}__ep__${epNum}`,
+            title,
+            episode: epNum,
+            episodeNumber: epNum,
+            imageUrl: poster,
+            posterUrl: poster,
+            thumbnailUrl: poster,
+            rating: m.score || 8.3,
+            status: 'يعرض حالياً',
+            type: m.type || 'TV',
+            animeId: malId || `search-${title}`
+          };
+        });
+      }
     }
   } catch {}
-
   return [];
 }
 
@@ -503,9 +730,12 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
 
   try {
     // ========================================================================
-    // 1. LIVE DASHBOARD (تغذية الصفحة الرئيسية مباشرة من انمي دار + AniList)
+    // 1. LIVE DASHBOARD (تغذية الصفحة الرئيسية مباشرة من OkAnime + انمي دار + AniList + Jikan)
     // ========================================================================
     if (cleanPath === '/api/dashboard') {
+      const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+      const qDay = (urlObj.searchParams.get('day') || '').toLowerCase();
+      const currentDay = days.includes(qDay) ? qDay : days[new Date().getDay()];
       try {
         const gql = `
           query {
@@ -526,40 +756,55 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
             }
           }
         `;
-        const [data, animedarRecent] = await Promise.all([
+        const [data, animedarRecent, weekScheduleMap, moviesRes, topAnimeRes] = await Promise.all([
           queryAniListDirect(gql).catch(() => null),
-          fetchAnimedarRecentClient(1).catch(() => [])
+          fetchPrimaryRecentClient(1).catch(() => []),
+          fetchOkanimeScheduleMapClient().catch(() => ({} as Record<string, any[]>)),
+          fetchOkanimeCatalogClient('/anime-movies', 'فيلم').catch(() => ({ items: [], hasNext: false })),
+          fetchOkanimeCatalogClient('/top-anime', 'مسلسل').catch(() => ({ items: [], hasNext: false })),
         ]);
 
-        if (data?.trending?.media?.length > 0 || animedarRecent.length > 0) {
-          const top5 = data?.trending?.media?.length > 0 ? data.trending.media.map(mapMediaToCard) : getCuratedTop5();
-          const releasingCards = (data?.releasing?.media || []).map(mapMediaToCard);
-          const recentEpisodes = animedarRecent;
-          const popular = data?.popular?.media?.length > 0
-            ? data.popular.media.map(mapMediaToCard)
-            : getCuratedSeasonAnime().slice(0, 10);
+        const top5 = data?.trending?.media?.length > 0 ? data.trending.media.map(mapMediaToCard) : getCuratedTop5();
+        const releasingCards = (data?.releasing?.media || []).map(mapMediaToCard);
+        const recentEpisodes =
+          animedarRecent.length > 0
+            ? animedarRecent
+            : releasingCards.length > 0
+            ? releasingCards.slice(0, 14)
+            : getCuratedRecentEpisodes();
+        const popular = data?.popular?.media?.length > 0
+          ? data.popular.media.map(mapMediaToCard)
+          : getCuratedSeasonAnime().slice(0, 10);
+        const scheduleList =
+          weekScheduleMap && Array.isArray(weekScheduleMap[currentDay]) && weekScheduleMap[currentDay].length > 0
+            ? weekScheduleMap[currentDay]
+            : top5;
 
-          return createSimulatedResponse({
-            success: true,
-            data: {
-              top5,
-              recentEpisodes,
-              popular,
-              currentSeason: releasingCards.length > 0 ? releasingCards : getCuratedSeasonAnime(),
-              schedule: top5
-            }
-          });
-        }
+        return createSimulatedResponse({
+          success: true,
+          data: {
+            top5,
+            recentEpisodes,
+            popular,
+            currentSeason: releasingCards.length > 0 ? releasingCards : getCuratedSeasonAnime(),
+            schedule: scheduleList,
+            movies: (moviesRes?.items || []).slice(0, 18),
+            topAnime: (topAnimeRes?.items || []).slice(0, 18)
+          }
+        });
       } catch {}
 
+      const jikanFallback = await fetchJikanRecentFallback(1).catch(() => []);
       return createSimulatedResponse({
         success: true,
         data: {
           top5: getCuratedTop5(),
-          recentEpisodes: [],
+          recentEpisodes: jikanFallback.length > 0 ? jikanFallback : getCuratedRecentEpisodes(),
           popular: getCuratedSeasonAnime().slice(0, 10),
           currentSeason: getCuratedSeasonAnime(),
-          schedule: getCuratedTop5()
+          schedule: getCuratedTop5(),
+          movies: [],
+          topAnime: getCuratedTop5()
         }
       });
     }
@@ -576,7 +821,7 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
     }
 
     // ========================================================================
-    // 3. RECENT EPISODES, TOP5 & SEASON ANIME (حلقات انمي دار الحية المطابقة للمعاينة)
+    // 3. RECENT EPISODES, TOP5 & SEASON ANIME (حلقات OkAnime وانمي دار الحية + Jikan + الاحتياطي)
     // ========================================================================
     if (cleanPath === '/api/anime/top5') {
       try {
@@ -607,8 +852,7 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
     if (cleanPath === '/api/anime/recent') {
       const pageParam = Math.max(1, Number(urlObj.searchParams.get('page')) || 1);
       try {
-        // الجلب المباشر من animedar.net / ristoanime.cc فقط بدون استبدالها بأنميات مختلفة من AniList
-        const animedarItems = await fetchAnimedarRecentClient(pageParam);
+        const animedarItems = await fetchPrimaryRecentClient(pageParam);
         if (animedarItems.length > 0) {
           return createSimulatedResponse({
             success: true,
@@ -620,13 +864,50 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
         }
       } catch {}
 
+      const jikanRecent = await fetchJikanRecentFallback(pageParam).catch(() => []);
+      if (jikanRecent.length > 0) {
+        return createSimulatedResponse({
+          success: true,
+          page: pageParam,
+          hasNext: true,
+          hasPrev: pageParam > 1,
+          data: jikanRecent
+        });
+      }
+
+      const curatedRecent = getCuratedRecentEpisodes();
       return createSimulatedResponse({
-        success: false,
-        page: pageParam,
+        success: true,
+        page: 1,
         hasNext: false,
+        hasPrev: false,
+        data: curatedRecent
+      });
+    }
+
+    if (cleanPath === '/api/anime/movies') {
+      const pageParam = Math.max(1, Number(urlObj.searchParams.get('page')) || 1);
+      const path = pageParam > 1 ? `/anime-movies?page=${pageParam}` : '/anime-movies';
+      const res = await fetchOkanimeCatalogClient(path, 'فيلم');
+      return createSimulatedResponse({
+        success: true,
+        page: pageParam,
+        hasNext: res.hasNext,
         hasPrev: pageParam > 1,
-        message: 'تعذر جلب أحدث الحلقات حالياً بدون خادم متصل.',
-        data: []
+        data: res.items
+      });
+    }
+
+    if (cleanPath === '/api/anime/top') {
+      const pageParam = Math.max(1, Number(urlObj.searchParams.get('page')) || 1);
+      const path = pageParam > 1 ? `/top-anime?page=${pageParam}` : '/top-anime';
+      const res = await fetchOkanimeCatalogClient(path, 'مسلسل');
+      return createSimulatedResponse({
+        success: true,
+        page: pageParam,
+        hasNext: res.hasNext,
+        hasPrev: pageParam > 1,
+        data: res.items
       });
     }
 
@@ -1091,6 +1372,16 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
       const targetDayIdx = days.indexOf(day);
 
       try {
+        const weekMap = await fetchOkanimeScheduleMapClient().catch(() => ({} as Record<string, any[]>));
+        if (weekMap && Array.isArray(weekMap[day]) && weekMap[day].length > 0) {
+          return createSimulatedResponse({
+            success: true,
+            data: weekMap[day]
+          });
+        }
+      } catch {}
+
+      try {
         const gql = `
           query {
             Page(page: 1, perPage: 50) {
@@ -1410,13 +1701,137 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
     if (cleanPath === '/api/anime/servers') {
       const bodyObj = parseRequestBody(options);
       const rawUrlOrId = String(bodyObj?.url || bodyObj?.animeId || '');
-      const epNum = String(bodyObj?.episodeNum || (rawUrlOrId.includes('__ep__') ? rawUrlOrId.split('__ep__')[1] : '1'));
-      const slugCandidate = rawUrlOrId.includes('__ep__')
-        ? rawUrlOrId.split('__ep__')[0]
-        : (!/^\d+$/.test(String(bodyObj?.animeId || '')) ? String(bodyObj?.animeId || '') : '');
+      const animeTitle = String(bodyObj?.animeTitle || '').trim();
+      let epNum = String(bodyObj?.episodeNum || '');
+      if (!epNum) {
+        if (rawUrlOrId.includes('__ep__')) epNum = rawUrlOrId.split('__ep__')[1];
+        else {
+          const m = rawUrlOrId.match(/-episode-(\d+)/i);
+          epNum = m ? m[1] : '1';
+        }
+      }
 
-      if (slugCandidate && !slugCandidate.startsWith('search-')) {
-        const targetAnimeUrl = `https://animedar.net/anime-p/${slugCandidate.replace(/^\/+|\/+$/g, '')}/`;
+      const normalizeSlug = (t: string) =>
+        t
+          .toLowerCase()
+          .replace(/[:'".,!?()]/g, ' ')
+          .replace(/\s+/g, '-')
+          .replace(/-+/g, '-')
+          .replace(/^-+|-+$/g, '');
+
+      const slugCandidates: string[] = [];
+      const addSlug = (s: string) => {
+        const clean = s.replace(/^\/+|\/+$/g, '').trim();
+        if (clean && !/^\d+$/.test(clean) && !clean.startsWith('search-') && !slugCandidates.includes(clean)) {
+          slugCandidates.push(clean);
+        }
+      };
+
+      if (rawUrlOrId.includes('__ep__')) {
+        addSlug(rawUrlOrId.split('__ep__')[0]);
+      } else if (rawUrlOrId.startsWith('http') || rawUrlOrId.includes('/episode/')) {
+        addSlug(extractPrimarySlugClient(rawUrlOrId));
+      } else if (rawUrlOrId.includes('-episode-')) {
+        addSlug(rawUrlOrId.replace(/-episode-\d+.*$/i, ''));
+      }
+      if (bodyObj?.animeId && !/^\d+$/.test(String(bodyObj.animeId))) {
+        addSlug(String(bodyObj.animeId));
+      }
+      if (animeTitle) {
+        addSlug(normalizeSlug(animeTitle));
+      }
+
+      const scrapedServers: any[] = [];
+
+      const parseOkanimeEpisodeHtml = (okHtml: string) => {
+        if (!okHtml || (!okHtml.includes('setServer(') && !okHtml.includes('ep-link')) || typeof DOMParser === 'undefined') {
+          return;
+        }
+        const doc = new DOMParser().parseFromString(okHtml, 'text/html');
+        doc.querySelectorAll('[data-server]').forEach((el) => {
+          const rawServer = (el.getAttribute('data-server') || '').trim();
+          const clickAttr = el.getAttribute('@click') || el.getAttribute('x-on:click') || el.getAttribute('onclick') || '';
+          const urlMatch = clickAttr.match(/setServer\(['"]([^'"]+)['"]\)/i);
+          if (!urlMatch || !urlMatch[1]) return;
+          const embedUrl = urlMatch[1].replace(/\\u0026/g, '&').replace(/&amp;/g, '&').trim();
+          if (!embedUrl.startsWith('http')) return;
+          const lower = embedUrl.toLowerCase();
+          let serverName = rawServer || 'سيرفر';
+          if (lower.includes('share4max')) serverName = 'MegaMax';
+          else if (lower.includes('mega.nz')) serverName = 'Mega';
+          else if (lower.includes('uqload')) serverName = 'Uqload';
+          else if (lower.includes('sendvid')) serverName = 'Sendvid';
+          else if (lower.includes('mp4upload')) serverName = 'MP4Upload';
+          else if (lower.includes('ok.ru')) serverName = 'Ok.ru';
+          else if (lower.includes('drive.google')) serverName = 'Google Drive';
+          else if (lower.includes('yourupload')) serverName = 'YourUpload';
+          else if (lower.includes('mixdrop')) serverName = 'Mixdrop';
+          else if (lower.includes('vidoza')) serverName = 'Vidoza';
+          else if (lower.includes('filemoon')) serverName = 'Filemoon';
+          else if (lower.includes('dood') || lower.includes('d000d')) serverName = 'DoodStream';
+
+          const qText = (el.textContent || '').toUpperCase();
+          const quality = qText.includes('FHD') || qText.includes('1080') ? '1080p' : qText.includes('SD') ? '480p' : '720p';
+          if (!scrapedServers.some(s => s.url === embedUrl && s.category === 'watch')) {
+            scrapedServers.push({
+              serverName,
+              url: embedUrl,
+              type: 'iframe',
+              quality,
+              category: 'watch'
+            });
+          }
+        });
+
+        doc.querySelectorAll('a.ep-link[href^="http"], a[data-umami-event-host][href^="http"]').forEach((el) => {
+          const href = (el.getAttribute('href') || '').trim();
+          if (!href || href.includes('okanime.xyz')) return;
+          const hostAttr = (el.getAttribute('data-umami-event-host') || 'Download').trim();
+          const qText = (el.textContent || '').toUpperCase();
+          const quality = qText.includes('FHD') || qText.includes('1080') ? '1080p' : qText.includes('SD') ? '480p' : '720p';
+          if (!scrapedServers.some(s => s.url === href && s.category === 'download')) {
+            scrapedServers.push({
+              serverName: hostAttr,
+              url: href,
+              type: 'direct',
+              quality,
+              category: 'download'
+            });
+          }
+        });
+      };
+
+      // 1. المحاولة المباشرة على OkAnime
+      for (const sCandidate of slugCandidates) {
+        try {
+          const okEpUrl = `https://ww3.okanime.xyz/episode/${sCandidate}-episode-${epNum}`;
+          const okHtml = await fetchHtmlDirectInClient(okEpUrl);
+          parseOkanimeEpisodeHtml(okHtml);
+          if (scrapedServers.length > 0) break;
+        } catch {}
+      }
+
+      // 2. البحث بالاسم إذا لم يطابق المسار المباشر
+      if (scrapedServers.length === 0 && animeTitle && typeof DOMParser !== 'undefined') {
+        try {
+          const searchHtml = await fetchHtmlDirectInClient(`https://ww3.okanime.xyz/search?q=${encodeURIComponent(animeTitle)}`);
+          if (searchHtml) {
+            const sDoc = new DOMParser().parseFromString(searchHtml, 'text/html');
+            const firstHref = sDoc.querySelector('.anime-card a[href*="/anime/"]')?.getAttribute('href') || '';
+            const foundSlug = extractPrimarySlugClient(firstHref);
+            if (foundSlug) {
+              if (!slugCandidates.includes(foundSlug)) slugCandidates.unshift(foundSlug);
+              const okEpHtml = await fetchHtmlDirectInClient(`https://ww3.okanime.xyz/episode/${foundSlug}-episode-${epNum}`);
+              parseOkanimeEpisodeHtml(okEpHtml);
+            }
+          }
+        } catch {}
+      }
+
+      // 3. الدمج التكميلي من animedar عند قلة السيرفرات
+      if (scrapedServers.length < 4 && slugCandidates.length > 0) {
+        const cleanSlug = slugCandidates[0];
+        const targetAnimeUrl = `https://animedar.net/anime-p/${cleanSlug}/`;
         try {
           const html = await fetchHtmlDirectInClient(targetAnimeUrl);
           if (html && html.includes('ServerList1') && typeof DOMParser !== 'undefined') {
@@ -1426,13 +1841,12 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
               doc.querySelector(`#ServerList1 .divv11[data-ep="${epNum}"]`) ||
               doc.querySelector('#ServerList1 .divv11');
             if (box) {
-              const scrapedServers: any[] = [];
               box.querySelectorAll('li').forEach((li) => {
                 const sType = (li.getAttribute('type') || li.getAttribute('data-type') || li.textContent || '').trim().toLowerCase();
                 const sId = (li.getAttribute('data') || li.getAttribute('data-id') || '').trim();
                 if (!sId) return;
                 let watchUrl = sId.startsWith('http') ? sId : '';
-                let serverName = sType.toUpperCase() || 'Server';
+                let serverName = sType.toUpperCase() || 'سيرفر';
                 if (!watchUrl) {
                   if (sType.includes('mega')) { serverName = 'Mega'; watchUrl = `https://mega.nz/embed/${sId}`; }
                   else if (sType.includes('ok')) { serverName = 'Ok.ru'; watchUrl = `https://www.ok.ru/videoembed/${sId}`; }
@@ -1443,37 +1857,56 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
                   else if (sType.includes('drive') || sType.includes('gdrive')) { serverName = 'Google Drive'; watchUrl = `https://drive.google.com/file/d/${sId.split('/')[0]}/preview`; }
                 }
                 if (watchUrl) {
-                  scrapedServers.push({
-                    serverName,
-                    url: watchUrl,
-                    type: 'iframe',
-                    quality: '1080p',
-                    category: 'watch'
-                  });
-                  scrapedServers.push({
-                    serverName,
-                    url: watchUrl,
-                    type: 'direct',
-                    quality: '1080p',
-                    category: 'download'
-                  });
+                  if (!scrapedServers.some(s => s.url === watchUrl && s.category === 'watch')) {
+                    scrapedServers.push({
+                      serverName,
+                      url: watchUrl,
+                      type: 'iframe',
+                      quality: '1080p',
+                      category: 'watch'
+                    });
+                  }
+                  if (!scrapedServers.some(s => s.url === watchUrl && s.category === 'download')) {
+                    scrapedServers.push({
+                      serverName,
+                      url: watchUrl,
+                      type: 'direct',
+                      quality: '1080p',
+                      category: 'download'
+                    });
+                  }
                 }
               });
-              if (scrapedServers.length > 0) {
-                return createSimulatedResponse({
-                  success: true,
-                  data: scrapedServers
-                });
-              }
             }
           }
         } catch {}
       }
 
+      if (scrapedServers.length > 0) {
+        const scoreSrv = (srv: any) => {
+          const n = (srv.serverName || '').toLowerCase();
+          const u = (srv.url || '').toLowerCase();
+          if (n.includes('mega') && !n.includes('megamax') && !u.includes('share4max')) return 100;
+          if (n.includes('sendvid') || u.includes('sendvid')) return 95;
+          if (n.includes('mp4upload') || u.includes('mp4upload')) return 90;
+          if (n.includes('drive') || u.includes('drive.google')) return 85;
+          if (n.includes('ok.ru') || u.includes('ok.ru')) return 80;
+          if (n.includes('uqload') || u.includes('uqload')) return 75;
+          if (n.includes('megamax') || u.includes('share4max')) return 40;
+          return 55;
+        };
+        const watches = scrapedServers.filter(s => s.category !== 'download').sort((a, b) => scoreSrv(b) - scoreSrv(a));
+        const dls = scrapedServers.filter(s => s.category === 'download').sort((a, b) => scoreSrv(b) - scoreSrv(a));
+        return createSimulatedResponse({
+          success: true,
+          data: [...watches, ...dls]
+        });
+      }
+
       return createSimulatedResponse({
         success: false,
         data: [],
-        message: 'تعذر العثور على سيرفرات صالحة حالياً عند غياب الخادم.',
+        message: 'لا تتوفر خيارات مشاهدة لهذه الحلقة حالياً.'
       });
     }
 
@@ -1494,7 +1927,7 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
 
       return createSimulatedResponse({
         success: false,
-        message: 'يتطلب فك تشفير هذا السيرفر الاتصال بخادم الاستخراج.',
+        message: 'تعذر تجهيز البث المباشر لهذا الخيار.'
       });
     }
 
@@ -1551,23 +1984,13 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
     }
 
     if (cleanPath === '/api/ai/chat') {
-      const bodyObj = parseRequestBody(options);
-      const userMsg = String(bodyObj?.message || '').trim();
-      const lowerMsg = userMsg.toLowerCase();
-
-      let reply = `أهلاً بك يا بطل الأوتاكو! ✨ بخصوص سؤالك حول "${userMsg || 'عالم الأنمي'}":\n\n`;
-      if (lowerMsg.includes('اقترح') || lowerMsg.includes('ترشيح') || lowerMsg.includes('أنمي') || lowerMsg.includes('انمي')) {
-        reply += `إليك أقوى الترشيحات الأسطورية التي أنصحك بمشاهدتها فوراً في التطبيق:\n1. **Solo Leveling (الارتقاء المنفرد)**: أكشن وفانتازيا حماسية بتقييم 8.9 ⭐\n2. **Attack on Titan (هجوم العمالقة)**: ملحمة درامية وتاريخية متكاملة بتقييم 9.1 ⭐\n3. **Jujutsu Kaisen**: قتالات ساحرة وتحريك سينمائي مذهل من استوديو MAPPA ⭐\n4. **Demon Slayer (قاتل الشياطين)**: قصة مؤثرة ومؤثرات بصرية خارقة ⭐\n\nيمكنك النقر على أي منها في قسم البحث أو الصفحة الرئيسية لبدء المشاهدة فوراً!`;
-      } else if (lowerMsg.includes('متجر') || lowerMsg.includes('نقاط') || lowerMsg.includes('اوتاكو')) {
-        reply += `يمكنك كسب نقاط الأوتاكو (OP) عبر:\n• خوض التحديات في **ساحة ألعاب الأوتاكو (Otaku Arena)**\n• توثيق الأنميات التي شاهدتها في ملفك الشخصي\n• المشاركة في **المجتمع وغرف الدردشة**\n\nوبعدها يمكنك شراء الألقاب والإطارات الملكية وعناصر الموسم الخاضعة للتقييم الحي في المتجر!`;
-      } else {
-        reply += `أنا مساعدك الذكي في **أنمي MOD**! 🌟 أعمل معك مباشرة على الهاتف والموقع لترشيح الأنميات، شرح القصص والشخصيات، ومساعدتك في اختيار السيرفرات وتصدر لوحة الشرف. اسألني عن أي أنمي أو شخصية تحبها!`;
-      }
-
-      return createSimulatedResponse({
-        success: true,
-        reply
-      });
+      return createSimulatedResponse(
+        {
+          success: false,
+          message: 'الدردشة الحية تتطلب الاتصال بخادم الذكاء الاصطناعي حالياً.',
+        },
+        503,
+      );
     }
 
     if (cleanPath === '/api/ai/quiz') {
@@ -1718,9 +2141,9 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
   return null;
 }
 
-function createSimulatedResponse(data: any): Response {
+function createSimulatedResponse(data: any, status = 200): Response {
   return new Response(JSON.stringify(data), {
-    status: 200,
+    status,
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
       'X-Simulated-Frontend-Proxy': 'true'

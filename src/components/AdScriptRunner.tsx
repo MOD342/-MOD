@@ -9,51 +9,49 @@ export default function AdScriptRunner({ scriptCode, compact = false }: AdScript
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!containerRef.current || !scriptCode) return;
+    const container = containerRef.current;
+    if (!container || !scriptCode) return;
 
-    // Clear previous elements
-    containerRef.current.innerHTML = '';
+    container.innerHTML = '';
 
     try {
-      // Create a document fragment to parse the HTML and extract scripts
       const range = document.createRange();
       const fragment = range.createContextualFragment(scriptCode);
 
-      // Extract scripts
-      const scripts = Array.from(fragment.querySelectorAll('script'));
+      const childNodes = Array.from(fragment.childNodes);
 
-      // Copy other non-script HTML elements (e.g., ins, iframe, div) to the DOM first
-      const nonScripts = Array.from(fragment.childNodes).filter(node => node.nodeName !== 'SCRIPT');
-      nonScripts.forEach(node => {
-        containerRef.current?.appendChild(node.cloneNode(true));
-      });
+      // Append nodes in exact source order so container divs (e.g. NativeBanner) & scripts stay paired
+      childNodes.forEach(node => {
+        if (node.nodeName === 'SCRIPT') {
+          const oldScript = node as HTMLScriptElement;
+          const newScript = document.createElement('script');
 
-      // Rebuild and append each script element sequentially to force browser compilation & execution
-      scripts.forEach(oldScript => {
-        const newScript = document.createElement('script');
+          Array.from(oldScript.attributes).forEach(attr => {
+            newScript.setAttribute(attr.name, attr.value);
+          });
 
-        // Copy all attributes (e.g. src, data-zone, async, defer, type, data-cfasync)
-        Array.from(oldScript.attributes).forEach(attr => {
-          newScript.setAttribute(attr.name, attr.value);
-        });
+          // Preserve strict execution order for atOptions + invoke.js bundles
+          if (!oldScript.hasAttribute('async')) {
+            newScript.async = false;
+          }
 
-        // Set inner content/inline script source (supports Adsterra atOptions, Google, A-Ads, etc.)
-        if (oldScript.textContent) {
-          newScript.textContent = oldScript.textContent;
+          if (oldScript.textContent) {
+            newScript.textContent = oldScript.textContent;
+          }
+
+          container.appendChild(newScript);
+        } else {
+          container.appendChild(node.cloneNode(true));
         }
-
-        containerRef.current?.appendChild(newScript);
       });
     } catch (e) {
       console.error('Failed to dynamically evaluate ad script code:', e);
-      if (containerRef.current) {
-        containerRef.current.innerHTML = scriptCode;
-      }
+      container.innerHTML = scriptCode;
     }
 
     return () => {
-      if (containerRef.current) {
-        containerRef.current.innerHTML = '';
+      if (container) {
+        container.innerHTML = '';
       }
     };
   }, [scriptCode]);
@@ -61,11 +59,10 @@ export default function AdScriptRunner({ scriptCode, compact = false }: AdScript
   return (
     <div
       ref={containerRef}
-      className={`w-full flex flex-col items-center justify-center overflow-hidden text-zinc-100 mx-auto rounded-xl ${
-        compact ? 'min-h-[50px] max-w-[320px]' : 'min-h-[90px] max-w-[340px]'
+      className={`w-full flex flex-col items-center justify-center overflow-x-hidden overflow-y-auto text-zinc-100 mx-auto rounded-xl ${
+        compact ? 'min-h-[50px] max-w-[320px]' : 'min-h-[160px] max-w-3xl'
       }`}
       id="dynamic_ad_script_container"
     />
   );
 }
-

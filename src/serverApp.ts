@@ -68,9 +68,65 @@ export function createApiExpressApp(): express.Express {
     }
   });
 
-  app.use(express.json());
+  app.set('trust proxy', 1);
+  app.use(express.json({ limit: '1mb' }));
+
+  // Lightweight high-concurrency rate limiter & socket timeout guard for /api
+  const ipRateWindow = new Map<string, { count: number; resetAt: number }>();
+  const RATE_WINDOW_MS = 60_000;
+  const RATE_MAX_REQUESTS = 240;
+
+  if (!process.env.VERCEL) {
+    const gcTimer = setInterval(() => {
+      const now = Date.now();
+      for (const [ip, rec] of ipRateWindow.entries()) {
+        if (now > rec.resetAt) ipRateWindow.delete(ip);
+      }
+    }, 60_000);
+    if (typeof (gcTimer as any).unref === 'function') {
+      (gcTimer as any).unref();
+    }
+  }
 
   app.use('/api', (req: Request, res: Response, next: NextFunction) => {
+    const isMediaProxy =
+      req.path.includes('download-stream') ||
+      req.path.includes('play-stream') ||
+      req.path.includes('stream-proxy') ||
+      req.path === '/anime/download';
+
+    if (!isMediaProxy && req.path !== '/health') {
+      const clientIp = String(req.ip || req.headers['x-forwarded-for'] || 'unknown').split(',')[0].trim();
+      const now = Date.now();
+      let bucket = ipRateWindow.get(clientIp);
+      if (!bucket || now > bucket.resetAt) {
+        bucket = { count: 1, resetAt: now + RATE_WINDOW_MS };
+        if (ipRateWindow.size > 5000) {
+          const oldest = ipRateWindow.keys().next().value;
+          if (oldest !== undefined) ipRateWindow.delete(oldest);
+        }
+        ipRateWindow.set(clientIp, bucket);
+      } else {
+        bucket.count += 1;
+      }
+
+      if (bucket.count > RATE_MAX_REQUESTS) {
+        return res.status(429).json({
+          success: false,
+          message: 'تم تجاوز الحد المؤقت للطلبات، يرجى المحاولة بعد ثوانٍ قليلة.',
+        });
+      }
+
+      res.setTimeout(25_000, () => {
+        if (!res.headersSent) {
+          res.status(504).json({
+            success: false,
+            message: 'انتهت مهلة معالجة الطلب، يرجى إعادة المحاولة.',
+          });
+        }
+      });
+    }
+
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');

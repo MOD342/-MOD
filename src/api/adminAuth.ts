@@ -5,6 +5,20 @@ import firebaseConfig from '../../firebase-applet-config.json';
 import { serverCache } from '../services/cacheService';
 import { schedulerService } from '../services/schedulerService';
 
+const RESOLVED_FIREBASE_PROJECT_ID = (
+  process.env.FIREBASE_PROJECT_ID ||
+  process.env.VITE_FIREBASE_PROJECT_ID ||
+  firebaseConfig.projectId ||
+  ''
+).trim();
+
+const RESOLVED_FIREBASE_DATABASE_ID = (
+  process.env.FIREBASE_DATABASE_ID ||
+  process.env.VITE_FIREBASE_DATABASE_ID ||
+  firebaseConfig.firestoreDatabaseId ||
+  ''
+).trim();
+
 export type RoleLevel = 'owner' | 'admin' | 'moderator' | 'user';
 
 export interface ModPermissions {
@@ -52,13 +66,30 @@ let adminApp: App | null = null;
 
 export async function getFirebaseAdminApp(): Promise<App> {
   if (!adminApp) {
-    const { initializeApp, getApps } = await import('firebase-admin/app');
+    const { initializeApp, getApps, cert } = await import('firebase-admin/app');
     const existingApps = getApps();
     if (existingApps.length > 0 && existingApps[0]) {
       adminApp = existingApps[0];
     } else {
+      let credential: any = undefined;
+      const rawServiceAccount = process.env.FIREBASE_SERVICE_ACCOUNT;
+      if (rawServiceAccount) {
+        try {
+          credential = cert(JSON.parse(rawServiceAccount));
+        } catch (e: any) {
+          console.warn('[FirebaseAdmin] Invalid FIREBASE_SERVICE_ACCOUNT JSON:', e?.message);
+        }
+      } else if (process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
+        credential = cert({
+          projectId: RESOLVED_FIREBASE_PROJECT_ID,
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+          privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+        });
+      }
+
       adminApp = initializeApp({
-        projectId: firebaseConfig.projectId,
+        projectId: RESOLVED_FIREBASE_PROJECT_ID,
+        ...(credential ? { credential } : {}),
       });
     }
   }
@@ -69,8 +100,8 @@ export async function getAdminDb() {
   const app = await getFirebaseAdminApp();
   const { getFirestore: getAdminFirestore } = await import('firebase-admin/firestore');
   try {
-    if (firebaseConfig.firestoreDatabaseId) {
-      return getAdminFirestore(app, firebaseConfig.firestoreDatabaseId);
+    if (RESOLVED_FIREBASE_DATABASE_ID && RESOLVED_FIREBASE_DATABASE_ID !== '(default)') {
+      return getAdminFirestore(app, RESOLVED_FIREBASE_DATABASE_ID);
     }
     return getAdminFirestore(app);
   } catch {
@@ -141,7 +172,7 @@ async function verifyFirebaseIdTokenWithCerts(idToken: string): Promise<{
   }
 
   const nowSec = Math.floor(Date.now() / 1000);
-  const projectId = firebaseConfig.projectId;
+  const projectId = RESOLVED_FIREBASE_PROJECT_ID;
   if (payload?.aud !== projectId) {
     throw new Error('Invalid Firebase token audience');
   }
@@ -224,7 +255,11 @@ async function fetchFirestoreDocServerSide(
   idToken: string
 ): Promise<Record<string, any> | null> {
   // 1. Try Firebase Admin SDK Firestore first if credentials exist in environment
-  if (process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.FIREBASE_SERVICE_ACCOUNT) {
+  if (
+    process.env.GOOGLE_APPLICATION_CREDENTIALS ||
+    process.env.FIREBASE_SERVICE_ACCOUNT ||
+    (process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY)
+  ) {
     try {
       const db = await getAdminDb();
       const snap = await db.collection(collectionPath).doc(docId).get();
@@ -238,8 +273,8 @@ async function fetchFirestoreDocServerSide(
   }
 
   // 2. Authenticated Firestore REST API using the verified ID token
-  const projectId = firebaseConfig.projectId;
-  const dbId = firebaseConfig.firestoreDatabaseId || '(default)';
+  const projectId = RESOLVED_FIREBASE_PROJECT_ID;
+  const dbId = RESOLVED_FIREBASE_DATABASE_ID || '(default)';
   const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
     projectId
   )}/databases/${encodeURIComponent(dbId)}/documents/${encodeURIComponent(

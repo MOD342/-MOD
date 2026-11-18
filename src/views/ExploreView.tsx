@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
-import { Search, Filter, Star, Loader2, ChevronDown, Calendar, Tv, Layers } from 'lucide-react';
+import { Search, Filter, Star, Loader2, ChevronDown, Calendar, Tv, Layers, RefreshCw, AlertCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { clientCache } from '../utils/clientCache';
 import { cleanAnimeTitle } from '../utils/animeTitleCleaner';
+import PullToRefresh from '../components/PullToRefresh';
 import {
   useGlobalLayoutMode,
   LayoutModeToggleButton,
@@ -53,6 +54,7 @@ const GENRE_ARABIC_MAP: Record<string, string> = {
 interface ExploreViewProps {
   onAnimeClick: (id: string) => void;
   initialQuery?: string;
+  onNavigate?: (view: string) => void;
 }
 
 const CustomSelect = ({ label, value, options, onChange }: any) => {
@@ -103,12 +105,14 @@ const CustomSelect = ({ label, value, options, onChange }: any) => {
   );
 };
 
-export default function ExploreView({ onAnimeClick, initialQuery }: ExploreViewProps) {
+export default function ExploreView({ onAnimeClick, initialQuery, onNavigate }: ExploreViewProps) {
   const [query, setQuery] = useState(initialQuery || '');
   const [debouncedQuery, setDebouncedQuery] = useState(initialQuery || '');
   const [results, setResults] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [fetchError, setFetchError] = useState(false);
   const [page, setPage] = useState(1);
   const [hasNextPage, setHasNextPage] = useState(true);
   
@@ -160,7 +164,7 @@ export default function ExploreView({ onAnimeClick, initialQuery }: ExploreViewP
     fetchResults(true);
   }, [debouncedQuery, selectedGenres, minScore, status, year, orderBy, sortOrder]);
 
-  const fetchResults = async (reset: boolean = false) => {
+  const fetchResults = async (reset: boolean = false, forceBypass: boolean = false) => {
     const currentPage = reset ? 1 : page + 1;
     let url = `/api/anime/search?page=${currentPage}`;
     if (debouncedQuery) url += `&q=${encodeURIComponent(debouncedQuery)}`;
@@ -172,14 +176,19 @@ export default function ExploreView({ onAnimeClick, initialQuery }: ExploreViewP
     if (sortOrder) url += `&sort=${sortOrder}`;
 
     const cacheKey = `client_explore_results_v3_${url}`;
+    const networkUrl = forceBypass ? `${url}&bypass=true&_t=${Date.now()}` : url;
 
     if (reset) {
-      const cached = clientCache.get<any>(cacheKey);
-      if (cached && Array.isArray(cached.data)) {
-        setResults(cached.data || []);
+      setFetchError(false);
+      if (forceBypass) {
+        setRefreshing(true);
+      }
+      const cached = !forceBypass ? clientCache.get<any>(cacheKey) : null;
+      if (cached && Array.isArray(cached.data) && cached.data.length > 0) {
+        setResults(cached.data);
         setHasNextPage(cached.hasNextPage ?? false);
         setLoading(false);
-      } else {
+      } else if (!forceBypass) {
         setLoading(true);
       }
       setPage(1);
@@ -188,25 +197,34 @@ export default function ExploreView({ onAnimeClick, initialQuery }: ExploreViewP
     }
 
     try {
-      const res = await fetch(url);
+      const res = await fetch(networkUrl, forceBypass ? { cache: 'no-store' } : undefined);
       const data = await res.json();
-      if (data.success) {
+      if (data?.success && Array.isArray(data.data)) {
         if (reset) {
           setResults(data.data);
-          clientCache.set(cacheKey, {
-            data: data.data,
-            hasNextPage: data.pagination?.has_next_page || false
-          }, 30 * 60 * 1000);
+          if (data.data.length > 0) {
+            clientCache.set(cacheKey, {
+              data: data.data,
+              hasNextPage: data.pagination?.has_next_page || false
+            }, 30 * 60 * 1000);
+          }
         } else {
           setResults(prev => [...prev, ...data.data]);
         }
         setHasNextPage(data.pagination?.has_next_page || false);
+        setFetchError(false);
         if (!reset) setPage(currentPage);
+      } else if (reset && results.length === 0) {
+        setFetchError(true);
       }
     } catch (err) {
       console.error(err);
+      if (reset && results.length === 0) {
+        setFetchError(true);
+      }
     } finally {
       setLoading(false);
+      setRefreshing(false);
       setLoadingMore(false);
     }
   };
@@ -221,13 +239,16 @@ export default function ExploreView({ onAnimeClick, initialQuery }: ExploreViewP
   const isLargeGrid = layoutMode === 'grid2';
 
   return (
+    <PullToRefresh onRefresh={() => fetchResults(true, true)}>
     <div className="min-h-screen bg-black text-white pb-24" dir="rtl">
       <div className="max-w-7xl mx-auto">
         {/* شريط العنوان والبحث العلوي - غير ثابت ومدمج */}
         <div className="bg-black border-b border-white/5 px-3.5 md:px-5 py-3 space-y-2.5">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             <h1 className="font-black text-base md:text-lg text-white">استكشف الأنمي</h1>
-            <LayoutModeToggleButton mode={layoutMode} onToggle={cycleLayoutMode} />
+            <div className="flex items-center gap-2">
+              <LayoutModeToggleButton mode={layoutMode} onToggle={cycleLayoutMode} />
+            </div>
           </div>
 
           <div className="flex gap-2 items-center">
@@ -252,6 +273,22 @@ export default function ExploreView({ onAnimeClick, initialQuery }: ExploreViewP
 
           {/* شرائح الفلترة السريعة */}
           <div className="flex items-center gap-1.5 overflow-x-auto hide-scrollbar pb-0.5 pt-0.5">
+            {onNavigate && (
+              <>
+                <button
+                  onClick={() => onNavigate('top_anime')}
+                  className="px-3 py-1 rounded-lg text-[11px] font-black transition whitespace-nowrap cursor-pointer bg-amber-500/15 border border-amber-500/30 text-amber-300 hover:bg-amber-500/25"
+                >
+                  أفضل الأنميات
+                </button>
+                <button
+                  onClick={() => onNavigate('anime_movies')}
+                  className="px-3 py-1 rounded-lg text-[11px] font-black transition whitespace-nowrap cursor-pointer bg-rose-500/15 border border-rose-500/30 text-rose-300 hover:bg-rose-500/25"
+                >
+                  أفلام الأنمي
+                </button>
+              </>
+            )}
             <button
               onClick={() => {
                 setQuery('');
@@ -542,7 +579,7 @@ export default function ExploreView({ onAnimeClick, initialQuery }: ExploreViewP
                       key={`search-${anime._id}-${idx}`}
                       onClick={() => onAnimeClick(anime._id)}
                       onMouseEnter={() => clientCache.prefetchDetails(anime._id)}
-                      className="cursor-pointer group relative aspect-[3/4] overflow-hidden bg-neutral-950 border-b border-l border-white/10"
+                      className="theme-keep-dark cursor-pointer group relative aspect-[3/4] overflow-hidden bg-neutral-950 border-b border-l border-white/10"
                     >
                       <img 
                         src={anime.posterUrl || 'https://via.placeholder.com/300x400?text=Anime'} 
@@ -594,14 +631,36 @@ export default function ExploreView({ onAnimeClick, initialQuery }: ExploreViewP
               )}
             </>
           ) : (
-            <div className="text-center py-16 m-4 bg-neutral-900/20 rounded-2xl border border-neutral-800/40">
-              <Search className="mx-auto text-neutral-600 mb-3" size={36} />
-              <h3 className="text-sm font-bold text-neutral-400 mb-1">لم يتم العثور على نتائج</h3>
-              <p className="text-xs text-neutral-500">جرب البحث بكلمات أخرى أو تغيير الفلاتر</p>
+            <div className="text-center py-16 m-4 bg-neutral-900/20 rounded-2xl border border-neutral-800/40 space-y-3">
+              {fetchError ? (
+                <AlertCircle className="mx-auto text-rose-500" size={36} />
+              ) : (
+                <Search className="mx-auto text-neutral-600" size={36} />
+              )}
+              <div className="space-y-1">
+                <h3 className="text-sm font-bold text-neutral-300">
+                  {fetchError ? 'تعذر جلب البيانات من الخادم' : 'لم يتم العثور على نتائج'}
+                </h3>
+                <p className="text-xs text-neutral-500">
+                  {fetchError
+                    ? 'تحقق من اتصالك بالإنترنت ثم أعد المحاولة'
+                    : 'جرب البحث بكلمات أخرى أو تغيير الفلاتر'}
+                </p>
+              </div>
+              {fetchError && (
+                <button
+                  onClick={() => fetchResults(true, true)}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-black transition active:scale-95 cursor-pointer"
+                >
+                  <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+                  <span>إعادة المحاولة</span>
+                </button>
+              )}
             </div>
           )}
         </div>
       </div>
     </div>
+    </PullToRefresh>
   );
 }

@@ -1,5 +1,5 @@
 import { db, auth } from '../firebase';
-import { doc, getDoc, setDoc, deleteDoc, collection, query, getDocs, serverTimestamp, addDoc, updateDoc, orderBy } from 'firebase/firestore';
+import { doc, getDoc, setDoc, deleteDoc, collection, query, getDocs, getCountFromServer, serverTimestamp, addDoc, updateDoc, orderBy } from 'firebase/firestore';
 import { OperationType, handleFirestoreError } from '../firebaseUtils';
 
 export type RoleLevel = 'owner' | 'admin' | 'moderator' | 'user';
@@ -204,27 +204,29 @@ export const moderationService = {
 
   getAppStats: async (): Promise<any> => {
     try {
-       const usersQuery = await getDocs(query(collection(db, 'users')));
-       const rolesQuery = await getDocs(query(collection(db, 'globalRoles')));
-       const bansQuery = await getDocs(query(collection(db, 'bannedUsers')));
-       const reportsQuery = await getDocs(query(collection(db, 'reports')));
-       const commentsQuery = await getDocs(query(collection(db, 'comments')));
-       
-       return {
-         totalUsers: usersQuery.size,
-         totalRoles: rolesQuery.size,
-         totalBans: bansQuery.size,
-         totalReports: reportsQuery.size,
-         totalComments: commentsQuery.size
-       };
+      const [usersCount, rolesCount, bansCount, reportsCount, commentsCount] = await Promise.all([
+        getCountFromServer(collection(db, 'users')),
+        getCountFromServer(collection(db, 'globalRoles')),
+        getCountFromServer(collection(db, 'bannedUsers')),
+        getCountFromServer(collection(db, 'reports')),
+        getCountFromServer(collection(db, 'comments')),
+      ]);
+
+      return {
+        totalUsers: usersCount.data().count,
+        totalRoles: rolesCount.data().count,
+        totalBans: bansCount.data().count,
+        totalReports: reportsCount.data().count,
+        totalComments: commentsCount.data().count,
+      };
     } catch (error: any) {
        console.warn("[moderationService] Could not aggregate real-time app stats (offline fallback active):", error?.message || error);
        return {
-         totalUsers: 125,
-         totalRoles: 3,
-         totalBans: 2,
+         totalUsers: 0,
+         totalRoles: 0,
+         totalBans: 0,
          totalReports: 0,
-         totalComments: 450
+         totalComments: 0
        };
     }
   },

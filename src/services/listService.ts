@@ -1,6 +1,7 @@
 import { db, auth } from '../firebase';
-import { collection, doc, getDocs, getDoc, setDoc, updateDoc, deleteDoc, query, serverTimestamp, increment } from 'firebase/firestore';
+import { collection, doc, getDocs, getDocsFromServer, getDoc, setDoc, updateDoc, deleteDoc, serverTimestamp, increment } from 'firebase/firestore';
 import { handleFirestoreError, OperationType } from '../firebaseUtils';
+import { clientCache } from '../utils/clientCache';
 
 function isAuthenticatedOwner(id: string): boolean {
   return Boolean(auth.currentUser && auth.currentUser.uid === id);
@@ -33,6 +34,7 @@ export type MainListStatus = 'watching' | 'completed' | 'plan_to_watch' | 'on_ho
 
 export interface AnimeEntry {
   id: string; // Document ID is animeId
+  animeId?: string;
   title: string;
   posterUrl: string;
   releaseYear: string;
@@ -80,11 +82,151 @@ export function getAnimeRewards(episodesCount: number) {
 const customListsCache = new Map<string, { data: CustomList[]; expireAt: number }>();
 const animeEntriesCache = new Map<string, { data: AnimeEntry[]; expireAt: number }>();
 const appRatingCache = new Map<string, { data: { score: number; count: number }; expireAt: number }>();
+const statsReconcileThrottle = new Map<string, number>();
 
 // In-flight promise caches to completely deduplicate parallel reads
 const customListsPromises = new Map<string, Promise<CustomList[]>>();
 const animeEntriesPromises = new Map<string, Promise<AnimeEntry[]>>();
 const appRatingPromises = new Map<string, Promise<{ score: number; count: number }>>();
+
+export const ACTIVE_LIST_STATUSES: MainListStatus[] = [
+  'watching',
+  'completed',
+  'plan_to_watch',
+  'on_hold',
+  'dropped',
+];
+
+export function isActiveLibraryEntry(entry?: Partial<AnimeEntry> | null): boolean {
+  if (!entry) return false;
+  if (entry.status && ACTIVE_LIST_STATUSES.includes(entry.status)) return true;
+  if (entry.customLists && Object.values(entry.customLists).some(Boolean)) return true;
+  return false;
+}
+
+export function computeLibraryStats(entries: AnimeEntry[], userData?: any) {
+  const statusCounts = {
+    watching: 0,
+    completed: 0,
+    plan_to_watch: 0,
+    on_hold: 0,
+    dropped: 0,
+  };
+  let customOnlyCount = 0;
+  let sumEpisodes = 0;
+  const scores: number[] = [];
+  const genreCounts: Record<string, number> = {};
+
+  entries.forEach((e: any) => {
+    const status = e.status as MainListStatus;
+    const hasMainStatus = Boolean(status && status in statusCounts);
+    const hasCustomList = Boolean(e.customLists && Object.values(e.customLists).some(Boolean));
+
+    if (hasMainStatus) {
+      statusCounts[status as keyof typeof statusCounts] += 1;
+    } else if (hasCustomList) {
+      customOnlyCount += 1;
+    }
+
+    if (status === 'completed') {
+      const eps = Number(e.episodesCount) || Number(e.progress) || (Array.isArray(e.watchedEpisodes) ? e.watchedEpisodes.length : 0) || 12;
+      sumEpisodes += eps;
+    } else if (Array.isArray(e.watchedEpisodes) && e.watchedEpisodes.length > 0) {
+      sumEpisodes += e.watchedEpisodes.length;
+    } else if (typeof e.progress === 'number' && e.progress > 0) {
+      sumEpisodes += e.progress;
+    }
+
+    if (typeof e.score === 'number' && e.score > 0) {
+      scores.push(e.score);
+    }
+
+    let gs: string[] = [];
+    if (Array.isArray(e.genres)) gs = e.genres;
+    else if (typeof e.genres === 'string') gs = e.genres.split(',').map((s: string) => s.trim());
+    else if (e.animeDetails?.genres) {
+      gs = Array.isArray(e.animeDetails.genres)
+        ? e.animeDetails.genres
+        : String(e.animeDetails.genres).split(',').map((s: string) => s.trim());
+    }
+    gs.forEach((g) => {
+      if (g) genreCounts[g] = (genreCounts[g] || 0) + 1;
+    });
+  });
+
+  const mainListCount =
+    statusCounts.watching +
+    statusCounts.completed +
+    statusCounts.plan_to_watch +
+    statusCounts.on_hold +
+    statusCounts.dropped;
+
+  const totalListCount = mainListCount + customOnlyCount;
+  const avgScore = scores.length > 0 ? (scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1) : '0.0';
+  const totalEpisodesWatched = Math.max(sumEpisodes, Number(userData?.totalEpisodesWatched || 0));
+  const watchDays = ((totalEpisodesWatched * 24) / 1440).toFixed(1);
+
+  const favoriteGenres = Object.entries(genreCounts)
+    .map(([name, count]) => ({
+      name,
+      count,
+      percent: Math.round((count / Math.max(1, totalListCount)) * 100),
+    }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 4);
+
+  return {
+    listCount: statusCounts,
+    customOnlyCount,
+    mainListCount,
+    totalListCount,
+    completedAnimeCount: statusCounts.completed,
+    sumEpisodesFromEntries: sumEpisodes,
+    totalEpisodesWatched,
+    avgScore,
+    watchDays,
+    favoriteGenres,
+  };
+}
+
+function normalizeEntry(docId: string, raw: any): AnimeEntry {
+  const watchedArr = Array.isArray(raw?.watchedEpisodes)
+    ? Array.from(new Set<number>(raw.watchedEpisodes.map((n: any) => Number(n)).filter((n: number) => !isNaN(n) && n > 0))).sort((a, b) => a - b)
+    : [];
+  const rawStatus = String(raw?.status || 'none') as MainListStatus;
+  const normalizedStatus: MainListStatus = ACTIVE_LIST_STATUSES.includes(rawStatus) ? rawStatus : 'none';
+  const episodesCount = typeof raw?.episodesCount === 'number' ? raw.episodesCount : (parseInt(String(raw?.episodesCount || '0'), 10) || 0);
+  const progress =
+    typeof raw?.progress === 'number' && raw.progress > 0
+      ? raw.progress
+      : normalizedStatus === 'completed' && episodesCount > 0
+      ? episodesCount
+      : watchedArr.length;
+
+  return {
+    ...raw,
+    id: docId,
+    animeId: raw?.animeId || docId,
+    title: raw?.title && raw.title !== 'Unknown Title' ? raw.title : (raw?.animeTitle || `أنمي #${docId}`),
+    posterUrl: raw?.posterUrl || '',
+    releaseYear: raw?.releaseYear ? String(raw.releaseYear) : '',
+    status: normalizedStatus,
+    customLists: raw?.customLists && typeof raw.customLists === 'object' ? raw.customLists : {},
+    watchedEpisodes: watchedArr,
+    episodesCount: episodesCount > 0 ? episodesCount : undefined,
+    progress,
+    addedAt: raw?.addedAt || raw?.updatedAt || null,
+    updatedAt: raw?.updatedAt || raw?.addedAt || null,
+  } as AnimeEntry;
+}
+
+function notifyLibraryUpdated(userId: string, animeId?: string) {
+  if (typeof window !== 'undefined') {
+    try {
+      window.dispatchEvent(new CustomEvent('otaku:library-updated', { detail: { userId, animeId } }));
+    } catch {}
+  }
+}
 
 export const listService = {
   getCustomLists: async (id: string): Promise<CustomList[]> => {
@@ -104,12 +246,13 @@ export const listService = {
         try {
           const q = collection(db, 'users', id, 'customLists');
           const snapshot = await getDocs(q);
-          const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as CustomList));
-          customListsCache.set(id, { data, expireAt: Date.now() + 15 * 1000 }); // 15 seconds cache
+          const data = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as CustomList));
+          customListsCache.set(id, { data, expireAt: Date.now() + 15 * 1000 });
+          clientCache.set(`client_mylists_custom_${id}`, data, 60 * 60 * 1000);
           return data;
         } catch (e) {
           handleFirestoreError(e, OperationType.LIST, `users/${id}/customLists`);
-          return [];
+          throw e;
         } finally {
           customListsPromises.delete(id);
         }
@@ -126,6 +269,7 @@ export const listService = {
       lists.push({ id: listId, name, createdAt: new Date().toISOString() });
       writeLocalJson(`local_custom_lists_${id}`, lists);
       customListsCache.delete(id);
+      notifyLibraryUpdated(id);
       return listId;
     }
 
@@ -136,8 +280,8 @@ export const listService = {
         name,
         createdAt: serverTimestamp(),
       });
-      // Invalidate cache
       customListsCache.delete(id);
+      notifyLibraryUpdated(id);
       return listId;
     } catch (e) {
       handleFirestoreError(e, OperationType.CREATE, `users/${id}/customLists`);
@@ -150,13 +294,14 @@ export const listService = {
       const lists = readLocalJson<CustomList[]>(`local_custom_lists_${id}`, []);
       writeLocalJson(`local_custom_lists_${id}`, lists.filter(l => l.id !== listId));
       customListsCache.delete(id);
+      notifyLibraryUpdated(id);
       return;
     }
 
     try {
       await deleteDoc(doc(db, 'users', id, 'customLists', listId));
-      // Invalidate cache
       customListsCache.delete(id);
+      notifyLibraryUpdated(id);
     } catch (e) {
       handleFirestoreError(e, OperationType.DELETE, `users/${id}/customLists/${listId}`);
       throw e;
@@ -165,7 +310,8 @@ export const listService = {
 
   getAnimeEntries: async (id: string): Promise<AnimeEntry[]> => {
     if (!isAuthenticatedOwner(id)) {
-      return readLocalJson<AnimeEntry[]>(`local_anime_entries_${id}`, []);
+      const local = readLocalJson<AnimeEntry[]>(`local_anime_entries_${id}`, []);
+      return local.map((item) => normalizeEntry(item.id, item));
     }
 
     const now = Date.now();
@@ -180,12 +326,13 @@ export const listService = {
         try {
           const q = collection(db, 'users', id, 'animeEntries');
           const snapshot = await getDocs(q);
-          const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as AnimeEntry));
-          animeEntriesCache.set(id, { data, expireAt: Date.now() + 10 * 1000 }); // 10 seconds cache
+          const data = snapshot.docs.map(d => normalizeEntry(d.id, d.data()));
+          animeEntriesCache.set(id, { data, expireAt: Date.now() + 10 * 1000 });
+          clientCache.set(`client_mylists_entries_${id}`, data, 60 * 60 * 1000);
           return data;
         } catch (e) {
           handleFirestoreError(e, OperationType.LIST, `users/${id}/animeEntries`);
-          return [];
+          throw e;
         } finally {
           animeEntriesPromises.delete(id);
         }
@@ -193,6 +340,38 @@ export const listService = {
       animeEntriesPromises.set(id, activePromise);
     }
     return activePromise;
+  },
+
+  reconcileUserStats: async (userId: string, entries?: AnimeEntry[], currentUserData?: any, force = false): Promise<void> => {
+    if (!isAuthenticatedOwner(userId)) return;
+    const now = Date.now();
+    const lastRun = statsReconcileThrottle.get(userId) || 0;
+    if (!force && now - lastRun < 15000) return;
+    statsReconcileThrottle.set(userId, now);
+
+    try {
+      const resolvedEntries = entries || await listService.getAnimeEntries(userId);
+      const userRef = doc(db, 'users', userId);
+      const existingData = currentUserData || (await getDoc(userRef)).data();
+      if (!existingData) return;
+
+      const computed = computeLibraryStats(resolvedEntries, existingData);
+      const updates: Record<string, any> = {};
+
+      if ((existingData.listCount ?? -1) !== computed.totalListCount) {
+        updates.listCount = computed.totalListCount;
+      }
+      if ((existingData.completedAnimeCount ?? -1) !== computed.completedAnimeCount) {
+        updates.completedAnimeCount = computed.completedAnimeCount;
+      }
+      if ((existingData.totalEpisodesWatched ?? 0) < computed.sumEpisodesFromEntries) {
+        updates.totalEpisodesWatched = computed.sumEpisodesFromEntries;
+      }
+
+      if (Object.keys(updates).length > 0) {
+        await updateDoc(userRef, updates);
+      }
+    } catch {}
   },
 
   getAnimeAppRating: async (animeId: string): Promise<{score: number, count: number}> => {
@@ -211,10 +390,10 @@ export const listService = {
           const snap = await getDocs(q);
           let total = 0;
           let count = 0;
-          snap.forEach(doc => {
-            const d = doc.data();
-            if (typeof d.score === 'number' && d.score > 0) {
-              total += d.score;
+          snap.forEach(d => {
+            const val = d.data();
+            if (typeof val.score === 'number' && val.score > 0) {
+              total += val.score;
               count++;
             }
           });
@@ -222,11 +401,11 @@ export const listService = {
             score: count > 0 ? Number((total / count).toFixed(2)) : 0,
             count
           };
-          appRatingCache.set(animeId, { data, expireAt: Date.now() + 5 * 60 * 1000 }); // 5 minutes cache
+          appRatingCache.set(animeId, { data, expireAt: Date.now() + 5 * 60 * 1000 });
           return data;
         } catch (error) {
-           console.error("Error getting app rating:", error);
-           return { score: 0, count: 0 };
+          console.error("Error getting app rating:", error);
+          return { score: 0, count: 0 };
         } finally {
           appRatingPromises.delete(animeId);
         }
@@ -261,11 +440,11 @@ export const listService = {
       const nowIso = new Date().toISOString();
       const updatedEntry: AnimeEntry = {
         id: animeId,
-        title: data.title || existing?.title || 'Unknown Title',
+        title: data.title || existing?.title || `أنمي #${animeId}`,
         posterUrl: data.posterUrl || existing?.posterUrl || '',
         releaseYear: data.releaseYear || existing?.releaseYear || '',
-        status: data.status || existing?.status || 'none',
-        customLists: data.customLists || existing?.customLists || {},
+        status: data.status !== undefined ? data.status : (existing?.status || 'none'),
+        customLists: data.customLists !== undefined ? data.customLists : (existing?.customLists || {}),
         score: data.score !== undefined ? data.score : existing?.score,
         isFavorite: data.isFavorite !== undefined ? data.isFavorite : existing?.isFavorite,
         watchedEpisodes: data.watchedEpisodes !== undefined ? data.watchedEpisodes : existing?.watchedEpisodes,
@@ -281,52 +460,60 @@ export const listService = {
       }
       writeLocalJson(`local_anime_entries_${id}`, entries);
       animeEntriesCache.delete(id);
+      clientCache.set(`client_mylists_entries_${id}`, entries, 60 * 60 * 1000);
+      notifyLibraryUpdated(id, animeId);
       return;
     }
 
     try {
       const ref = doc(db, 'users', id, 'animeEntries', animeId);
       const snap = await getDoc(ref);
-      
-      let awardAmount = data.extraXp || 0;
+      const existingData = snap.exists() ? snap.data() : null;
+
+      const prevActive = existingData ? isActiveLibraryEntry(existingData as any) : false;
+      const prevStatus = existingData ? (existingData.status || 'none') : 'none';
+
+      const nextStatus: MainListStatus =
+        data.status !== undefined ? data.status : ((existingData?.status as MainListStatus) || 'none');
+      const nextCustomLists =
+        data.customLists !== undefined ? data.customLists : (existingData?.customLists || {});
+      const nextActive = isActiveLibraryEntry({ status: nextStatus, customLists: nextCustomLists });
+
       const userProfileUpdates: Record<string, any> = {};
-      
+
       const payload: any = {
         animeId: animeId,
-        title: data.title || 'Unknown Title',
-        posterUrl: data.posterUrl || '',
+        title: data.title || existingData?.title || `أنمي #${animeId}`,
+        posterUrl: data.posterUrl || existingData?.posterUrl || '',
         updatedAt: serverTimestamp(),
       };
       if (data.releaseYear) payload.releaseYear = data.releaseYear;
-      if (data.status) payload.status = data.status;
-      if (data.customLists) payload.customLists = data.customLists;
+      if (data.status !== undefined) payload.status = data.status;
+      if (data.customLists !== undefined) payload.customLists = data.customLists;
       if (data.score !== undefined) payload.score = data.score;
       if (data.isFavorite !== undefined) payload.isFavorite = data.isFavorite;
       if (data.watchedEpisodes !== undefined) payload.watchedEpisodes = data.watchedEpisodes;
-      
-      // Save or update episodesCount and progress if available
-      const existingData = snap.exists() ? snap.data() : null;
-      const rawEpisodesCount = data.episodesCount !== undefined 
-        ? data.episodesCount 
+
+      const rawEpisodesCount = data.episodesCount !== undefined
+        ? data.episodesCount
         : (existingData?.episodesCount || 0);
-        
+
       let finalEpisodesCount = 0;
       if (typeof rawEpisodesCount === 'number') {
         finalEpisodesCount = rawEpisodesCount;
       } else if (typeof rawEpisodesCount === 'string') {
         finalEpisodesCount = parseInt(rawEpisodesCount, 10) || 0;
       }
-        
+
       if (finalEpisodesCount > 0) {
         payload.episodesCount = finalEpisodesCount;
       }
-      
+
       if (data.progress !== undefined) {
-        payload.progress = typeof data.progress === 'number' 
-          ? data.progress 
+        payload.progress = typeof data.progress === 'number'
+          ? data.progress
           : (parseInt(String(data.progress), 10) || 0);
-      } else if (data.status === 'completed') {
-        // If status is completed and progress isn't set, progress is the total episodes of that anime
+      } else if (nextStatus === 'completed') {
         payload.progress = finalEpisodesCount > 0 ? finalEpisodesCount : 12;
       } else if (data.watchedEpisodes !== undefined) {
         payload.progress = data.watchedEpisodes.length;
@@ -334,30 +521,38 @@ export const listService = {
         payload.progress = Array.isArray(existingData.watchedEpisodes) ? existingData.watchedEpisodes.length : 0;
       }
 
-      const prevStatus = existingData ? existingData.status : null;
       let newlyCompleted = false;
 
       if (!snap.exists()) {
         payload.addedAt = serverTimestamp();
         payload.status = payload.status || 'none';
-        awardAmount += 20; // 20 XP for adding anime
-        
         if (payload.status === 'completed') {
-           newlyCompleted = true;
-           payload.completedXpClaimed = true;
+          newlyCompleted = true;
+          payload.completedXpClaimed = true;
         }
         await setDoc(ref, payload);
-        userProfileUpdates.listCount = increment(1);
       } else {
-        const alreadyClaimed = snap.data().completedXpClaimed;
-        if (data.status === 'completed' && prevStatus !== 'completed' && !alreadyClaimed) {
-           newlyCompleted = true;
-           payload.completedXpClaimed = true;
+        const alreadyClaimed = existingData?.completedXpClaimed;
+        if (nextStatus === 'completed' && prevStatus !== 'completed' && !alreadyClaimed) {
+          newlyCompleted = true;
+          payload.completedXpClaimed = true;
         }
         await updateDoc(ref, payload);
       }
 
-      // Invalidate caches to guarantee data consistency
+      // Sync user counters accurately
+      if (!prevActive && nextActive) {
+        userProfileUpdates.listCount = increment(1);
+      } else if (prevActive && !nextActive) {
+        userProfileUpdates.listCount = increment(-1);
+      }
+
+      if (prevStatus !== 'completed' && nextStatus === 'completed') {
+        userProfileUpdates.completedAnimeCount = increment(1);
+      } else if (prevStatus === 'completed' && nextStatus !== 'completed') {
+        userProfileUpdates.completedAnimeCount = increment(-1);
+      }
+
       animeEntriesCache.delete(id);
       if (data.score !== undefined) {
         appRatingCache.delete(animeId);
@@ -367,25 +562,32 @@ export const listService = {
       let customCoinsGranted = 0;
 
       if (newlyCompleted) {
-         userProfileUpdates.completedAnimeCount = increment(1);
-         const rewards = getAnimeRewards(finalEpisodesCount);
-         customXpGranted = rewards.xp;
-         customCoinsGranted = rewards.coins;
+        const rewards = getAnimeRewards(finalEpisodesCount);
+        customXpGranted = rewards.xp;
+        customCoinsGranted = rewards.coins;
       }
 
-      const finalAwardAmount = (data.extraXp || 0) + customXpGranted + (snap.exists() ? 0 : 20);
+      const finalAwardAmount = (data.extraXp || 0) + customXpGranted + (!snap.exists() && nextActive ? 20 : 0);
       const finalCoinsAmount = (data.extraCoins || 0) + customCoinsGranted;
 
       if (finalAwardAmount > 0) {
-         const { awardXP } = await import('./gamificationService');
-         const coinsParam = finalCoinsAmount > 0 ? finalCoinsAmount : true;
-         await awardXP(id, finalAwardAmount, coinsParam, userProfileUpdates);
+        const { awardXP } = await import('./gamificationService');
+        const coinsParam = finalCoinsAmount > 0 ? finalCoinsAmount : true;
+        await awardXP(id, finalAwardAmount, coinsParam, userProfileUpdates);
       } else if (Object.keys(userProfileUpdates).length > 0) {
-         try {
-           const userRef = doc(db, 'users', id);
-           await updateDoc(userRef, userProfileUpdates);
-         } catch (_) {}
+        try {
+          const userRef = doc(db, 'users', id);
+          await updateDoc(userRef, userProfileUpdates);
+        } catch (_) {}
       }
+
+      // Refresh & reconcile cache in background
+      listService.getAnimeEntries(id).then((fresh) => {
+        clientCache.set(`client_mylists_entries_${id}`, fresh, 60 * 60 * 1000);
+        void listService.reconcileUserStats(id, fresh, undefined, true);
+      }).catch(() => {});
+
+      notifyLibraryUpdated(id, animeId);
     } catch (e) {
       handleFirestoreError(e, OperationType.WRITE, `users/${id}/animeEntries/${animeId}`);
       throw e;
@@ -395,20 +597,27 @@ export const listService = {
   removeAnimeEntry: async (id: string, animeId: string): Promise<void> => {
     if (!isAuthenticatedOwner(id)) {
       const entries = readLocalJson<AnimeEntry[]>(`local_anime_entries_${id}`, []);
-      writeLocalJson(`local_anime_entries_${id}`, entries.filter(e => e.id !== animeId));
+      const filtered = entries.filter(e => e.id !== animeId);
+      writeLocalJson(`local_anime_entries_${id}`, filtered);
       animeEntriesCache.delete(id);
+      clientCache.set(`client_mylists_entries_${id}`, filtered, 60 * 60 * 1000);
+      notifyLibraryUpdated(id, animeId);
       return;
     }
 
     try {
       await deleteDoc(doc(db, 'users', id, 'animeEntries', animeId));
-      try {
-        const userRef = doc(db, 'users', id);
-        await updateDoc(userRef, { listCount: increment(-1) });
-      } catch (_) {}
-      // Invalidate caches to avoid stale reads
       animeEntriesCache.delete(id);
       appRatingCache.delete(animeId);
+
+      // Recalculate exact stats cleanly from remaining entries
+      try {
+        const remaining = await listService.getAnimeEntries(id);
+        clientCache.set(`client_mylists_entries_${id}`, remaining, 60 * 60 * 1000);
+        await listService.reconcileUserStats(id, remaining, undefined, true);
+      } catch (_) {}
+
+      notifyLibraryUpdated(id, animeId);
     } catch (e) {
       handleFirestoreError(e, OperationType.DELETE, `users/${id}/animeEntries/${animeId}`);
       throw e;
@@ -421,6 +630,192 @@ export const listService = {
     if (animeId) {
       appRatingCache.delete(animeId);
     }
+  },
+
+  clearInMemoryCaches: () => {
+    customListsCache.clear();
+    animeEntriesCache.clear();
+    customListsPromises.clear();
+    animeEntriesPromises.clear();
+    statsReconcileThrottle.clear();
+  },
+
+  migrateGuestDataToCloud: async (userId: string): Promise<{ listsMigrated: number; entriesMigrated: number }> => {
+    if (!isAuthenticatedOwner(userId) || typeof localStorage === 'undefined') {
+      return { listsMigrated: 0, entriesMigrated: 0 };
+    }
+
+    let listsMigrated = 0;
+    let entriesMigrated = 0;
+
+    try {
+      const keysToRemove: string[] = [];
+      const customListKeys: string[] = [];
+      const entryKeys: string[] = [];
+
+      const isAllowedCustomKey = (k: string) =>
+        k === 'local_custom_lists_guest' ||
+        k.startsWith('local_custom_lists_otaku_guest_') ||
+        k === `local_custom_lists_${userId}`;
+      const isAllowedEntryKey = (k: string) =>
+        k === 'local_anime_entries_guest' ||
+        k.startsWith('local_anime_entries_otaku_guest_') ||
+        k === `local_anime_entries_${userId}`;
+
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key) continue;
+        if (isAllowedCustomKey(key)) customListKeys.push(key);
+        else if (isAllowedEntryKey(key)) entryKeys.push(key);
+      }
+
+      if (customListKeys.length === 0 && entryKeys.length === 0) {
+        return { listsMigrated: 0, entriesMigrated: 0 };
+      }
+
+      const [remoteListsSnap, remoteEntriesSnap] = await Promise.all([
+        getDocs(collection(db, 'users', userId, 'customLists')).catch(() => null),
+        getDocs(collection(db, 'users', userId, 'animeEntries')).catch(() => null),
+      ]);
+
+      const existingListIds = new Set<string>(remoteListsSnap ? remoteListsSnap.docs.map(d => d.id) : []);
+      const existingEntriesMap = new Map<string, any>();
+      if (remoteEntriesSnap) {
+        remoteEntriesSnap.docs.forEach(d => existingEntriesMap.set(d.id, d.data()));
+      }
+
+      for (const key of customListKeys) {
+        const guestLists = readLocalJson<CustomList[]>(key, []);
+        for (const list of guestLists) {
+          if (!list?.id || !list?.name || existingListIds.has(list.id)) continue;
+          try {
+            await setDoc(doc(db, 'users', userId, 'customLists', list.id), {
+              name: String(list.name).slice(0, 100),
+              createdAt: serverTimestamp(),
+            });
+            existingListIds.add(list.id);
+            listsMigrated++;
+          } catch {}
+        }
+        keysToRemove.push(key);
+      }
+
+      for (const key of entryKeys) {
+        const guestEntries = readLocalJson<AnimeEntry[]>(key, []);
+        for (const entry of guestEntries) {
+          const animeId = entry?.id;
+          if (!animeId) continue;
+          try {
+            const existingRemote = existingEntriesMap.get(animeId);
+            if (!existingRemote) {
+              await setDoc(doc(db, 'users', userId, 'animeEntries', animeId), {
+                animeId,
+                title: entry.title || `أنمي #${animeId}`,
+                posterUrl: entry.posterUrl || '',
+                releaseYear: entry.releaseYear || '',
+                status: entry.status || 'none',
+                customLists: entry.customLists || {},
+                ...(typeof entry.score === 'number' ? { score: entry.score } : {}),
+                ...(typeof entry.isFavorite === 'boolean' ? { isFavorite: entry.isFavorite } : {}),
+                ...(Array.isArray(entry.watchedEpisodes) ? { watchedEpisodes: entry.watchedEpisodes } : {}),
+                ...(typeof entry.episodesCount === 'number' ? { episodesCount: entry.episodesCount } : {}),
+                ...(typeof entry.progress === 'number' ? { progress: entry.progress } : {}),
+                addedAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              });
+              entriesMigrated++;
+            } else {
+              const mergedWatched = Array.from(
+                new Set([
+                  ...(Array.isArray(existingRemote.watchedEpisodes) ? existingRemote.watchedEpisodes : []),
+                  ...(Array.isArray(entry.watchedEpisodes) ? entry.watchedEpisodes : []),
+                ])
+              ).sort((a, b) => Number(a) - Number(b));
+              const mergedCustomLists = {
+                ...(entry.customLists || {}),
+                ...(existingRemote.customLists || {}),
+              };
+              const hasExtraWatched =
+                mergedWatched.length > (Array.isArray(existingRemote.watchedEpisodes) ? existingRemote.watchedEpisodes.length : 0);
+              const hasExtraLists =
+                Object.keys(mergedCustomLists).length > Object.keys(existingRemote.customLists || {}).length;
+
+              if (hasExtraWatched || hasExtraLists) {
+                await updateDoc(doc(db, 'users', userId, 'animeEntries', animeId), {
+                  ...(hasExtraWatched ? { watchedEpisodes: mergedWatched, progress: mergedWatched.length } : {}),
+                  ...(hasExtraLists ? { customLists: mergedCustomLists } : {}),
+                  updatedAt: serverTimestamp(),
+                });
+                entriesMigrated++;
+              }
+            }
+          } catch {}
+        }
+        keysToRemove.push(key);
+      }
+
+      keysToRemove.forEach((k) => {
+        try {
+          localStorage.removeItem(k);
+        } catch {}
+      });
+
+      if (listsMigrated > 0 || entriesMigrated > 0) {
+        customListsCache.delete(userId);
+        animeEntriesCache.delete(userId);
+      }
+    } catch (e) {
+      console.warn('Guest-to-cloud migration skipped:', e);
+    }
+
+    return { listsMigrated, entriesMigrated };
+  },
+
+  forceCloudSync: async (userId: string): Promise<{
+    listsCount: number;
+    entriesCount: number;
+    migratedLists: number;
+    migratedEntries: number;
+    syncedAt: number;
+  }> => {
+    if (!isAuthenticatedOwner(userId)) {
+      throw new Error('يجب تسجيل الدخول بحساب فعلي لتفعيل المزامنة السحابية.');
+    }
+
+    const migration = await listService.migrateGuestDataToCloud(userId);
+    listService.invalidateUserCache(userId);
+
+    const listsCol = collection(db, 'users', userId, 'customLists');
+    const entriesCol = collection(db, 'users', userId, 'animeEntries');
+
+    const [listsSnap, entriesSnap] = await Promise.all([
+      getDocsFromServer(listsCol).catch(() => getDocs(listsCol)),
+      getDocsFromServer(entriesCol).catch(() => getDocs(entriesCol)),
+    ]);
+
+    const fetchedCustom = listsSnap.docs.map(d => ({ id: d.id, ...d.data() } as CustomList));
+    const fetchedEntries = entriesSnap.docs.map(d => normalizeEntry(d.id, d.data()));
+
+    customListsCache.set(userId, { data: fetchedCustom, expireAt: Date.now() + 30 * 1000 });
+    animeEntriesCache.set(userId, { data: fetchedEntries, expireAt: Date.now() + 30 * 1000 });
+    clientCache.set(`client_mylists_custom_${userId}`, fetchedCustom, 60 * 60 * 1000);
+    clientCache.set(`client_mylists_entries_${userId}`, fetchedEntries, 60 * 60 * 1000);
+
+    const syncedAt = Date.now();
+    await listService.reconcileUserStats(userId, fetchedEntries, undefined, true);
+    try {
+      await updateDoc(doc(db, 'users', userId), { lastSyncedAt: syncedAt });
+    } catch {}
+
+    notifyLibraryUpdated(userId);
+
+    return {
+      listsCount: fetchedCustom.length,
+      entriesCount: fetchedEntries.length,
+      migratedLists: migration.listsMigrated,
+      migratedEntries: migration.entriesMigrated,
+      syncedAt,
+    };
   },
 
   boostUserToMaxLevel: async (id: string): Promise<void> => {

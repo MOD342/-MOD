@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { 
   User, 
   onAuthStateChanged, 
@@ -24,9 +24,15 @@ import { auth, db } from '../firebase';
 import { doc, getDoc, setDoc, serverTimestamp, updateDoc, onSnapshot } from 'firebase/firestore';
 import { updateDailyStreak } from '../services/gamificationService';
 import { moderationService, RoleLevel, isStaffEmail } from '../services/moderationService';
+import { notificationsService } from '../services/notificationsService';
+import { listService } from '../services/listService';
+import { clientCache } from '../utils/clientCache';
 import { Mail, Lock, UserPlus, LogIn, AlertCircle, X, Sparkles, CheckCircle, RefreshCw, KeyRound, Eye, EyeOff, ExternalLink, Smartphone, Monitor, Globe, Cpu } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import firebaseConfig from '../../firebase-applet-config.json';
+import { Capacitor } from '@capacitor/core';
+import { FirebaseAuthentication } from '@capacitor-firebase/authentication';
+import { firebaseClientConfig as firebaseConfig } from '../config/firebaseRuntimeConfig';
+import ViewportPortal from '../components/ViewportPortal';
 
 export type PlatformOS = 'android' | 'ios' | 'windows' | 'macos' | 'linux' | 'unknown';
 export type RuntimeHost = 'apk_webview' | 'ios_standalone' | 'windows_app' | 'pwa_standalone' | 'iframe_sandbox' | 'mobile_browser' | 'desktop_browser';
@@ -408,11 +414,25 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
     };
   }, []);
 
+  const prevUidRef = useRef<string | null>(null);
+
+  const clearPrivateMemberCaches = (previousUid?: string | null) => {
+    listService.clearInMemoryCaches();
+    notificationsService.clearUserCache(previousUid || undefined);
+    clientCache.clearUserPrivateCaches();
+  };
+
   useEffect(() => {
     let unsubSnapshot: (() => void) | null = null;
     let unsubBan: (() => void) | null = null;
     
     const unsubscribe = onAuthStateChanged(auth, async (u) => {
+      const nextUid = u?.uid || null;
+      if (prevUidRef.current && prevUidRef.current !== nextUid) {
+        clearPrivateMemberCaches(prevUidRef.current);
+      }
+      prevUidRef.current = nextUid;
+
       if (u) {
         setUser({
           id: u.uid,
@@ -548,6 +568,17 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
           
           const roleData = await moderationService.getCurrentUserRole(u);
           setUserRole(isStaffEmail(u.email) ? 'owner' : roleData);
+
+          // Migrate any guest local lists/entries saved before login into Firestore cloud storage
+          import('../services/listService')
+            .then(({ listService }) => listService.migrateGuestDataToCloud(u.uid))
+            .catch(() => {});
+
+          try {
+            if (typeof localStorage !== 'undefined') {
+              localStorage.removeItem('fallback_active_session');
+            }
+          } catch {}
           
           setLoading(false);
         } catch (error) {
@@ -582,17 +613,29 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
            setLoading(false);
         }
       } else {
+        let restoredFallback: any = null;
         try {
           if (typeof localStorage !== 'undefined') {
-            localStorage.removeItem('fallback_active_session');
-            localStorage.removeItem('apk_google_email');
+            const rawSession = localStorage.getItem('fallback_active_session');
+            if (rawSession) {
+              const parsed = JSON.parse(rawSession);
+              if (parsed && parsed.uid && parsed.displayName) {
+                restoredFallback = parsed;
+              }
+            }
           }
         } catch {}
 
-        setUserData(null);
-        setUserRole('user');
-        setBanInfo(null);
-        setLoading(false);
+        if (restoredFallback) {
+          await loadFallbackSession(restoredFallback);
+          setBanInfo(null);
+          setLoading(false);
+        } else {
+          setUserData(null);
+          setUserRole('user');
+          setBanInfo(null);
+          setLoading(false);
+        }
       }
     });
 
@@ -604,6 +647,11 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
   }, []);
 
   const loadFallbackSession = async (fallbackAccount: { uid: string; email: string; displayName: string; photoURL: string }) => {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('fallback_active_session', JSON.stringify(fallbackAccount));
+      }
+    } catch {}
     setUser({
       id: fallbackAccount.uid,
       uid: fallbackAccount.uid,
@@ -647,20 +695,30 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
   };
 
   const signOut = async () => {
+    const prevUid = user?.id || auth.currentUser?.uid || null;
     try {
       localStorage.removeItem('fallback_active_session');
     } catch (e) {}
+    if (Capacitor.isNativePlatform()) {
+      await FirebaseAuthentication.signOut().catch(() => {});
+    }
     await firebaseSignOut(auth);
+    clearPrivateMemberCaches(prevUid);
     setUser(null);
     setUserData(null);
     setUserRole('user');
   };
 
   const logout = async () => {
+    const prevUid = user?.id || auth.currentUser?.uid || null;
     try {
       localStorage.removeItem('fallback_active_session');
     } catch (e) {}
+    if (Capacitor.isNativePlatform()) {
+      await FirebaseAuthentication.signOut().catch(() => {});
+    }
     await firebaseSignOut(auth);
+    clearPrivateMemberCaches(prevUid);
     setUser(null);
     setUserData(null);
     setUserRole('user');
@@ -1050,33 +1108,61 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
 
     setAuthModalLoading(true);
     try {
-      // 1. في تطبيق الأندرويد المثبت (Capacitor / Cordova): استخدام مكون Google الأصلي مباشرة
-      const nativeGooglePlugin = (window as any).Capacitor?.Plugins?.GoogleAuth || (window as any).plugins?.googleplus;
-      if (nativeGooglePlugin) {
+      // 1. في تطبيق الأندرويد المثبت (Capacitor APK): استخدام @capacitor-firebase/authentication لعرض حسابات Google بالنظام مباشرة
+      if (Capacitor.isNativePlatform()) {
+        const isCancelMessage = (msg: string) => {
+          const lower = msg.toLowerCase();
+          return (
+            lower.includes('cancel') ||
+            lower.includes('aborted') ||
+            lower.includes('dismissed') ||
+            lower.includes('12501')
+          );
+        };
+
+        let nativeResult: any = null;
         try {
-          if (typeof nativeGooglePlugin.initialize === 'function') {
-            const clientId = (import.meta as any).env?.VITE_GOOGLE_CLIENT_ID || (firebaseConfig as any).oAuthClientId;
-            await nativeGooglePlugin.initialize({
-              clientId,
-              scopes: ['profile', 'email'],
-              grantOfflineAccess: true
-            }).catch(() => {});
-          }
-          const nativeRes = await (nativeGooglePlugin.signIn ? nativeGooglePlugin.signIn() : Promise.reject('no signIn'));
-          const idToken = nativeRes?.authentication?.idToken || nativeRes?.idToken;
-          if (idToken) {
-            const cred = GoogleAuthProvider.credential(idToken);
-            await signInWithCredential(auth, cred);
-            setIsAuthModalOpen(false);
-            resetAuthForm();
+          nativeResult = await FirebaseAuthentication.signInWithGoogle({
+            useCredentialManager: true,
+          });
+        } catch (credErr: any) {
+          const credMsg = String(credErr?.message || credErr?.code || '');
+          if (isCancelMessage(credMsg)) {
             return;
           }
-        } catch (nativeErr) {
-          console.warn('Native Google Auth bridge fallback:', nativeErr);
+          // Fallback to classic Google Play Services Android System Account Picker
+          try {
+            nativeResult = await FirebaseAuthentication.signInWithGoogle({
+              useCredentialManager: false,
+            });
+          } catch (legacyErr: any) {
+            const legacyMsg = String(legacyErr?.message || legacyErr?.code || '');
+            if (isCancelMessage(legacyMsg)) {
+              return;
+            }
+            if (legacyMsg.includes('10') || legacyMsg.toLowerCase().includes('developer_error')) {
+              setAuthError('تعذر التحقق من بصمة التطبيق (SHA-1) في Firebase. أضف بصمة SHA-1 لحزمة com.animemod.otakuhub داخل إعدادات تطبيق Android في Firebase Console.');
+              return;
+            }
+            setAuthError(`تعذر الاتصال بحسابات Google في النظام (${legacyMsg || 'خطأ Play Services'}). يمكنك استخدام الدخول بالبريد أو الدخول الفوري.`);
+            return;
+          }
         }
+
+        const idToken = nativeResult?.credential?.idToken;
+        const accessToken = nativeResult?.credential?.accessToken;
+        if (idToken || accessToken) {
+          const cred = GoogleAuthProvider.credential(idToken || undefined, accessToken || undefined);
+          await signInWithCredential(auth, cred);
+          setIsAuthModalOpen(false);
+          resetAuthForm();
+          return;
+        }
+        setAuthError('لم يتم استلام رمز المصادقة من حساب Google بالنظام. تأكد من وجود حساب Google نشط على الجهاز وإضافة SHA-1 في Firebase.');
+        return;
       }
 
-      // 2. استخدام نافذة Google القياسية مع التحويل الآمن عند الحظر في المتصفح أو التطبيق
+      // 2. المتصفح العادي (Web): استخدام نافذة Google المنبثقة مع تحويل آمن فقط في الويب
       try {
         await signInWithPopup(auth, provider);
         setIsAuthModalOpen(false);
@@ -1089,8 +1175,7 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
         if (
           popupErr?.code === 'auth/popup-blocked' ||
           popupErr?.code === 'auth/cancelled-popup-request' ||
-          popupErr?.code === 'auth/operation-not-supported-in-this-environment' ||
-          runtimeEnv.isAPKOrWebView
+          popupErr?.code === 'auth/operation-not-supported-in-this-environment'
         ) {
           await signInWithRedirect(auth, provider);
           return;
@@ -1100,7 +1185,7 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
     } catch (error: any) {
       if (error?.code !== 'auth/popup-closed-by-user') {
         if (error?.code === 'auth/unauthorized-domain') {
-          setAuthError('النطاق الحالي غير مضاف في إعدادات النطاقات المصرح بها في Firebase Authentication.');
+          setAuthError('النطاق الحالي غير مضاف في إعدادات النطاقات المصرح بها (Authorized Domains) في Firebase Authentication.');
         } else {
           setAuthError('تعذر إتمام تسجيل الدخول عبر Google في هذه البيئة. يمكنك الدخول بالبريد الإلكتروني أو الدخول الفوري.');
         }
@@ -1131,16 +1216,30 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
       {children}
 
       {/* Dynamic Native-Sensing Authentication Modal */}
-      <AnimatePresence>
-        {isAuthModalOpen && (
-          <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-black/85 backdrop-blur-sm" dir="rtl">
-            <motion.div
-              initial={{ opacity: 0, scale: 0.94, y: 30 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.94, y: 30 }}
-              transition={{ type: "spring", stiffness: 350, damping: 28 }}
-              className="relative w-full max-w-sm bg-zinc-950 border border-zinc-800 rounded-2xl p-5 shadow-[0_20px_50px_rgba(0,0,0,0.9)] max-h-[90vh] overflow-y-auto"
+      <ViewportPortal>
+        <AnimatePresence>
+          {isAuthModalOpen && (
+            <div
+              className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-black/85 backdrop-blur-sm"
+              style={{
+                height: 'var(--vv-height, 100dvh)',
+                paddingTop: 'calc(var(--safe-top, 0px) + 1rem)',
+                paddingBottom: 'calc(var(--safe-bottom, 0px) + 1rem)',
+                paddingLeft: 'calc(var(--safe-left, 0px) + 1rem)',
+                paddingRight: 'calc(var(--safe-right, 0px) + 1rem)',
+              }}
+              dir="rtl"
             >
+              <motion.div
+                initial={{ opacity: 0, scale: 0.96, y: 12 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.96, y: 12 }}
+                transition={{ duration: 0.14, ease: 'easeOut' }}
+                className="relative w-full max-w-sm bg-zinc-950 border border-zinc-800 rounded-2xl p-5 shadow-[0_20px_50px_rgba(0,0,0,0.9)] overflow-y-auto"
+                style={{
+                  maxHeight: 'calc(var(--vv-height, 100dvh) - var(--safe-top, 0px) - var(--safe-bottom, 0px) - 2rem)',
+                }}
+              >
               {/* Background ambient decorative aura */}
               <div className="absolute -top-10 -left-10 w-32 h-32 bg-purple-600/10 rounded-full blur-2xl pointer-events-none" />
               <div className="absolute -bottom-10 -right-10 w-32 h-32 bg-[#FF1744]/5 rounded-full blur-2xl pointer-events-none" />
@@ -1378,6 +1477,7 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
           </div>
         )}
       </AnimatePresence>
+      </ViewportPortal>
     </AuthContext.Provider>
   );
 };

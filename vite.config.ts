@@ -1,20 +1,33 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
-import {defineConfig} from 'vite';
+import { defineConfig, loadEnv } from 'vite';
 
-export default defineConfig(() => {
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), '');
+  const resolvedApiUrl = (env.VITE_API_URL || process.env.VITE_API_URL || '')
+    .trim()
+    .replace(/\/+$/, '');
+
   return {
+    // مسار نسبي إجباري لضمان تحميل الأصول داخل حزمة Capacitor / Android WebView (APK)
     base: './',
     plugins: [react(), tailwindcss()],
+    define: {
+      'import.meta.env.VITE_API_URL': JSON.stringify(resolvedApiUrl),
+    },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
       },
     },
     build: {
-      target: 'es2020',
+      outDir: 'dist',
+      emptyOutDir: true,
+      // توافقية عالية مع محركات Android System WebView في مختلف إصدارات أندرويد
+      target: ['es2020', 'chrome87'],
       cssCodeSplit: true,
+      assetsInlineLimit: 4096,
       chunkSizeWarningLimit: 800,
       rollupOptions: {
         output: {
@@ -31,11 +44,21 @@ export default defineConfig(() => {
       },
     },
     server: {
-      // HMR is disabled in AI Studio via DISABLE_HMR env var.
-      // Do not modifyâfile watching is disabled to prevent flickering during agent edits.
-      hmr: process.env.DISABLE_HMR !== 'true',
-      // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
+      host: '0.0.0.0',
+      // تعطيل HMR عند تمرير DISABLE_HMR=true
+      hmr: process.env.DISABLE_HMR === 'true' ? false : undefined,
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      ...(resolvedApiUrl
+        ? {
+            proxy: {
+              '/api': {
+                target: resolvedApiUrl,
+                changeOrigin: true,
+                secure: resolvedApiUrl.startsWith('https://'),
+              },
+            },
+          }
+        : {}),
     },
   };
 });

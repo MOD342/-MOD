@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { notificationsService, AppNotification } from '../services/notificationsService';
 import { useAuth } from '../contexts/AuthContext';
 import { formatArabicDistanceToNow } from '../utils/dateFormatter';
+import ViewportPortal from './ViewportPortal';
 
 interface NotificationsModalProps {
   onClose: () => void;
@@ -98,23 +99,33 @@ export default function NotificationsModal({ onClose, onNavigate }: Notification
   };
 
   return (
-    <AnimatePresence>
-      <div className="fixed inset-0 max-w-md sm:max-w-xl md:max-w-3xl lg:max-w-5xl xl:max-w-7xl mx-auto z-[100] flex justify-end overflow-hidden">
-        <motion.div 
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-          onClick={onClose}
-        ></motion.div>
-        
-        <motion.div 
-          initial={{ x: '100%' }}
-          animate={{ x: 0 }}
-          exit={{ x: '100%' }}
-          transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-          className="relative w-full md:w-[400px] h-full bg-[#0a0a0a] border-l border-white/5 flex flex-col shadow-2xl"
+    <ViewportPortal>
+      <AnimatePresence>
+        <div
+          className="fixed inset-0 z-[100] flex justify-end overflow-hidden"
+          style={{ height: 'var(--vv-height, 100dvh)' }}
         >
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            onClick={onClose}
+          ></motion.div>
+          
+          <motion.div 
+            initial={{ x: '100%' }}
+            animate={{ x: 0 }}
+            exit={{ x: '100%' }}
+            transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+            style={{
+              paddingTop: 'var(--safe-top, 0px)',
+              paddingBottom: 'var(--safe-bottom, 0px)',
+              paddingLeft: 'var(--safe-left, 0px)',
+              paddingRight: 'var(--safe-right, 0px)',
+            }}
+            className="relative w-full md:w-[400px] h-full bg-[#0a0a0a] border-l border-white/5 flex flex-col shadow-2xl"
+          >
            <div className="p-4 border-b border-white/5 flex items-center justify-between bg-black/50 backdrop-blur-md">
              <div className="flex items-center gap-2">
                <Bell className="text-blue-500" />
@@ -166,7 +177,8 @@ export default function NotificationsModal({ onClose, onNavigate }: Notification
              </div>
            )}
         </motion.div>
-      </div>
-    </AnimatePresence>
+        </div>
+      </AnimatePresence>
+    </ViewportPortal>
   );
 }

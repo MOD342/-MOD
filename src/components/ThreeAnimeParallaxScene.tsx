@@ -37,10 +37,29 @@ export default function ThreeAnimeParallaxScene({
 
     let animId = 0;
     let renderer: THREE.WebGLRenderer | null = null;
+    let isContextLost = false;
+    let disposed = false;
+
+    const ua = typeof navigator !== 'undefined' ? (navigator.userAgent || '').toLowerCase() : '';
+    const isMobileOrWebView =
+      typeof window !== 'undefined' &&
+      (Boolean((window as any).Capacitor) || /android|iphone|ipad|mobile|wv/.test(ua));
+
+    // Verify WebGL support cleanly before initializing Three.js
+    try {
+      const testCanvas = document.createElement('canvas');
+      const gl =
+        testCanvas.getContext('webgl2', { failIfMajorPerformanceCaveat: false }) ||
+        testCanvas.getContext('webgl', { failIfMajorPerformanceCaveat: false });
+      if (!gl) return;
+    } catch {
+      return;
+    }
 
     try {
       const width = container.clientWidth || window.innerWidth;
       const height = container.clientHeight || window.innerHeight;
+      if (!width || !height) return;
 
       const scene = new THREE.Scene();
       scene.fog = new THREE.FogExp2(0x040409, 0.032);
@@ -50,13 +69,24 @@ export default function ThreeAnimeParallaxScene({
 
       renderer = new THREE.WebGLRenderer({
         alpha: true,
-        antialias: true,
-        powerPreference: 'high-performance'
+        antialias: !isMobileOrWebView,
+        powerPreference: isMobileOrWebView ? 'default' : 'high-performance'
       });
       renderer.setSize(width, height);
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, isMobileOrWebView ? 1.25 : 2));
       container.innerHTML = '';
       container.appendChild(renderer.domElement);
+
+      const onContextLost = (e: Event) => {
+        e.preventDefault();
+        isContextLost = true;
+        if (animId) cancelAnimationFrame(animId);
+      };
+      const onContextRestored = () => {
+        isContextLost = false;
+      };
+      renderer.domElement.addEventListener('webglcontextlost', onContextLost, false);
+      renderer.domElement.addEventListener('webglcontextrestored', onContextRestored, false);
 
       // إضاءة ثلاثية النقاط للفضاء ثلاثي الأبعاد
       const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
@@ -74,7 +104,7 @@ export default function ThreeAnimeParallaxScene({
       const ringsGroup = new THREE.Group();
       scene.add(ringsGroup);
 
-      const ringGeo1 = new THREE.TorusGeometry(4.8, 0.035, 16, 100);
+      const ringGeo1 = new THREE.TorusGeometry(4.8, 0.035, 12, isMobileOrWebView ? 64 : 100);
       const ringMat1 = new THREE.MeshBasicMaterial({
         color: new THREE.Color(accentColor),
         transparent: true,
@@ -84,7 +114,7 @@ export default function ThreeAnimeParallaxScene({
       ringMesh1.rotation.x = Math.PI * 0.32;
       ringsGroup.add(ringMesh1);
 
-      const ringGeo2 = new THREE.TorusGeometry(6.4, 0.025, 16, 100);
+      const ringGeo2 = new THREE.TorusGeometry(6.4, 0.025, 12, isMobileOrWebView ? 64 : 100);
       const ringMat2 = new THREE.MeshBasicMaterial({
         color: new THREE.Color(secondaryColor),
         transparent: true,
@@ -99,7 +129,7 @@ export default function ThreeAnimeParallaxScene({
       const shardsGroup = new THREE.Group();
       scene.add(shardsGroup);
       const shardGeo = new THREE.OctahedronGeometry(0.32, 0);
-      const shardCount = intensity === 'high' ? 18 : 12;
+      const shardCount = isMobileOrWebView ? 8 : intensity === 'high' ? 18 : 12;
       const shards: { mesh: THREE.Mesh; speedRot: number; floatOffset: number; baseY: number }[] = [];
 
       for (let i = 0; i < shardCount; i++) {
@@ -132,7 +162,9 @@ export default function ThreeAnimeParallaxScene({
       }
 
       // 3. سحابة جسيمات الفضاء العميقة (3D Starfield & Chakra Dust)
-      const particleCount = intensity === 'high' ? 420 : 260;
+      const particleCount = isMobileOrWebView
+        ? intensity === 'high' ? 160 : 110
+        : intensity === 'high' ? 360 : 220;
       const positions = new Float32Array(particleCount * 3);
       const velocities = new Float32Array(particleCount);
 
@@ -220,9 +252,10 @@ export default function ThreeAnimeParallaxScene({
       window.addEventListener('pointermove', onPointerMove, { passive: true });
 
       const onResize = () => {
-        if (!container || !renderer) return;
+        if (!container || !renderer || disposed) return;
         const w = container.clientWidth || window.innerWidth;
         const h = container.clientHeight || window.innerHeight;
+        if (!w || !h) return;
         camera.aspect = w / h;
         camera.updateProjectionMatrix();
         renderer.setSize(w, h);
@@ -232,6 +265,11 @@ export default function ThreeAnimeParallaxScene({
       let clockTick = 0;
 
       const animate = () => {
+        if (disposed) return;
+        if (isContextLost || (typeof document !== 'undefined' && document.hidden)) {
+          animId = requestAnimationFrame(animate);
+          return;
+        }
         clockTick += 0.016;
 
         // تحديث ألوان الإضاءة والحلقات ديناميكياً عند تغيير المقاتل أو اللعبة
@@ -288,16 +326,38 @@ export default function ThreeAnimeParallaxScene({
           burstMat.opacity = burstLife;
         }
 
-        renderer?.render(scene, camera);
+        try {
+          renderer?.render(scene, camera);
+        } catch {
+          isContextLost = true;
+        }
         animId = requestAnimationFrame(animate);
       };
+
+      const onVisibilityChange = () => {
+        if (!document.hidden && !disposed && !isContextLost && !animId) {
+          animId = requestAnimationFrame(animate);
+        }
+      };
+      document.addEventListener('visibilitychange', onVisibilityChange);
 
       animId = requestAnimationFrame(animate);
 
       return () => {
+        disposed = true;
         cancelAnimationFrame(animId);
+        document.removeEventListener('visibilitychange', onVisibilityChange);
         window.removeEventListener('pointermove', onPointerMove);
         window.removeEventListener('resize', onResize);
+        try {
+          renderer?.domElement.removeEventListener('webglcontextlost', onContextLost);
+          renderer?.domElement.removeEventListener('webglcontextrestored', onContextRestored);
+        } catch {}
+        shards.forEach((s) => {
+          try {
+            (s.mesh.material as THREE.Material).dispose();
+          } catch {}
+        });
         ringGeo1.dispose();
         ringMat1.dispose();
         ringGeo2.dispose();
@@ -311,6 +371,7 @@ export default function ThreeAnimeParallaxScene({
       };
     } catch {
       return () => {
+        disposed = true;
         if (animId) cancelAnimationFrame(animId);
       };
     }

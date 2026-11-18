@@ -13,7 +13,7 @@ service cloud.firestore {
 
     function isValidUser(data) {
       return data.keys().hasAll(['role', 'createdAt', 'xp', 'level', 'modPoints', 'streakDays', 'likesReceived', 'commentsCount', 'recommendationsAccepted', 'aiGamesPoints', 'ratingsCount', 'chatMessagesCount', 'lastActiveDate']) 
-        && (data.keys().size() >= 13 && data.keys().size() <= 50)
+        && (data.keys().size() >= 13 && data.keys().size() <= 60)
         && data.role == 'user'
         && data.modPoints == 0
         && data.xp is number && data.level is number
@@ -53,6 +53,11 @@ service cloud.firestore {
         && (!data.keys().hasAny(['lastBossDefeatDate']) || data.lastBossDefeatDate is string)
         && (!data.keys().hasAny(['unlockedRewards']) || data.unlockedRewards is list)
         && (!data.keys().hasAny(['hasClaimedCorrectionBadge']) || data.hasClaimedCorrectionBadge is bool)
+        && (!data.keys().hasAny(['doubleXpUntil']) || data.doubleXpUntil is number)
+        && (!data.keys().hasAny(['doubleCoinsUntil']) || data.doubleCoinsUntil is number)
+        && (!data.keys().hasAny(['streakShieldCount']) || data.streakShieldCount is number)
+        && (!data.keys().hasAny(['antiCheatHintCount']) || data.antiCheatHintCount is number)
+        && (!data.keys().hasAny(['lastSyncedAt']) || data.lastSyncedAt is number)
         && data.lastActiveDate is string
         && data.createdAt == request.time;
     }
@@ -314,8 +319,13 @@ service cloud.firestore {
       allow update: if isSignedIn() && isValidId(userId) && (
         isModeratorAuth() || (
           isOwner(userId) &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['xp', 'level', 'streakDays', 'likesReceived', 'commentsCount', 'recommendationsAccepted', 'aiGamesPoints', 'ratingsCount', 'chatMessagesCount', 'lastActiveDate', 'coins', 'purchasedItems', 'claimedAchievements', 'dailyStats', 'equippedBanner', 'equippedAvatar', 'equippedFrame', 'equippedTitle', 'equippedBadge', 'equippedAura', 'equippedCommentCard', 'lastSpinTimestamp', 'listCount', 'username', 'displayName', 'lastUsernameChange', 'lastDisplayNameChange', 'totalEpisodesWatched', 'completedAnimeCount', 'privacySettings', 'avatarAlignment', 'avatarShape', 'bannerSize', 'dislikesReceived', 'approvedRecommendationsCount', 'email', 'photoURL', 'id', 'modPoints', 'lastSpinDate', 'lastDailyClaim', 'dailyClaimStreak', 'claimedSeasonMilestones', 'boosters', 'lastBossDefeatDate', 'unlockedRewards', 'hasClaimedCorrectionBadge', 'redeemedPromoCodes']) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['xp', 'level', 'streakDays', 'likesReceived', 'commentsCount', 'recommendationsAccepted', 'aiGamesPoints', 'ratingsCount', 'chatMessagesCount', 'lastActiveDate', 'coins', 'purchasedItems', 'claimedAchievements', 'dailyStats', 'equippedBanner', 'equippedAvatar', 'equippedFrame', 'equippedTitle', 'equippedBadge', 'equippedAura', 'equippedCommentCard', 'lastSpinTimestamp', 'listCount', 'username', 'displayName', 'lastUsernameChange', 'lastDisplayNameChange', 'totalEpisodesWatched', 'completedAnimeCount', 'privacySettings', 'avatarAlignment', 'avatarShape', 'bannerSize', 'dislikesReceived', 'approvedRecommendationsCount', 'email', 'photoURL', 'id', 'modPoints', 'lastSpinDate', 'lastDailyClaim', 'dailyClaimStreak', 'claimedSeasonMilestones', 'boosters', 'lastBossDefeatDate', 'unlockedRewards', 'hasClaimedCorrectionBadge', 'redeemedPromoCodes', 'doubleXpUntil', 'doubleCoinsUntil', 'streakShieldCount', 'antiCheatHintCount', 'lastSyncedAt']) &&
           (!incoming().diff(existing()).affectedKeys().hasAny(['role'])) &&
+          (!incoming().diff(existing()).affectedKeys().hasAny(['doubleXpUntil']) || incoming().doubleXpUntil is number) &&
+          (!incoming().diff(existing()).affectedKeys().hasAny(['doubleCoinsUntil']) || incoming().doubleCoinsUntil is number) &&
+          (!incoming().diff(existing()).affectedKeys().hasAny(['streakShieldCount']) || incoming().streakShieldCount is number) &&
+          (!incoming().diff(existing()).affectedKeys().hasAny(['antiCheatHintCount']) || incoming().antiCheatHintCount is number) &&
+          (!incoming().diff(existing()).affectedKeys().hasAny(['lastSyncedAt']) || incoming().lastSyncedAt is number) &&
           (!incoming().diff(existing()).affectedKeys().hasAny(['redeemedPromoCodes']) || incoming().redeemedPromoCodes is list) &&
           (!incoming().diff(existing()).affectedKeys().hasAny(['modPoints']) || incoming().modPoints is number) &&
           (!incoming().diff(existing()).affectedKeys().hasAny(['lastSpinDate']) || incoming().lastSpinDate is string) &&
@@ -476,6 +486,25 @@ service cloud.firestore {
         incoming().usedCount <= existing().maxUses &&
         existing().active == true
       );
+    }
+
+    match /storeGiftLogs/{logId} {
+      allow read: if isSignedIn() && (
+        isModeratorAuth() ||
+        existing().senderId == request.auth.uid ||
+        existing().recipientId == request.auth.uid
+      );
+      allow create: if isSignedIn() && isValidId(logId)
+        && !exists(/databases/$(database)/documents/bannedUsers/$(request.auth.uid))
+        && incoming().senderId == request.auth.uid
+        && incoming().keys().hasAll(['senderId', 'recipientId', 'itemId', 'itemName', 'price', 'createdAt'])
+        && incoming().senderId is string && incoming().senderId.size() <= 128
+        && incoming().recipientId is string && incoming().recipientId.size() <= 128
+        && incoming().itemId is string && incoming().itemId.size() <= 200
+        && incoming().itemName is string && incoming().itemName.size() <= 200
+        && incoming().price is number && incoming().price >= 0
+        && incoming().createdAt == request.time;
+      allow update, delete: if isAdminAuth();
     }
   }
 }

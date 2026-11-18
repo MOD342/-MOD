@@ -7,20 +7,30 @@
     "androidScheme": "https",
     "cleartext": true,
     "allowNavigation": [
-      "*",
-      "*.anilist.co",
-      "*.myanimelist.net",
-      "*.googleapis.com",
-      "*.firebaseio.com",
+      "anime-mod-production.up.railway.app",
+      "*.up.railway.app",
       "*.firebaseapp.com",
-      "*.okanime.xyz",
-      "*.ristoanime.cc",
-      "*.animedar.net"
+      "*.web.app",
+      "*.firebaseio.com",
+      "*.googleapis.com",
+      "accounts.google.com"
     ]
   },
   "android": {
     "allowMixedContent": true,
-    "captureInput": true,
+    "captureInput": false,
     "webContentsDebuggingEnabled": true
+  },
+  "plugins": {
+    "FirebaseAuthentication": {
+      "skipNativeAuth": true,
+      "providers": [
+        "google.com"
+      ]
+    },
+    "StatusBar": {
+      "overlaysWebView": true,
+      "style": "DARK"
+    }
   }
 }

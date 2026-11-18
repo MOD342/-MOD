@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { WifiOff, RefreshCw, Terminal, Search, Cpu, Wifi, Sparkles, X, ShieldAlert } from 'lucide-react';
+import appIconImg from '../assets/images/app_icon.png';
+import ViewportPortal from './ViewportPortal';
 
 // Animated searching/typing phrases in Arabic
 const loadingPhrases = [
@@ -68,7 +70,7 @@ export function MascotLoadingScreen({ authLoading, onComplete }: MascotLoadingSc
     const logs = [
       'SYSTEM: Booting MOD-342 Core Engine v4.0...',
       'SECURE: Establishing SSL handshake with firestore database...',
-      'APP_ICON: Verifying /src/assets/images/app_icon.png pathway...',
+      'APP_ICON: Verifying bundled app icon asset...',
       'PERFORMANCE: Activating hardware acceleration and rendering canvas...',
       'SIGNATURE: Verified developer signature [MOD-342] authorized.'
     ];
@@ -85,7 +87,16 @@ export function MascotLoadingScreen({ authLoading, onComplete }: MascotLoadingSc
   }, []);
 
   return (
-    <div className="fixed inset-0 bg-[#030305] z-[999999] flex flex-col items-center justify-center p-6 select-none overflow-hidden" dir="rtl">
+    <ViewportPortal>
+      <div
+        className="fixed inset-0 bg-[#030305] z-[999999] flex flex-col items-center justify-center p-6 select-none overflow-hidden"
+        style={{
+          height: 'var(--vv-height, 100dvh)',
+          paddingTop: 'calc(var(--safe-top, 0px) + 1.5rem)',
+          paddingBottom: 'calc(var(--safe-bottom, 0px) + 1.5rem)',
+        }}
+        dir="rtl"
+      >
       {/* Background radial glowing effects */}
       <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(59,130,246,0.06),transparent_70%)] pointer-events-none" />
       <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_bottom,rgba(239,23,68,0.04),transparent_60%)] pointer-events-none" />
@@ -116,7 +127,7 @@ export function MascotLoadingScreen({ authLoading, onComplete }: MascotLoadingSc
               </div>
             ) : (
               <img
-                src="/src/assets/images/app_icon.png"
+                src={appIconImg}
                 onError={() => setIconError(true)}
                 alt="MOD App Icon"
                 referrerPolicy="no-referrer"
@@ -204,7 +215,8 @@ export function MascotLoadingScreen({ authLoading, onComplete }: MascotLoadingSc
         </div>
 
       </div>
-    </div>
+      </div>
+    </ViewportPortal>
   );
 }
 
@@ -246,16 +258,28 @@ export function MascotOfflineScreen() {
   };
 
   return (
-    <AnimatePresence>
-      {isOffline && !isDismissed && (
-        <div className="fixed inset-0 z-[999999] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" dir="rtl">
-          <motion.div 
-            initial={{ opacity: 0, scale: 0.9, y: 30 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.9, y: 30 }}
-            transition={{ type: "spring", stiffness: 300, damping: 25 }}
-            className="w-full max-w-sm bg-zinc-950 border border-zinc-800 rounded-3xl p-5 shadow-[0_20px_50px_rgba(0,0,0,0.9)] relative overflow-hidden text-right"
+    <ViewportPortal>
+      <AnimatePresence>
+        {isOffline && !isDismissed && (
+          <div
+            className="fixed inset-0 z-[999999] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+            style={{
+              height: 'var(--vv-height, 100dvh)',
+              paddingTop: 'calc(var(--safe-top, 0px) + 1rem)',
+              paddingBottom: 'calc(var(--safe-bottom, 0px) + 1rem)',
+            }}
+            dir="rtl"
           >
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 30 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 30 }}
+              transition={{ type: "spring", stiffness: 300, damping: 25 }}
+              className="w-full max-w-sm bg-zinc-950 border border-zinc-800 rounded-3xl p-5 shadow-[0_20px_50px_rgba(0,0,0,0.9)] relative overflow-hidden text-right"
+              style={{
+                maxHeight: 'calc(var(--vv-height, 100dvh) - var(--safe-top, 0px) - var(--safe-bottom, 0px) - 2rem)',
+              }}
+            >
             {/* Top red danger accent line */}
             <div className="absolute top-0 inset-x-0 h-1 bg-gradient-to-r from-[#FF1744] via-rose-500 to-[#FF1744] opacity-85" />
 
@@ -326,6 +350,7 @@ export function MascotOfflineScreen() {
         </div>
       )}
     </AnimatePresence>
+    </ViewportPortal>
   );
 }
 

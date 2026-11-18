@@ -133,3 +133,108 @@ export class GlobalErrorBoundary extends Component<
     return this.props.children;
   }
 }
+
+interface ViewErrorBoundaryProps {
+  children: ReactNode;
+  viewName?: string;
+  resetKey?: string | number;
+  onGoHome?: () => void;
+}
+
+interface ViewErrorBoundaryState {
+  hasError: boolean;
+  errorMessage: string;
+}
+
+export class ViewErrorBoundary extends Component<
+  ViewErrorBoundaryProps,
+  ViewErrorBoundaryState
+> {
+  declare props: Readonly<ViewErrorBoundaryProps>;
+  declare state: ViewErrorBoundaryState;
+  declare setState: (
+    updater:
+      | Partial<ViewErrorBoundaryState>
+      | ((prevState: ViewErrorBoundaryState) => Partial<ViewErrorBoundaryState>),
+    callback?: () => void
+  ) => void;
+
+  constructor(props: ViewErrorBoundaryProps) {
+    super(props);
+    this.state = {
+      hasError: false,
+      errorMessage: '',
+    };
+  }
+
+  static getDerivedStateFromError(error: Error): ViewErrorBoundaryState {
+    return {
+      hasError: true,
+      errorMessage: error?.message || 'حدث خطأ أثناء عرض هذه الصفحة',
+    };
+  }
+
+  componentDidUpdate(prevProps: ViewErrorBoundaryProps): void {
+    if (this.state.hasError && prevProps.resetKey !== this.props.resetKey) {
+      this.setState({ hasError: false, errorMessage: '' });
+    }
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
+    recordTelemetryError({
+      source: 'react',
+      severity: 'error',
+      title: `خطأ في شاشة (${this.props.viewName || 'unknown'})`,
+      message: error?.message || 'View render error',
+      stack: error?.stack,
+      details: errorInfo?.componentStack || undefined,
+    });
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div
+          className="min-h-[70vh] bg-black text-zinc-100 flex items-center justify-center p-5 font-sans"
+          dir="rtl"
+        >
+          <div className="max-w-md w-full bg-zinc-900/95 border border-rose-500/30 rounded-2xl p-5 shadow-2xl space-y-4 text-center">
+            <div className="w-12 h-12 rounded-xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center text-rose-400 mx-auto">
+              <AlertTriangle size={24} />
+            </div>
+            <div className="space-y-1">
+              <h2 className="text-sm font-black text-white">تعذر عرض هذه الصفحة مؤقتاً</h2>
+              <p className="text-xs text-zinc-400 leading-relaxed">
+                {this.state.errorMessage}
+              </p>
+            </div>
+            <div className="flex gap-2 justify-center">
+              <button
+                type="button"
+                onClick={() => this.setState({ hasError: false, errorMessage: '' })}
+                className="flex-1 flex items-center justify-center gap-1.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold py-2.5 px-4 rounded-xl transition cursor-pointer"
+              >
+                <RotateCcw size={14} />
+                <span>إعادة المحاولة</span>
+              </button>
+              {this.props.onGoHome && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    this.setState({ hasError: false, errorMessage: '' });
+                    this.props.onGoHome?.();
+                  }}
+                  className="flex items-center justify-center gap-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-bold py-2.5 px-4 rounded-xl transition cursor-pointer border border-zinc-700"
+                >
+                  <span>الرئيسية</span>
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}

@@ -6,7 +6,7 @@ import {
   getCuratedAnimeById
 } from '../data/curatedAnimeDatabase';
 
-export const IS_EXTERNAL_FETCH_DISABLED = false; // محرك الجلب المزدوج: animedar.net (أساسي #1) + ristoanime.me (ثانوي #2)
+export const IS_EXTERNAL_FETCH_DISABLED = false; // محرك الجلب المزدوج: ww3.okanime.xyz (أساسي #1) + animedar.net (مساعد #2)
 
 const activeScraperJikanLocks = new Map<string, Promise<any>>();
 
@@ -36,7 +36,7 @@ export interface SeasonEpisodesGroup {
 }
 
 /**
- * 1. باني روابط سيرفرات المشاهدة والتحميل لموقع animedar.net (الموقع الأساسي #1)
+ * 1. باني روابط سيرفرات المشاهدة والتحميل للموقع المساعد animedar.net (#2 Helper)
  * مستخرج من تحليل ملف jqu.js لقالب animestream
  */
 function buildAnimedarServerUrls(
@@ -319,18 +319,11 @@ function buildAnimedarServerUrls(
 }
 
 export class ScraperService {
-  // 1. الموقع الأساسي الأول (#1 Primary): https://animedar.net
-  private readonly primaryOrigin = 'https://animedar.net';
+  // 1. الموقع الأساسي الأول (#1 Primary): https://ww3.okanime.xyz
+  private readonly primaryOrigin = 'https://ww3.okanime.xyz';
 
-  // 2. الموقع الثانوي الاحتياطي (#2 Secondary): https://ristoanime.cc (ومراياه)
-  private readonly secondaryMirrors = [
-    'https://ristoanime.cc',
-    'https://ristoanime.me',
-    'https://ristoanime.co'
-  ];
-
-  // 3. مصدر المشاهدة والتحميل المباشر الإضافي (#3 OkAnime): https://ww3.okanime.xyz
-  private readonly okanimeOrigin = 'https://ww3.okanime.xyz';
+  // 2. الموقع المساعد الاحتياطي (#2 Helper): https://animedar.net
+  private readonly helperOrigin = 'https://animedar.net';
 
   private readonly defaultHeaders = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
@@ -339,73 +332,15 @@ export class ScraperService {
   };
 
   /**
-   * جلب HTML من الموقع الأساسي animedar.net
+   * جلب HTML من الموقع الأساسي #1: OkAnime (ww3.okanime.xyz)
    */
-  private async fetchAnimedarHtml(path: string, timeoutMs = 9000): Promise<string> {
-    if (IS_EXTERNAL_FETCH_DISABLED) {
-      throw new Error('External web scraping is paused.');
-    }
-    let cleanPath = path.startsWith('/') ? path : '/' + path;
-    if (cleanPath.startsWith('/anime/')) {
-      cleanPath = cleanPath.replace(/^\/anime\//, '/anime-p/');
-    }
-
-    const res = await fetch(`${this.primaryOrigin}${cleanPath}`, {
-      headers: this.defaultHeaders,
-      signal: AbortSignal.timeout(timeoutMs)
-    });
-
-    if (!res.ok) {
-      throw new Error(`Animedar HTTP ${res.status}`);
-    }
-
-    const text = await res.text();
-    if (text.length < 5000) {
-      throw new Error('Animedar response too short');
-    }
-    return text;
-  }
-
-  /**
-   * جلب HTML من الموقع الثانوي الاحتياطي RistoAnime (ristoanime.me / ristoanime.co)
-   */
-  private async fetchRistoHtml(path: string, timeoutMs = 5500): Promise<{ html: string; baseUrl: string }> {
-    if (IS_EXTERNAL_FETCH_DISABLED) {
-      throw new Error('External web scraping is paused.');
-    }
-    const cleanPath = path.startsWith('/') ? path : '/' + path;
-    let lastError: any = null;
-
-    for (const baseUrl of this.secondaryMirrors) {
-      try {
-        const res = await fetch(`${baseUrl}${cleanPath}`, {
-          headers: this.defaultHeaders,
-          signal: AbortSignal.timeout(timeoutMs)
-        });
-        if (res.ok) {
-          const text = await res.text();
-          if (text.length > 5000) {
-            return { html: text, baseUrl };
-          }
-        }
-      } catch (err: any) {
-        lastError = err;
-      }
-    }
-
-    throw new Error(`RistoAnime secondary mirrors failed: ${lastError?.message || lastError}`);
-  }
-
-  /**
-   * جلب HTML من مصدر OkAnime (ww3.okanime.xyz)
-   */
-  private async fetchOkanimeHtml(path: string, timeoutMs = 4500): Promise<string> {
+  private async fetchOkanimeHtml(path: string, timeoutMs = 8000): Promise<string> {
     if (IS_EXTERNAL_FETCH_DISABLED) {
       throw new Error('External web scraping is paused.');
     }
     const cleanPath = path.startsWith('http')
       ? path
-      : `${this.okanimeOrigin}${path.startsWith('/') ? path : '/' + path}`;
+      : `${this.primaryOrigin}${path.startsWith('/') ? path : '/' + path}`;
 
     const res = await fetch(cleanPath, {
       headers: this.defaultHeaders,
@@ -417,6 +352,34 @@ export class ScraperService {
     const text = await res.text();
     if (text.length < 3000) {
       throw new Error('OkAnime response too short');
+    }
+    return text;
+  }
+
+  /**
+   * جلب HTML من الموقع المساعد #2: AnimeDar (animedar.net)
+   */
+  private async fetchAnimedarHtml(path: string, timeoutMs = 8000): Promise<string> {
+    if (IS_EXTERNAL_FETCH_DISABLED) {
+      throw new Error('External web scraping is paused.');
+    }
+    let cleanPath = path.startsWith('/') ? path : '/' + path;
+    if (cleanPath.startsWith('/anime/')) {
+      cleanPath = cleanPath.replace(/^\/anime\//, '/anime-p/');
+    }
+
+    const res = await fetch(`${this.helperOrigin}${cleanPath}`, {
+      headers: this.defaultHeaders,
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+
+    if (!res.ok) {
+      throw new Error(`Animedar HTTP ${res.status}`);
+    }
+
+    const text = await res.text();
+    if (text.length < 5000) {
+      throw new Error('Animedar response too short');
     }
     return text;
   }
@@ -444,6 +407,11 @@ export class ScraperService {
     if (h.includes('vidmoly')) return 'Vidmoly';
     if (h.includes('streamwish') || h.includes('asnwish')) return 'Streamwish';
     if (h.includes('share4max') || h.includes('megamax')) return 'MegaMax';
+    if (h.includes('yourupload')) return 'YourUpload';
+    if (h.includes('mixdrop')) return 'Mixdrop';
+    if (h.includes('vidoza')) return 'Vidoza';
+    if (h.includes('filemoon')) return 'Filemoon';
+    if (h.includes('dood') || h.includes('d000d')) return 'DoodStream';
     return raw ? raw.trim() : 'Direct Server';
   }
 
@@ -488,7 +456,8 @@ export class ScraperService {
   private async extractOkanimeEpisodeServers(
     animeSlug: string,
     epNum: string | number,
-    candidateTitles: string[]
+    candidateTitles: string[],
+    directEpisodePath?: string
   ): Promise<{ watch: EpisodeServer[]; download: EpisodeServer[] }> {
     const watch: EpisodeServer[] = [];
     const download: EpisodeServer[] = [];
@@ -497,7 +466,12 @@ export class ScraperService {
     const epStr = String(epNum).trim();
     let html = '';
 
-    // 1. محاولة سريعة ومباشرة عبر بنية الرابط القياسية في okanime: /episode/<slug>-episode-<num>
+    // 1. بناء قائمة مسارات الحلقة المباشرة والمحاولة بالتوازي السريع
+    const epPaths: string[] = [];
+    if (directEpisodePath && directEpisodePath.includes('/episode/')) {
+      epPaths.push(directEpisodePath);
+    }
+
     const slugsToTry: string[] = [];
     if (animeSlug) {
       slugsToTry.push(animeSlug);
@@ -509,26 +483,35 @@ export class ScraperService {
       }
     }
 
-    for (const slug of slugsToTry.slice(0, 2)) {
+    for (const slug of slugsToTry.slice(0, 3)) {
+      const p = `/episode/${slug}-episode-${epStr}`;
+      if (!epPaths.includes(p)) epPaths.push(p);
+    }
+
+    for (const epPath of epPaths) {
       try {
-        html = await this.fetchOkanimeHtml(`/episode/${slug}-episode-${epStr}`, 4000);
-        if (html && (html.includes('setServer(') || html.includes('ep-link'))) break;
-        html = '';
+        const fetched = await this.fetchOkanimeHtml(epPath, 4500);
+        if (fetched && (fetched.includes('setServer(') || fetched.includes('data-server') || fetched.includes('ep-link'))) {
+          html = fetched;
+          break;
+        }
       } catch {}
     }
 
-    // 2. إن لم ينجح المسار المباشر، نبحث عن الأنمي داخل okanime.xyz ونجلب رابط الحلقة الفعلي
+    // 2. إن لم ينجح المسار المباشر، نبحث عن الأنمي داخل ww3.okanime.xyz ونجلب رابط الحلقة الفعلي
     if (!html) {
       for (const titleCand of candidateTitles.slice(0, 2)) {
         const foundSlug = await this.searchOkanimeSlug(titleCand);
         if (!foundSlug) continue;
         try {
-          html = await this.fetchOkanimeHtml(`/episode/${foundSlug}-episode-${epStr}`, 4000);
-          if (html && (html.includes('setServer(') || html.includes('ep-link'))) break;
-          html = '';
+          const fetched = await this.fetchOkanimeHtml(`/episode/${foundSlug}-episode-${epStr}`, 4500);
+          if (fetched && (fetched.includes('setServer(') || fetched.includes('data-server') || fetched.includes('ep-link'))) {
+            html = fetched;
+            break;
+          }
         } catch {}
         try {
-          const animePageHtml = await this.fetchOkanimeHtml(`/anime/${foundSlug}`, 4000);
+          const animePageHtml = await this.fetchOkanimeHtml(`/anime/${foundSlug}`, 4500);
           const $a = cheerio.load(animePageHtml);
           let matchedEpHref = '';
           $a('a[href*="/episode/"]').each((_, el) => {
@@ -539,7 +522,7 @@ export class ScraperService {
             }
           });
           if (matchedEpHref) {
-            html = await this.fetchOkanimeHtml(matchedEpHref, 4000);
+            html = await this.fetchOkanimeHtml(matchedEpHref, 4500);
             if (html) break;
           }
         } catch {}
@@ -550,10 +533,10 @@ export class ScraperService {
 
     const $ = cheerio.load(html);
 
-    // أ. استخراج سيرفرات المشاهدة من [data-server] و @click="setServer('...')"
+    // أ. استخراج سيرفرات المشاهدة من [data-server] و @click / x-on:click="setServer('...')"
     $('[data-server]').each((_, el) => {
       const rawServer = ($(el).attr('data-server') || '').trim();
-      const clickAttr = $(el).attr('@click') || '';
+      const clickAttr = $(el).attr('@click') || $(el).attr('x-on:click') || $(el).attr('onclick') || '';
       const urlMatch = clickAttr.match(/setServer\(['"]([^'"]+)['"]\)/i);
       if (!urlMatch || !urlMatch[1]) return;
 
@@ -562,8 +545,6 @@ export class ScraperService {
         .replace(/&amp;/g, '&')
         .trim();
       if (!embedUrl.startsWith('http')) return;
-      // تجاهل روابط share4max المشفرة إذا كانت غير مباشرة للمشغل، مع إبقاء السيرفرات الموثوقة
-      if (embedUrl.includes('share4max.com/iframe/')) return;
 
       const qText = $(el).find('span').first().text().trim() || $(el).text().trim();
       const quality = this.mapOkanimeQuality(qText);
@@ -729,9 +710,13 @@ export class ScraperService {
     try {
       const u = href.startsWith('http') ? new URL(href) : new URL(href, this.primaryOrigin);
       const parts = u.pathname.split('/').filter(Boolean);
-      const animeIdx = parts.findIndex(p => p === 'anime-p' || p === 'anime' || p === 'series');
+      const animeIdx = parts.findIndex(p => p === 'anime' || p === 'anime-p' || p === 'series');
       if (animeIdx !== -1 && parts[animeIdx + 1]) {
         return parts[animeIdx + 1];
+      }
+      const epIdx = parts.findIndex(p => p === 'episode');
+      if (epIdx !== -1 && parts[epIdx + 1]) {
+        return parts[epIdx + 1].replace(/-episode-\d+.*$/i, '');
       }
       return parts.pop() || '';
     } catch {
@@ -740,7 +725,112 @@ export class ScraperService {
   }
 
   /**
-   * تحليل صفحة أنمي من الموقع الأساسي animedar.net
+   * تحليل صفحة أنمي من الموقع الأساسي OkAnime (ww3.okanime.xyz)
+   */
+  private parseOkanimeDocument($: cheerio.CheerioAPI, rawSlug: string) {
+    let rawTitle =
+      $('h1.animepage-h1').first().text().trim() ||
+      $('h1').first().text().trim() ||
+      $('meta[property="og:title"]').attr('content') ||
+      rawSlug;
+
+    rawTitle = rawTitle
+      .replace(/-\s*أوك انمي.*$/i, '')
+      .replace(/-\s*OkAnime.*$/i, '')
+      .replace(/^جميع\s*حلقات\s*/i, '')
+      .replace(/^انمي\s+/i, '')
+      .replace(/\s*مترجم.*$/i, '')
+      .trim();
+
+    const title = cleanAnimeTitle(rawTitle) || rawTitle;
+
+    const posterUrl =
+      $('img.animepage-poster').first().attr('src') ||
+      $('img.animepage-poster').first().attr('data-src') ||
+      $('meta[property="og:image"]').attr('content') ||
+      '';
+
+    const description =
+      $('.animepage-synopsis .synopsis-text').first().text().trim() ||
+      $('meta[property="og:description"]').attr('content') ||
+      '';
+
+    const infoMap: Record<string, string> = {};
+    const knownKeys = ['النوع', 'الحالة', 'الموسم', 'سنة العرض', 'عدد الحلقات', 'مدة الحلقة', 'تقييم MAL'];
+    $('.animepage-meta > *').each((_, el) => {
+      const txt = $(el).text().replace(/\s+/g, ' ').trim();
+      if (!txt) return;
+      for (const k of knownKeys) {
+        if (txt.startsWith(k)) {
+          const val = txt.slice(k.length).replace(/^[:\s]+/, '').trim();
+          if (val) infoMap[k] = val;
+          break;
+        }
+      }
+    });
+
+    const genres: string[] = [];
+    $('.animepage-genres a.genre-tag, .animepage-genres a').each((_, el) => {
+      const g = $(el).text().trim();
+      if (g && !genres.includes(g)) genres.push(g);
+    });
+
+    const ratingMatch = (infoMap['تقييم MAL'] || '').match(/(\d+(?:\.\d+)?)/);
+    const rating = ratingMatch ? Math.min(10, parseFloat(ratingMatch[1])) : 8.5;
+
+    const episodes: {
+      id: string;
+      num: string;
+      title: string;
+      link: string;
+      seasonNumber?: number;
+      serversCount: number;
+    }[] = [];
+
+    const epAnchorNodes = $('.animepage-main-col a[href*="/episode/"]').length > 0
+      ? $('.animepage-main-col a[href*="/episode/"]')
+      : $('a[href*="/episode/"]').filter((_, el) => $(el).closest('aside').length === 0);
+
+    epAnchorNodes.each((_, el) => {
+      const href = ($(el).attr('href') || '').trim();
+      if (!href) return;
+      const numMatch = href.match(/-episode-(\d+)(?:$|\/|\?|#)/i) || $(el).text().match(/(\d+)/);
+      if (!numMatch || !numMatch[1]) return;
+
+      const epNum = numMatch[1];
+      const fullLink = href.startsWith('http')
+        ? href
+        : `${this.primaryOrigin}${href.startsWith('/') ? href : '/' + href}`;
+
+      if (!episodes.some(e => e.num === epNum)) {
+        episodes.push({
+          id: `${rawSlug}__ep__${epNum}`,
+          num: epNum,
+          title: `الحلقة ${epNum}`,
+          link: fullLink,
+          seasonNumber: 1,
+          serversCount: 1
+        });
+      }
+    });
+
+    episodes.sort((a, b) => (parseInt(a.num, 10) || 0) - (parseInt(b.num, 10) || 0));
+
+    return {
+      slug: rawSlug,
+      title,
+      rawTitle,
+      posterUrl,
+      description,
+      infoMap,
+      genres,
+      rating,
+      episodes
+    };
+  }
+
+  /**
+   * تحليل صفحة أنمي من الموقع المساعد animedar.net
    * يستخرج الحلقات من #EpList1 وجميع السيرفرات من #ServerList1 .divv11
    */
   private parseAnimedarDocument($: cheerio.CheerioAPI, rawSlug: string) {
@@ -878,7 +968,7 @@ export class ScraperService {
           id: epCompositeId,
           num: String(epNum),
           title: epText.includes('الحلقة') ? epText : `الحلقة ${epNum}`,
-          link: `${this.primaryOrigin}/anime-p/${rawSlug}/?ep=${epNum}`,
+          link: `${this.helperOrigin}/anime-p/${rawSlug}/?ep=${epNum}`,
           seasonNumber: 1,
           serversCount: watchServers.length
         });
@@ -902,218 +992,55 @@ export class ScraperService {
   }
 
   /**
-   * استخراج سيرفرات المشاهدة والتحميل من الموقع الثانوي الاحتياطي RistoAnime
-   */
-  private async extractRistoServersBySlug(epSlug: string): Promise<{ watch: EpisodeServer[]; download: EpisodeServer[] }> {
-    const watch: EpisodeServer[] = [];
-    const download: EpisodeServer[] = [];
-
-    const cleanSlug = epSlug.replace(/^\/+|\/+$/g, '').replace(/\/(watch|download)$/i, '');
-    if (!cleanSlug) return { watch, download };
-
-    const [watchRes, dlRes] = await Promise.allSettled([
-      this.fetchRistoHtml(`/${cleanSlug}/watch`, 4500),
-      this.fetchRistoHtml(`/${cleanSlug}/download`, 4500)
-    ]);
-
-    if (watchRes.status === 'fulfilled' && watchRes.value?.html) {
-      const $w = cheerio.load(watchRes.value.html);
-      $w('[data-watch], [data-ep-url]').each((idx, el) => {
-        let serverUrl = ($w(el).attr('data-watch') || $w(el).attr('data-ep-url') || '').trim();
-        if (!serverUrl || !serverUrl.startsWith('http')) return;
-        const lowerUrl = serverUrl.toLowerCase();
-
-        // تنظيف الروابط في RistoAnime واستبعاد السيرفرات المعطلة أو المحمية بجدار Sandbox غير قابل للاستخراج
-        if (lowerUrl.includes('upns.online')) {
-          return;
-        }
-        if (lowerUrl.includes('mega.nz') && serverUrl.endsWith('.html')) {
-          serverUrl = serverUrl.replace(/\.html$/i, '');
-        }
-        if (lowerUrl.includes('sendvid.com') && serverUrl.endsWith('.html')) {
-          serverUrl = serverUrl.replace(/\.html$/i, '');
-        }
-        if (lowerUrl.includes('uqload.')) {
-          if (serverUrl.includes('?')) {
-            serverUrl = serverUrl.split('?')[0];
-          }
-          if (serverUrl.includes('/e/')) {
-            serverUrl = serverUrl.replace('/e/', '/embed-');
-          }
-          if (!serverUrl.endsWith('.html')) {
-            serverUrl += '.html';
-          }
-        }
-        if ((lowerUrl.includes('hgcloud.') || lowerUrl.includes('dhcplay.')) && serverUrl.includes('/e/')) {
-          const m = serverUrl.match(/\/e\/([A-Za-z0-9_-]+)/);
-          if (m) {
-            serverUrl = `https://asnwish.com/e/${m[1]}`;
-          }
-        }
-
-        let serverName = `Server ${idx + 1}`;
-        let quality: '1080p' | '720p' | '480p' | 'auto' = '1080p';
-        let derivedDownloadUrl = '';
-
-        if (lowerUrl.includes('vidmoly')) {
-          serverName = 'Vidmoly';
-          quality = '1080p';
-          derivedDownloadUrl = serverUrl.replace('/embed-', '/');
-        } else if (lowerUrl.includes('mega.nz')) {
-          serverName = 'Mega';
-          quality = '1080p';
-          derivedDownloadUrl = serverUrl.replace('/embed/', '/file/');
-        } else if (lowerUrl.includes('sendvid')) {
-          serverName = 'Sendvid';
-          quality = '720p';
-          derivedDownloadUrl = serverUrl.replace('/embed/', '/');
-        } else if (lowerUrl.includes('mp4upload')) {
-          serverName = 'MP4Upload';
-          quality = '720p';
-          derivedDownloadUrl = serverUrl.replace('/embed-', '/').replace(/\.html$/i, '');
-        } else if (lowerUrl.includes('uqload')) {
-          serverName = 'Uqload';
-          quality = '720p';
-          derivedDownloadUrl = serverUrl.replace('/embed-', '/');
-        } else if (lowerUrl.includes('streamwish') || lowerUrl.includes('asnwish') || lowerUrl.includes('awish') || lowerUrl.includes('swish') || lowerUrl.includes('hgcloud') || lowerUrl.includes('dhcplay')) {
-          serverName = 'Streamwish';
-          quality = '1080p';
-          derivedDownloadUrl = serverUrl.replace('/e/', '/f/');
-        } else if (lowerUrl.includes('filemoon')) {
-          serverName = 'Filemoon';
-          quality = '1080p';
-          derivedDownloadUrl = serverUrl.replace('/e/', '/d/');
-        } else if (lowerUrl.includes('ok.ru')) {
-          serverName = 'Ok.ru';
-          quality = '720p';
-          derivedDownloadUrl = serverUrl.replace('/videoembed/', '/video/');
-        } else if (lowerUrl.includes('drive.google')) {
-          serverName = 'Google Drive';
-          quality = '1080p';
-          const dMatch = serverUrl.match(/\/d\/([A-Za-z0-9_-]+)/);
-          if (dMatch) {
-            derivedDownloadUrl = `https://drive.google.com/u/0/uc?id=${dMatch[1]}&export=download`;
-          }
-        } else if (lowerUrl.includes('hgcloud') || lowerUrl.includes('dhcplay')) {
-          serverName = 'CloudStream';
-          quality = '1080p';
-          derivedDownloadUrl = serverUrl.replace('/e/', '/').replace(/\.html$/i, '');
-        } else if (lowerUrl.includes('turbovid')) {
-          serverName = 'TurboVid';
-          quality = '1080p';
-        }
-
-        if (!watch.some(s => s.url === serverUrl)) {
-          watch.push({
-            serverName,
-            url: serverUrl,
-            type: 'iframe',
-            quality,
-            category: 'watch'
-          });
-        }
-
-        if (derivedDownloadUrl && !download.some(s => s.url === derivedDownloadUrl)) {
-          download.push({
-            serverName,
-            url: derivedDownloadUrl,
-            type: 'direct',
-            quality,
-            category: 'download'
-          });
-        }
-      });
-    }
-
-    if (dlRes.status === 'fulfilled' && dlRes.value?.html) {
-      const $d = cheerio.load(dlRes.value.html);
-      $d('a[href^="http"]').each((_, el) => {
-        const href = ($d(el).attr('href') || '').trim();
-        if (!href) return;
-        const lowerHref = href.toLowerCase();
-        if (
-          lowerHref.includes('ristoanime.') ||
-          lowerHref.includes('facebook.') ||
-          lowerHref.includes('twitter.') ||
-          lowerHref.includes('x.com') ||
-          lowerHref.includes('youtube.') ||
-          lowerHref.includes('youtu.be') ||
-          lowerHref.includes('t.me') ||
-          lowerHref.includes('discord') ||
-          lowerHref.includes('wordpress.') ||
-          lowerHref.includes('instagram.') ||
-          lowerHref.includes('tiktok.')
-        ) {
-          return;
-        }
-
-        let hostName = 'Download';
-        let quality: '1080p' | '720p' | '480p' | 'auto' = '1080p';
-        if (lowerHref.includes('mega.nz')) { hostName = 'Mega'; quality = '1080p'; }
-        else if (lowerHref.includes('mp4upload')) { hostName = 'MP4Upload'; quality = '1080p'; }
-        else if (lowerHref.includes('vidmoly')) { hostName = 'Vidmoly'; quality = '1080p'; }
-        else if (lowerHref.includes('uqload')) { hostName = 'Uqload'; quality = '720p'; }
-        else if (lowerHref.includes('mediafire')) { hostName = 'MediaFire'; quality = '720p'; }
-        else if (lowerHref.includes('drive.google')) { hostName = 'Google Drive'; quality = '1080p'; }
-        else if (lowerHref.includes('hgcloud') || lowerHref.includes('dhcplay')) { hostName = 'CloudStream'; quality = '1080p'; }
-        else if (lowerHref.includes('4shared')) { hostName = '4Shared'; quality = '1080p'; }
-        else if (lowerHref.includes('asnwish') || lowerHref.includes('streamwish')) { hostName = 'Streamwish'; quality = '720p'; }
-
-        if (!download.some(s => s.url === href)) {
-          download.push({
-            serverName: hostName,
-            url: href,
-            type: 'direct',
-            quality,
-            category: 'download'
-          });
-        }
-      });
-    }
-
-    return { watch, download };
-  }
-
-  /**
-   * البحث في الموقع الثانوي RistoAnime عن أنمي أو حلقة
-   */
-  private async searchRistoAnime(query: string): Promise<string | null> {
-    try {
-      const { html } = await this.fetchRistoHtml(`/?s=${encodeURIComponent(query.trim())}`, 4500);
-      const $ = cheerio.load(html);
-      let foundSeriesSlug: string | null = null;
-      let foundEpSlug: string | null = null;
-
-      $('.MovieItem a, .BlocksHolder a').each((_, el) => {
-        const href = $(el).attr('href') || '';
-        if (!href.startsWith('http')) return;
-        if (href.includes('/genre/') || href.includes('/anime-type/') || href.includes('/release-year/')) return;
-        const slug = href.split('/').filter(Boolean).pop() || '';
-        if (!slug) return;
-        if (href.includes('/series/') && !foundSeriesSlug) {
-          foundSeriesSlug = slug;
-        } else if (!foundEpSlug) {
-          foundEpSlug = slug;
-        }
-      });
-
-      return foundSeriesSlug || foundEpSlug;
-    } catch {
-      return null;
-    }
-  }
-
-  /**
-   * فك تشفير صندوق "الأكثر شعبية اليوم" (#hot-widget-wrapper[data-encrypted]) من الموقع الأساسي animedar.net
-   * معزول تماماً عن قسم أحدث الحلقات لمنع أي تداخل بين الأقسام
+   * فك وتجميع قائمة "الأكثر شعبية اليوم":
+   * - أولاً: من الموقع الأساسي #1 OkAnime (ww3.okanime.xyz/state/currently-airing)
+   * - ثانياً (مساعد): فك تشفير صندوق #hot-widget-wrapper[data-encrypted] من animedar.net
    */
   public async getPopularToday(forceBypass = false): Promise<AnimeItem[]> {
-    const cacheKey = 'popular_today_animedar_v1';
+    const cacheKey = 'popular_today_okanime_v1';
     if (!forceBypass) {
       const cached = await this.getCached<AnimeItem[]>(cacheKey);
       if (cached && cached.length > 0) return cached;
     }
 
+    try {
+      const html = await this.fetchOkanimeHtml('/state/currently-airing', 6000);
+      const $ = cheerio.load(html);
+      const items: AnimeItem[] = [];
+      const seen = new Set<string>();
+
+      $('.anime-card:not(.episode-card)').each((_, el) => {
+        if ($(el).closest('aside').length > 0) return;
+        const href = $(el).find('a[href*="/anime/"]').first().attr('href') || '';
+        const slug = this.extractAnimeSlugFromUrl(href);
+        if (!slug || seen.has(slug)) return;
+
+        const rawTitle = $(el).find('h4 a span, h4 a, h4, .anime-title').first().text().replace(/\s+/g, ' ').trim();
+        if (!rawTitle) return;
+
+        const badgeText = $(el).find('.ep-number-badge, .badge').text().trim();
+        const epMatch = badgeText.match(/(\d+)/);
+        const epNum = epMatch ? epMatch[1] : '1';
+        const img = $(el).find('img').first().attr('src') || $(el).find('img').first().attr('data-src') || '';
+
+        seen.add(slug);
+        items.push({
+          id: slug,
+          title: cleanAnimeTitle(rawTitle) || rawTitle,
+          episode: epNum,
+          link: `${this.primaryOrigin}/anime/${slug}`,
+          imageUrl: img,
+          rating: 8.7
+        });
+      });
+
+      if (items.length > 0) {
+        await this.setCache(cacheKey, items, 30 * 60 * 1000);
+        return items;
+      }
+    } catch {}
+
+    // احتياطي مساعد (#2 AnimeDar)
     try {
       const html = await this.fetchAnimedarHtml('/', 5000);
       const $ = cheerio.load(html);
@@ -1139,9 +1066,9 @@ export class ScraperService {
           id: slug,
           title: cleanAnimeTitle(rawTitle) || rawTitle,
           episode: epNum,
-          link: `${this.primaryOrigin}/anime-p/${slug}/`,
+          link: `${this.helperOrigin}/anime-p/${slug}/`,
           imageUrl: img,
-          rating: 8.8
+          rating: 8.6
         });
       });
 
@@ -1155,8 +1082,9 @@ export class ScraperService {
   }
 
   /**
-   * 1. أحدث الحلقات المترجمة (معزولة بنسبة 100% من صندوق .bixbox.ongoing فقط في animedar.net)
-   * تدعم التصفح عبر الصفحات (page = 1, 2, 3...) تماماً مثل زر "التالي" و"السابق" في الموقع الرئيسي
+   * 1. أحدث الحلقات المترجمة:
+   * - أولاً (الأساسي #1): من ww3.okanime.xyz/recently-uploaded-episodes
+   * - ثانياً (المساعد #2): من صندوق .bixbox.ongoing في animedar.net عند تعذر الأساسي
    */
   public async getRecentEpisodes(forceBypass = false, page = 1): Promise<AnimeItem[]> {
     const safePage = Math.max(1, Math.floor(Number(page) || 1));
@@ -1171,7 +1099,7 @@ export class ScraperService {
       }));
     }
 
-    const cacheKey = `recent_episodes_animedar_isolated_v3_page_${safePage}`;
+    const cacheKey = `recent_episodes_okanime_primary_v1_page_${safePage}`;
     if (!forceBypass) {
       const cached = await this.getCached<AnimeItem[]>(cacheKey);
       if (cached && cached.length > 0) return cached;
@@ -1183,100 +1111,102 @@ export class ScraperService {
     }
 
     try {
-      // 1. الجلب المباشر من الموقع الأساسي #1 (animedar.net) للصفحة المطلوبة (/ أو /page/N/)
-      const targetDarPath = safePage > 1 ? `/page/${safePage}/` : '/';
-      const darHtml = await this.fetchAnimedarHtml(targetDarPath, 8500).catch(() => '');
       const validItems: AnimeItem[] = [];
       const seenSlugs = new Set<string>();
 
-      if (darHtml) {
-        const $dar = cheerio.load(darHtml);
-        // استهداف حصري لصندوق .bixbox.ongoing (الانمي المستمر) وتجاهل #hot-widget-wrapper وصندوق التوصية
-        $dar('.bixbox.ongoing article.bs').each((_, el) => {
-          const href = $dar(el).find('a').first().attr('href') || '';
-          const slug = this.extractAnimeSlugFromUrl(href);
+      // 1. الجلب المباشر من الموقع الأساسي #1 (ww3.okanime.xyz)
+      const okPath = safePage > 1 ? `/recently-uploaded-episodes?page=${safePage}` : '/recently-uploaded-episodes';
+      const okHtml = await this.fetchOkanimeHtml(okPath, 7500).catch(() => '');
+
+      if (okHtml) {
+        const $ok = cheerio.load(okHtml);
+        $ok('[data-track-card="episode"]').each((_, el) => {
+          if ($ok(el).closest('aside').length > 0) return;
+          const href = $ok(el).find('a[href*="/episode/"]').first().attr('href') || '';
+          const trackSlug = ($ok(el).attr('data-track-anime') || '').trim();
+          const slug = trackSlug || this.extractAnimeSlugFromUrl(href);
           if (!slug || seenSlugs.has(slug)) return;
 
-          const dataStatus = ($dar(el).find('.typez').attr('data-status') || '').trim();
-          const btText = $dar(el).find('.bt, .status, .epx').text().trim();
-          const typeText = $dar(el).find('.typez').text().trim();
-
-          // استبعاد الأنميات القادمة والأفلام بشكل قاطع
-          if (
-            dataStatus.includes('قادم') ||
-            btText.includes('قادم') ||
-            typeText.includes('فيلم') ||
-            typeText.toLowerCase().includes('movie')
-          ) {
-            return;
-          }
-
-          // قراءة رقم الحلقة الحقيقي مباشرة من .ep-number span
-          const epSpanText = $dar(el).find('.ep-number span').text().trim();
-          const epMatch = epSpanText.match(/الحلقة\s*(\d+)/) || epSpanText.match(/(\d+)/);
-          if (!epMatch) return;
+          const epAttr = ($ok(el).attr('data-umami-event-episode_number') || '').trim();
+          const badgeText = $ok(el).find('.ep-number-badge').text().trim();
+          const epMatch = epAttr.match(/^(\d+)$/) || href.match(/-episode-(\d+)/i) || badgeText.match(/(\d+)/);
+          if (!epMatch || !epMatch[1]) return;
 
           const epNum = epMatch[1];
-          const rawTitle = $dar(el).find('h2[itemprop="headline"], .tt h2').first().text().replace(/\s+/g, ' ').trim();
-          const img = $dar(el).find('img').first().attr('src') || $dar(el).find('img').first().attr('data-src') || '';
+          let rawTitle =
+            $ok(el).find('.anime-title h4, .anime-title a, .anime-title').first().text().replace(/\s+/g, ' ').trim() ||
+            $ok(el).find('img').first().attr('alt') ||
+            slug.replace(/-/g, ' ');
+          rawTitle = rawTitle
+            .replace(/\s*الحلقة\s*\d+.*$/i, '')
+            .replace(/\s*مترجمة.*$/i, '')
+            .trim();
+
+          const img =
+            $ok(el).find('.episode-image img, img').first().attr('src') ||
+            $ok(el).find('.episode-image img, img').first().attr('data-src') ||
+            '';
+
+          const fullLink = href.startsWith('http')
+            ? href
+            : `${this.primaryOrigin}/episode/${slug}-episode-${epNum}`;
 
           seenSlugs.add(slug);
           validItems.push({
             id: `${slug}__ep__${epNum}`,
             title: cleanAnimeTitle(rawTitle) || rawTitle,
             episode: epNum,
-            link: `${this.primaryOrigin}/anime-p/${slug}/?ep=${epNum}`,
+            link: fullLink,
             imageUrl: img,
-            rating: 8.5
+            rating: 8.6
           });
         });
       }
 
-      // 2. إذا تعذر الوصول للموقع الأساسي فقط، نستخدم الموقع الثانوي الاحتياطي #2 (ristoanime.me)
+      // 2. الموقع المساعد #2 (animedar.net) كاحتياطي عند تعذر الأساسي أو فراغ النتائج
       if (validItems.length === 0) {
-        const targetRistoPath = safePage > 1 ? `/page/${safePage}/` : '/';
-        const ristoHome = await this.fetchRistoHtml(targetRistoPath, 6000);
-        const $r = cheerio.load(ristoHome.html);
-        $r('.MovieItem a').each((_, el) => {
-          const link = ($r(el).attr('href') || '').trim();
-          if (!link || link.includes('/series/') || link.includes('/movies/')) return;
+        const targetDarPath = safePage > 1 ? `/page/${safePage}/` : '/';
+        const darHtml = await this.fetchAnimedarHtml(targetDarPath, 8000).catch(() => '');
 
-          const rawTitle =
-            $r(el).attr('title') ||
-            $r(el).find('h4, h3, .title').first().text().trim() ||
-            '';
-          if (!rawTitle) return;
+        if (darHtml) {
+          const $dar = cheerio.load(darHtml);
+          $dar('.bixbox.ongoing article.bs').each((_, el) => {
+            const href = $dar(el).find('a').first().attr('href') || '';
+            const slug = this.extractAnimeSlugFromUrl(href);
+            if (!slug || seenSlugs.has(slug)) return;
 
-          const epMatch = rawTitle.match(/الحلقة\s*(\d+)/) || decodeURIComponent(link).match(/الحلقة-(\d+)/);
-          if (!epMatch) return;
+            const dataStatus = ($dar(el).find('.typez').attr('data-status') || '').trim();
+            const btText = $dar(el).find('.bt, .status, .epx').text().trim();
+            const typeText = $dar(el).find('.typez').text().trim();
 
-          const epNum = epMatch[1];
-          const cleanedTitle = cleanAnimeTitle(
-            rawTitle
-              .replace(/^مشاهدة\s*/i, '')
-              .replace(/^انمي\s*/i, '')
-              .replace(/الحلقة\s*\d+.*$/i, '')
-              .trim()
-          );
-          if (!cleanedTitle || cleanedTitle.length < 2) return;
+            if (
+              dataStatus.includes('قادم') ||
+              btText.includes('قادم') ||
+              typeText.includes('فيلم') ||
+              typeText.toLowerCase().includes('movie')
+            ) {
+              return;
+            }
 
-          const styleAttr = $r(el).find('[style*="background"]').attr('style') || $r(el).attr('style') || '';
-          const bgMatch = styleAttr.match(/url\(['"]?(.*?)['"]?\)/);
-          const img = bgMatch ? bgMatch[1] : ($r(el).find('img').attr('src') || $r(el).find('img').attr('data-src') || '');
+            const epSpanText = $dar(el).find('.ep-number span').text().trim();
+            const epMatch = epSpanText.match(/الحلقة\s*(\d+)/) || epSpanText.match(/(\d+)/);
+            if (!epMatch) return;
 
-          const ristoEpSlug = link.split('/').filter(Boolean).pop() || '';
-          if (!ristoEpSlug || seenSlugs.has(ristoEpSlug)) return;
+            const epNum = epMatch[1];
+            const rawTitle = $dar(el).find('h2[itemprop="headline"], .tt h2').first().text().replace(/\s+/g, ' ').trim();
+            const img = $dar(el).find('img').first().attr('src') || $dar(el).find('img').first().attr('data-src') || '';
 
-          seenSlugs.add(ristoEpSlug);
-          validItems.push({
-            id: `risto__${ristoEpSlug}`,
-            title: cleanedTitle,
-            episode: epNum,
-            link,
-            imageUrl: img,
-            rating: 8.4
+            seenSlugs.add(slug);
+            validItems.push({
+              id: `${slug}__ep__${epNum}`,
+              title: cleanAnimeTitle(rawTitle) || rawTitle,
+              episode: epNum,
+              link: `${this.helperOrigin}/anime-p/${slug}/?ep=${epNum}`,
+              imageUrl: img,
+              rating: 8.5
+            });
           });
-        });
+        }
       }
 
       if (validItems.length > 0) {
@@ -1287,8 +1217,8 @@ export class ScraperService {
         return validItems;
       }
 
-      throw new Error('No recent episodes found from Animedar or RistoAnime');
-    } catch (error: any) {
+      throw new Error('No recent episodes found from OkAnime or Animedar');
+    } catch {
       const stale = await serverCache.get<AnimeItem[]>(cacheKey, true);
       if (stale && stale.length > 0) return stale;
       if (safePage === 1) {
@@ -1301,20 +1231,138 @@ export class ScraperService {
   }
 
   /**
-   * 2. جدول المواعيد
+   * 2. جدول البث المباشر المطابق للمصدر الأساسي ww3.okanime.xyz/schedule
    */
-  public async getSchedule(): Promise<AnimeItem[]> {
-    const cacheKey = 'schedule_animedar_v1';
-    const cached = await this.getCached<AnimeItem[]>(cacheKey);
-    if (cached && cached.length > 0) return cached;
+  public async getScheduleByDayMap(forceBypass = false): Promise<Record<string, any[]>> {
+    const cacheKey = 'schedule_okanime_week_v2';
+    if (!forceBypass) {
+      const cached = await this.getCached<Record<string, any[]>>(cacheKey);
+      if (cached && Object.keys(cached).length > 0) return cached;
+    } else {
+      await serverCache.delete(cacheKey);
+    }
+
+    const sectionDayMap: Record<string, string> = {
+      schedule_day_5: 'saturday',
+      schedule_day_6: 'sunday',
+      schedule_day_0: 'monday',
+      schedule_day_1: 'tuesday',
+      schedule_day_2: 'wednesday',
+      schedule_day_3: 'thursday',
+      schedule_day_4: 'friday',
+    };
 
     try {
-      const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-      const currentDay = days[new Date().getDay()];
+      const html = await this.fetchOkanimeHtml('/schedule', 7000);
+      const $ = cheerio.load(html);
+      const weekMap: Record<string, any[]> = {
+        saturday: [],
+        sunday: [],
+        monday: [],
+        tuesday: [],
+        wednesday: [],
+        thursday: [],
+        friday: [],
+      };
+
+      $('[data-track-section^="schedule_day_"]').each((_, secEl) => {
+        const secAttr = ($(secEl).attr('data-track-section') || '').trim();
+        let dayKey = sectionDayMap[secAttr];
+        if (!dayKey) {
+          const heading = $(secEl).find('h2, h3, .schedule-day-title').first().text();
+          if (heading.includes('السبت')) dayKey = 'saturday';
+          else if (heading.includes('الأحد') || heading.includes('الاحد')) dayKey = 'sunday';
+          else if (heading.includes('الإثنين') || heading.includes('الاثنين')) dayKey = 'monday';
+          else if (heading.includes('الثلاثاء')) dayKey = 'tuesday';
+          else if (heading.includes('الأربعاء') || heading.includes('الاربعاء')) dayKey = 'wednesday';
+          else if (heading.includes('الخميس')) dayKey = 'thursday';
+          else if (heading.includes('الجمعة')) dayKey = 'friday';
+        }
+        if (!dayKey) return;
+
+        $(secEl).find('.schedule-row').each((__, rowEl) => {
+          const href = ($(rowEl).attr('href') || '').trim();
+          const slug = ($(rowEl).attr('data-track-anime') || this.extractAnimeSlugFromUrl(href)).trim();
+          const malAttr = ($(rowEl).attr('data-umami-event-mal_id') || '').trim();
+          const malNum = /^\d+$/.test(malAttr) ? Number(malAttr) : undefined;
+          const posterUrl =
+            $(rowEl).find('img.schedule-poster, img').first().attr('src') ||
+            $(rowEl).find('img.schedule-poster, img').first().attr('data-src') ||
+            '';
+          const rawTitle = $(rowEl).find('.schedule-row-title').first().text().replace(/\s+/g, ' ').trim();
+          if (!rawTitle && !slug) return;
+          const title = cleanAnimeTitle(rawTitle) || rawTitle || slug;
+          const type = $(rowEl).find('.schedule-type-badge').first().text().replace(/\s+/g, ' ').trim() || 'TV';
+          const timeStr = $(rowEl).find('.schedule-row-time').first().text().trim();
+
+          let epCount: number | undefined;
+          let ratingScore: number | undefined;
+          $(rowEl).find('span').each((___, spEl) => {
+            const spTxt = $(spEl).text().trim();
+            const epM = spTxt.match(/(\d+)\s*حلقة/);
+            if (epM && !epCount) epCount = parseInt(epM[1], 10);
+            const rateM = spTxt.match(/★\s*(\d+(?:\.\d+)?)/);
+            if (rateM && !ratingScore) ratingScore = parseFloat(rateM[1]);
+          });
+
+          const targetId = slug || (malNum ? String(malNum) : title);
+          if (!weekMap[dayKey].some((item) => String(item._id) === String(targetId))) {
+            weekMap[dayKey].push({
+              _id: targetId,
+              id: targetId,
+              slug,
+              mal_id: malNum,
+              title,
+              title_english: title,
+              posterUrl,
+              imageUrl: posterUrl,
+              images: {
+                jpg: {
+                  large_image_url: posterUrl,
+                  image_url: posterUrl,
+                },
+              },
+              rating: ratingScore || null,
+              score: ratingScore || 0,
+              episodes: epCount || undefined,
+              episodesCount: epCount ? String(epCount) : undefined,
+              type,
+              broadcast: {
+                time: timeStr || '',
+                day: dayKey,
+              },
+              link: href || `${this.primaryOrigin}/anime/${slug}`,
+            });
+          }
+        });
+      });
+
+      const hasAny = Object.values(weekMap).some((arr) => arr.length > 0);
+      if (hasAny) {
+        await this.setCache(cacheKey, weekMap, 2 * 60 * 60 * 1000);
+        return weekMap;
+      }
+    } catch {}
+
+    const stale = await serverCache.get<Record<string, any[]>>(cacheKey, true);
+    if (stale && Object.keys(stale).length > 0) return stale;
+    return {};
+  }
+
+  public async getSchedule(day?: string, forceBypass = false): Promise<AnimeItem[]> {
+    const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    const targetDay = (day && days.includes(day.toLowerCase()) ? day.toLowerCase() : days[new Date().getDay()]);
+
+    const weekMap = await this.getScheduleByDayMap(forceBypass).catch(() => ({} as Record<string, any[]>));
+    if (weekMap && Array.isArray(weekMap[targetDay]) && weekMap[targetDay].length > 0) {
+      return weekMap[targetDay];
+    }
+
+    try {
       const { anilistService } = await import('./anilistService');
-      const aniSchedule = await anilistService.getScheduleByDay(currentDay).catch(() => []);
+      const aniSchedule = await anilistService.getScheduleByDay(targetDay).catch(() => []);
       if (aniSchedule && aniSchedule.length > 0) {
-        const items: AnimeItem[] = aniSchedule.map((anime: any) => ({
+        return aniSchedule.map((anime: any) => ({
           id: String(anime.mal_id),
           title: anime.title_english || anime.title,
           episode: String(anime.EpisodeNumber || 1),
@@ -1322,12 +1370,126 @@ export class ScraperService {
           imageUrl: anime.images?.jpg?.large_image_url || anime.images?.jpg?.image_url || '',
           rating: anime.score || 8.0
         }));
-        await this.setCache(cacheKey, items, 30 * 60 * 1000);
-        return items;
       }
     } catch {}
 
     return [];
+  }
+
+  private async parseOkanimeCatalogListing(
+    pathWithQuery: string,
+    defaultType: string
+  ): Promise<{ items: any[]; hasNext: boolean }> {
+    const html = await this.fetchOkanimeHtml(pathWithQuery, 7000);
+    const $ = cheerio.load(html);
+    const items: any[] = [];
+    const seen = new Set<string>();
+
+    $('.anime-card').each((_, el) => {
+      if ($(el).closest('aside').length > 0) return;
+      const href = ($(el).find('a[href*="/anime/"]').first().attr('href') || '').trim();
+      const slug = this.extractAnimeSlugFromUrl(href);
+      if (!slug || seen.has(slug)) return;
+
+      const rawTitle = (
+        $(el).find('.anime-title h4 a, .anime-title h4, h4 a, h4').first().text() ||
+        $(el).find('img').first().attr('alt') ||
+        slug.replace(/-/g, ' ')
+      ).replace(/\s+/g, ' ').trim();
+      if (!rawTitle) return;
+
+      const posterUrl =
+        $(el).find('img').first().attr('src') ||
+        $(el).find('img').first().attr('data-src') ||
+        '';
+      const epText = $(el).find('.anime-title h5, h5').first().text().trim();
+      const epMatch = epText.match(/(\d+)/);
+      const episodesCount = epMatch ? parseInt(epMatch[1], 10) : undefined;
+      const type = $(el).find('.anime-details small').first().text().replace(/\s+/g, ' ').trim() || defaultType;
+      const genres = $(el)
+        .find('.anime-details ul li')
+        .map((__, li) => $(li).text().replace(/\s+/g, ' ').trim())
+        .get()
+        .filter(Boolean);
+      const description = $(el).find('.anime-details p').first().text().replace(/\s+/g, ' ').trim();
+
+      seen.add(slug);
+      items.push({
+        _id: slug,
+        id: slug,
+        slug,
+        title: cleanAnimeTitle(rawTitle) || rawTitle,
+        posterUrl,
+        imageUrl: posterUrl,
+        type,
+        episodesCount: episodesCount || (defaultType === 'فيلم' ? 1 : undefined),
+        genres,
+        description,
+        link: href.startsWith('http') ? href : `${this.primaryOrigin}/anime/${slug}`,
+      });
+    });
+
+    const pageMatch = pathWithQuery.match(/[?&]page=(\d+)/);
+    const currentPage = pageMatch ? parseInt(pageMatch[1], 10) : 1;
+    let hasNext = false;
+    $('.pagination a').each((_, aEl) => {
+      const aHref = ($(aEl).attr('href') || '').trim();
+      const rel = ($(aEl).attr('rel') || '').toLowerCase();
+      if (rel === 'next' || aHref.includes(`page=${currentPage + 1}`)) {
+        hasNext = true;
+      }
+    });
+    if (!hasNext && items.length >= 28) hasNext = true;
+
+    return { items, hasNext };
+  }
+
+  public async getAnimeMovies(page = 1, forceBypass = false): Promise<{ items: any[]; hasNext: boolean }> {
+    const safePage = Math.max(1, Math.floor(Number(page) || 1));
+    const cacheKey = `okanime_movies_v1_p_${safePage}`;
+    if (!forceBypass) {
+      const cached = await this.getCached<{ items: any[]; hasNext: boolean }>(cacheKey);
+      if (cached && cached.items?.length > 0) return cached;
+    } else {
+      await serverCache.delete(cacheKey);
+    }
+
+    try {
+      const path = safePage > 1 ? `/anime-movies?page=${safePage}` : '/anime-movies';
+      const result = await this.parseOkanimeCatalogListing(path, 'فيلم');
+      if (result.items.length > 0) {
+        await this.setCache(cacheKey, result, 30 * 60 * 1000);
+        return result;
+      }
+    } catch {}
+
+    const stale = await serverCache.get<{ items: any[]; hasNext: boolean }>(cacheKey, true);
+    if (stale && stale.items?.length > 0) return stale;
+    return { items: [], hasNext: false };
+  }
+
+  public async getTopAnime(page = 1, forceBypass = false): Promise<{ items: any[]; hasNext: boolean }> {
+    const safePage = Math.max(1, Math.floor(Number(page) || 1));
+    const cacheKey = `okanime_top_v1_p_${safePage}`;
+    if (!forceBypass) {
+      const cached = await this.getCached<{ items: any[]; hasNext: boolean }>(cacheKey);
+      if (cached && cached.items?.length > 0) return cached;
+    } else {
+      await serverCache.delete(cacheKey);
+    }
+
+    try {
+      const path = safePage > 1 ? `/top-anime?page=${safePage}` : '/top-anime';
+      const result = await this.parseOkanimeCatalogListing(path, 'مسلسل');
+      if (result.items.length > 0) {
+        await this.setCache(cacheKey, result, 30 * 60 * 1000);
+        return result;
+      }
+    } catch {}
+
+    const stale = await serverCache.get<{ items: any[]; hasNext: boolean }>(cacheKey, true);
+    if (stale && stale.items?.length > 0) return stale;
+    return { items: [], hasNext: false };
   }
 
   private cleanQueryForSearch(query: string): string {
@@ -1368,8 +1530,86 @@ export class ScraperService {
     return 1;
   }
 
+  private scoreSearchCandidates(
+    query: string,
+    results: { slug: string; title: string; href: string; isUpcoming?: boolean }[]
+  ): { slug: string | null; score: number } {
+    if (!results || results.length === 0) return { slug: null, score: -999999 };
+
+    const cleanQuery =
+      this.cleanQueryForSearch(query)
+        .toLowerCase()
+        .replace(/[^a-z0-9\s\u0600-\u06FF]/g, '')
+        .trim() || query.toLowerCase().trim();
+    const queryWords = cleanQuery.split(' ').filter(w => w.length >= 2);
+    const querySlug = cleanQuery.replace(/\s+/g, '-');
+    const targetSeason = this.extractTargetSeasonNumber(query);
+
+    const specialKeywords = ['movie', 'special', 'ova', 'ona', 'film', 'heroines', 'episode of', 'heart of gold', 'فيلم', 'فلم', 'خاصة', 'أوفا'];
+    const queryHasSpecial = specialKeywords.some(kw => query.toLowerCase().includes(kw));
+
+    let bestSlug: string | null = null;
+    let highestScore = -999999;
+
+    for (const item of results) {
+      const cleanTitle = this.cleanQueryForSearch(item.title).toLowerCase().replace(/[^a-z0-9\s\u0600-\u06FF]/g, '').trim();
+      const englishOnlyTitle = this.cleanQueryForSearch(item.title).toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+      const titleWords = cleanTitle.split(' ').filter(Boolean);
+      const decodedSlug = (() => {
+        try { return decodeURIComponent(item.slug).toLowerCase(); } catch { return item.slug.toLowerCase(); }
+      })();
+
+      const overlapCount = queryWords.filter(w => titleWords.includes(w) || decodedSlug.includes(w)).length;
+      const hasSubstring =
+        (cleanQuery.length >= 3 && (cleanTitle.includes(cleanQuery) || decodedSlug.includes(querySlug))) ||
+        (cleanTitle.length >= 3 && cleanQuery.includes(cleanTitle));
+
+      if (overlapCount === 0 && !hasSubstring) continue;
+
+      let score = 0;
+      if (cleanTitle === cleanQuery || (englishOnlyTitle && englishOnlyTitle === cleanQuery)) {
+        score += 1200;
+      }
+      if (hasSubstring) {
+        const refLen = englishOnlyTitle ? englishOnlyTitle.length : cleanTitle.length;
+        score += 500 - Math.abs(refLen - cleanQuery.length) * 4;
+      }
+
+      const overlapRatio = queryWords.length > 0 ? overlapCount / queryWords.length : 0;
+      if (overlapRatio > 0.35) score += overlapRatio * 450;
+      if (decodedSlug.includes(querySlug)) score += 450;
+
+      if (item.isUpcoming) {
+        score -= 800;
+      }
+
+      const itemSeason = this.extractTargetSeasonNumber(item.title + ' ' + decodedSlug);
+      if (itemSeason === targetSeason) {
+        score += 450;
+      } else {
+        score -= 250;
+      }
+
+      const itemHasSpecial = specialKeywords.some(kw => item.title.toLowerCase().includes(kw) || decodedSlug.includes(kw));
+      if (itemHasSpecial && !queryHasSpecial) {
+        score -= 900;
+      }
+
+      if (score > highestScore) {
+        highestScore = score;
+        bestSlug = item.slug;
+      }
+    }
+
+    if (!bestSlug && results.length > 0) {
+      bestSlug = results[0].slug;
+    }
+
+    return { slug: bestSlug, score: highestScore };
+  }
+
   /**
-   * 3. البحث الذكي في الموقع الأساسي animedar.net أولاً، ثم الموقع الثانوي ristoanime.me كاحتياطي
+   * 3. البحث الذكي في الموقع الأساسي ww3.okanime.xyz أولاً، ثم الموقع المساعد animedar.net كاحتياطي
    */
   public async searchAnime(query: string): Promise<string | null> {
     if (!query || !query.trim()) return null;
@@ -1383,14 +1623,50 @@ export class ScraperService {
     }
 
     const normalizedKey = query.toLowerCase().trim();
-    const cacheKey = `search_animedar_v1:${normalizedKey}`;
+    const cacheKey = `search_okanime_primary_v1:${normalizedKey}`;
     const cached = await this.getCached<string | null>(cacheKey);
     if (cached !== null) return cached;
 
+    // 1. البحث في الموقع الأساسي #1: ww3.okanime.xyz
+    try {
+      const okHtml = await this.fetchOkanimeHtml(`/search?q=${encodeURIComponent(query.trim())}`, 5500);
+      const $ok = cheerio.load(okHtml);
+      const okResults: { slug: string; title: string; href: string; isUpcoming?: boolean }[] = [];
+
+      $ok('.anime-card').each((_, el) => {
+        if ($ok(el).closest('aside').length > 0) return;
+        const href = $ok(el).find('a[href*="/anime/"]').first().attr('href') || '';
+        if (!href || href.includes('${')) return;
+        const slug = this.extractAnimeSlugFromUrl(href);
+        if (!slug) return;
+
+        const title = (
+          $ok(el).find('.anime-title h4 a, .anime-title h4, h4 a, h4').first().text() ||
+          $ok(el).find('img').attr('alt') ||
+          ''
+        ).replace(/\s+/g, ' ').trim();
+
+        const badge = $ok(el).text();
+        const isUpcoming = badge.includes('قادم') || badge.toLowerCase().includes('upcoming');
+
+        if (title && !okResults.some(r => r.slug === slug)) {
+          okResults.push({ slug, title, href, isUpcoming });
+        }
+      });
+
+      if (okResults.length > 0) {
+        const scored = this.scoreSearchCandidates(query, okResults);
+        if (scored.slug) {
+          await this.setCache(cacheKey, scored.slug, 24 * 60 * 60 * 1000);
+          return scored.slug;
+        }
+      }
+    } catch {}
+
+    // 2. البحث في الموقع المساعد #2: animedar.net
     try {
       const html = await this.fetchAnimedarHtml(`/?s=${encodeURIComponent(query.trim())}`);
       const $ = cheerio.load(html);
-
       const results: { slug: string; title: string; href: string; isUpcoming?: boolean }[] = [];
 
       $('article.bs, .listupd article').each((_, el) => {
@@ -1423,93 +1699,21 @@ export class ScraperService {
             return fallbackSlug;
           }
         }
-        // محاولة البحث في الموقع الثانوي RistoAnime
-        const ristoMatch = await this.searchRistoAnime(query);
-        if (ristoMatch) {
-          const tagged = `risto__${ristoMatch}`;
-          await this.setCache(cacheKey, tagged, 12 * 60 * 60 * 1000);
-          return tagged;
-        }
         return null;
       }
 
-      const cleanQuery = this.cleanQueryForSearch(query).toLowerCase().replace(/[^a-z0-9\s\u0600-\u06FF]/g, '').trim() || query.toLowerCase().trim();
-      const queryWords = cleanQuery.split(' ').filter(w => w.length >= 2);
-      const querySlug = cleanQuery.replace(/\s+/g, '-');
-      const targetSeason = this.extractTargetSeasonNumber(query);
-
-      const specialKeywords = ['movie', 'special', 'ova', 'ona', 'film', 'heroines', 'episode of', 'heart of gold', 'فيلم', 'فلم', 'خاصة', 'أوفا'];
-      const queryHasSpecial = specialKeywords.some(kw => query.toLowerCase().includes(kw));
-
-      let bestSlug: string | null = null;
-      let highestScore = -999999;
-
-      for (const item of results) {
-        const cleanTitle = this.cleanQueryForSearch(item.title).toLowerCase().replace(/[^a-z0-9\s\u0600-\u06FF]/g, '').trim();
-        const englishOnlyTitle = this.cleanQueryForSearch(item.title).toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
-        const titleWords = cleanTitle.split(' ').filter(Boolean);
-        const decodedSlug = (() => {
-          try { return decodeURIComponent(item.slug).toLowerCase(); } catch { return item.slug.toLowerCase(); }
-        })();
-
-        const overlapCount = queryWords.filter(w => titleWords.includes(w) || decodedSlug.includes(w)).length;
-        const hasSubstring =
-          (cleanQuery.length >= 3 && (cleanTitle.includes(cleanQuery) || decodedSlug.includes(querySlug))) ||
-          (cleanTitle.length >= 3 && cleanQuery.includes(cleanTitle));
-
-        if (overlapCount === 0 && !hasSubstring) continue;
-
-        let score = 0;
-        if (cleanTitle === cleanQuery || (englishOnlyTitle && englishOnlyTitle === cleanQuery)) {
-          score += 1200;
-        }
-        if (hasSubstring) {
-          const refLen = englishOnlyTitle ? englishOnlyTitle.length : cleanTitle.length;
-          score += 500 - Math.abs(refLen - cleanQuery.length) * 4;
-        }
-
-        const overlapRatio = queryWords.length > 0 ? overlapCount / queryWords.length : 0;
-        if (overlapRatio > 0.35) score += overlapRatio * 450;
-        if (decodedSlug.includes(querySlug)) score += 450;
-
-        if (item.isUpcoming) {
-          score -= 800;
-        }
-
-        const itemSeason = this.extractTargetSeasonNumber(item.title + ' ' + decodedSlug);
-        if (itemSeason === targetSeason) {
-          score += 450;
-        } else {
-          score -= 250;
-        }
-
-        const itemHasSpecial = specialKeywords.some(kw => item.title.toLowerCase().includes(kw) || decodedSlug.includes(kw));
-        if (itemHasSpecial && !queryHasSpecial) {
-          score -= 900;
-        }
-
-        if (score > highestScore) {
-          highestScore = score;
-          bestSlug = item.slug;
-        }
+      const scored = this.scoreSearchCandidates(query, results);
+      if (scored.slug) {
+        await this.setCache(cacheKey, scored.slug, 24 * 60 * 60 * 1000);
       }
-
-      if (!bestSlug && results.length > 0) {
-        bestSlug = results[0].slug;
-      }
-
-      if (bestSlug) {
-        await this.setCache(cacheKey, bestSlug, 24 * 60 * 60 * 1000);
-      }
-      return bestSlug;
+      return scored.slug;
     } catch {
-      const ristoMatch = await this.searchRistoAnime(query);
-      return ristoMatch ? `risto__${ristoMatch}` : null;
+      return null;
     }
   }
 
   /**
-   * 4. جلب تفاصيل الأنمي والحلقات من الموقع الأساسي animedar.net (مع دعم الموقع الثانوي RistoAnime)
+   * 4. جلب تفاصيل الأنمي والحلقات من الموقع الأساسي ww3.okanime.xyz أولاً، ثم الموقع المساعد animedar.net
    */
   public async getAnimeDetails(animeId: string, preferredSeasonNum?: number): Promise<any> {
     if (IS_EXTERNAL_FETCH_DISABLED) {
@@ -1517,9 +1721,6 @@ export class ScraperService {
     }
 
     let cleanSlug = animeId;
-    if (cleanSlug.startsWith('risto__')) {
-      cleanSlug = cleanSlug.replace(/^risto__/, '');
-    }
     if (cleanSlug.includes('__ep__')) {
       cleanSlug = cleanSlug.split('__ep__')[0];
     }
@@ -1528,11 +1729,66 @@ export class ScraperService {
     }
     cleanSlug = cleanSlug.replace(/^\/+|\/+$/g, '');
 
-    const cacheKey = `anime_animedar_v1:${cleanSlug}:s${preferredSeasonNum || 'auto'}`;
+    const cacheKey = `anime_okanime_primary_v1:${cleanSlug}:s${preferredSeasonNum || 'auto'}`;
     const cached = await this.getCached<any>(cacheKey);
     if (cached) return cached;
 
-    // 1. المحاولة من الموقع الأساسي #1: animedar.net
+    // 1. المحاولة من الموقع الأساسي #1: ww3.okanime.xyz
+    try {
+      const okHtml = await this.fetchOkanimeHtml(`/anime/${cleanSlug}`, 7500);
+      const $ok = cheerio.load(okHtml);
+      const parsed = this.parseOkanimeDocument($ok, cleanSlug);
+
+      if (parsed.title && parsed.title.length > 1) {
+        const seasonNumber = this.extractTargetSeasonNumber(parsed.rawTitle + ' ' + cleanSlug) || preferredSeasonNum || 1;
+        const formattedEpisodes = parsed.episodes.map(ep => ({
+          id: ep.id,
+          num: ep.num,
+          title: ep.title,
+          link: ep.link,
+          seasonNumber
+        }));
+
+        const seasonsData: SeasonEpisodesGroup[] = [];
+        if (formattedEpisodes.length > 0) {
+          seasonsData.push({
+            seasonId: cleanSlug,
+            seasonTitle: `الموسم ${seasonNumber}`,
+            title: `الموسم ${seasonNumber}`,
+            seasonNumber,
+            episodes: formattedEpisodes
+          });
+        }
+
+        const statusRaw = parsed.infoMap['الحالة'] || 'مستمر';
+        let status = 'مستمر';
+        if (statusRaw.includes('مكتمل') || statusRaw.toLowerCase().includes('completed')) status = 'مكتمل';
+        else if (statusRaw.includes('قادم') || statusRaw.toLowerCase().includes('upcoming')) status = 'قادم';
+
+        const result = {
+          _id: cleanSlug,
+          title: parsed.title,
+          posterUrl: parsed.posterUrl || 'https://via.placeholder.com/300x400?text=No+Poster',
+          description: parsed.description,
+          episodes: formattedEpisodes,
+          seasonsList: seasonsData,
+          genres: parsed.genres.length > 0 ? parsed.genres : ['أكشن', 'فانتازيا'],
+          rating: parsed.rating,
+          status,
+          type: parsed.infoMap['النوع'] || 'TV',
+          episodesCount: formattedEpisodes.length > 0 ? String(formattedEpisodes.length) : (parsed.infoMap['عدد الحلقات'] || '0'),
+          releaseYear: parsed.infoMap['سنة العرض'] || '2025',
+          season: parsed.infoMap['الموسم'] || '2025',
+          duration: parsed.infoMap['مدة الحلقة'] || '24 د',
+          studio: 'Studio'
+        };
+
+        await this.setCache(cacheKey, result, 30 * 60 * 1000);
+        return result;
+      }
+    } catch {}
+
+    // 2. الاحتياطي المساعد #2: animedar.net
     try {
       const html = await this.fetchAnimedarHtml(`/anime-p/${cleanSlug}/`);
       const $ = cheerio.load(html);
@@ -1559,7 +1815,7 @@ export class ScraperService {
           });
         }
 
-        // حفظ سيرفرات كل حلقة مسبقاً في الكاش لفتح فوري (0ms)
+        // حفظ سيرفرات كل حلقة مسبقاً في الكاش لفتح فوري
         for (const [epNum, epServers] of parsed.episodeServersByNum.entries()) {
           if (epServers.length > 0) {
             const epCompositeId = `${cleanSlug}__ep__${epNum}`;
@@ -1595,64 +1851,28 @@ export class ScraperService {
       }
     } catch {}
 
-    // 2. الاحتياطي الثانوي #2: RistoAnime
+    return null;
+  }
+
+  /**
+   * البحث في الموقع المساعد animedar.net عن Slug عند اختلاف التسمية
+   */
+  private async searchAnimedarHelperSlug(query: string): Promise<string | null> {
+    if (!query || !query.trim()) return null;
     try {
-      let ristoFetched: { html: string; baseUrl: string };
-      try {
-        ristoFetched = await this.fetchRistoHtml(`/series/${cleanSlug}/`);
-      } catch {
-        ristoFetched = await this.fetchRistoHtml(`/${cleanSlug}/`);
-      }
-
-      const $r = cheerio.load(ristoFetched.html);
-      const rawTitle = $r('meta[property="og:title"]').attr('content') || $r('h1').first().text().trim() || cleanSlug;
-      const title = cleanAnimeTitle(rawTitle.replace(/^RISTO/i, '').trim());
-      if (!title || title.length <= 1) return null;
-
-      const episodes: { id: string; num: string; title: string; link: string; seasonNumber?: number }[] = [];
-      $r('.EpisodesList a, div.EpisodesList a').each((_, el) => {
-        const href = $r(el).attr('href') || '';
-        const txt = $r(el).text().replace(/\s+/g, ' ').trim();
-        const m = txt.match(/(\d+)/);
-        const num = m ? m[1] : '1';
-        const epSlug = href.split('/').filter(Boolean).pop() || '';
-        if (epSlug && !episodes.some(e => e.num === num)) {
-          episodes.push({
-            id: `risto__${epSlug}`,
-            num,
-            title: `الحلقة ${num}`,
-            link: href,
-            seasonNumber: preferredSeasonNum || 1
-          });
+      const html = await this.fetchAnimedarHtml(`/?s=${encodeURIComponent(query.trim())}`, 5000);
+      const $ = cheerio.load(html);
+      const results: { slug: string; title: string; href: string; isUpcoming?: boolean }[] = [];
+      $('article.bs, .listupd article').each((_, el) => {
+        const href = $(el).find('a').first().attr('href') || '';
+        const slug = this.extractAnimeSlugFromUrl(href);
+        if (!slug) return;
+        const title = ($(el).find('h2[itemprop="headline"], .tt h2').first().text() || '').replace(/\s+/g, ' ').trim();
+        if (title && !results.some(r => r.slug === slug)) {
+          results.push({ slug, title, href });
         }
       });
-
-      episodes.sort((a, b) => (parseInt(a.num, 10) || 0) - (parseInt(b.num, 10) || 0));
-
-      const result = {
-        _id: cleanSlug,
-        title,
-        posterUrl: $r('meta[property="og:image"]').attr('content') || '',
-        description: $r('.Story, .story, .SingleStory').first().text().trim() || '',
-        episodes,
-        seasonsList: episodes.length > 0 ? [{
-          seasonId: cleanSlug,
-          seasonTitle: `الموسم ${preferredSeasonNum || 1}`,
-          title: `الموسم ${preferredSeasonNum || 1}`,
-          seasonNumber: preferredSeasonNum || 1,
-          episodes
-        }] : [],
-        genres: ['أكشن', 'فانتازيا'],
-        rating: 8.4,
-        status: 'مستمر',
-        type: 'TV',
-        episodesCount: String(episodes.length || 12),
-        releaseYear: '2025',
-        season: '2025'
-      };
-
-      await this.setCache(cacheKey, result, 30 * 60 * 1000);
-      return result;
+      return this.scoreSearchCandidates(query, results).slug;
     } catch {
       return null;
     }
@@ -1660,9 +1880,8 @@ export class ScraperService {
 
   /**
    * 5. استخراج سيرفرات المشاهدة والتحميل للحلقة:
-   * - أولاً: من الموقع الأساسي #1 (animedar.net - فك تشفير #ServerList1 المباشر لجميع السيرفرات والتحميل)
-   * - ثانياً: دمج تلقائي مع الموقع الثانوي #2 (ristoanime.me - سحب /watch و /download لضمان تعدد السيرفرات وروابط التحميل)
-   * - ثالثاً: سيرفر عالمي إضافي (VidLink)
+   * - أولاً (الأساسي #1): من ww3.okanime.xyz (سيرفرات المشاهدة [data-server] + روابط التحميل الحقيقية FHD/HD/SD)
+   * - ثانياً (المساعد #2): الدمج التكميلي من animedar.net (فك تشفير #ServerList1 لضمان توفر أكبر قدر من المرايا البديلة)
    */
   public async getEpisodeServers(
     episodeId: string,
@@ -1671,173 +1890,190 @@ export class ScraperService {
     seasonNumber?: number | string,
     animeTitle?: string
   ): Promise<EpisodeServer[]> {
+    const rawInput = String(episodeId || '').trim();
     let jikanId = animeId ? String(animeId) : '';
     let epNum = episodeNum ? String(episodeNum) : '1';
     const explicitSeason = seasonNumber ? Number(seasonNumber) : undefined;
+    let directEpPath = '';
 
-    if (episodeId.includes('__ep__')) {
-      const [slugPart, numPart] = episodeId.split('__ep__');
+    if (rawInput.includes('/episode/')) {
+      try {
+        const u = rawInput.startsWith('http') ? new URL(rawInput) : new URL(rawInput, this.primaryOrigin);
+        directEpPath = u.pathname;
+        const epMatch = directEpPath.match(/-episode-(\d+)/i);
+        if (epMatch && !episodeNum) epNum = epMatch[1];
+      } catch {}
+    }
+
+    if (rawInput.includes('__ep__')) {
+      const [slugPart, numPart] = rawInput.split('__ep__');
       if (numPart) epNum = numPart;
       if (slugPart && (!animeId || /^\d+$/.test(String(animeId)))) {
         animeId = slugPart;
       }
-    } else if (episodeId.includes('-episode-')) {
-      const match = episodeId.match(/^(\d+)-episode-(\d+)$/);
+    } else if (rawInput.includes('-episode-') && !rawInput.startsWith('http')) {
+      const match = rawInput.match(/^(.+?)-episode-(\d+)$/);
       if (match) {
-        if (!jikanId) jikanId = match[1];
+        if (/^\d+$/.test(match[1]) && !jikanId) {
+          jikanId = match[1];
+        } else if (!animeId || /^\d+$/.test(String(animeId))) {
+          animeId = match[1];
+        }
         if (!episodeNum) epNum = match[2];
       }
     }
 
-    const cacheKey = `servers_v5_okanime:${episodeId}:${jikanId}:${explicitSeason || 1}:${epNum}`;
-    return serverCache.getOrFetch<EpisodeServer[]>(
-      cacheKey,
-      async () => {
-        try {
-      let resolvedAnimedarSlug = '';
-      let resolvedRistoEpSlug = '';
+    const cacheKey = `servers_v7_okanime_fast:${episodeId}:${jikanId}:${animeTitle || ''}:${explicitSeason || 1}:${epNum}`;
+    const cachedServers = await this.getCached<EpisodeServer[]>(cacheKey);
+    if (cachedServers && Array.isArray(cachedServers) && cachedServers.length > 0) {
+      return cachedServers;
+    }
 
-      if (episodeId.startsWith('risto__')) {
-        resolvedRistoEpSlug = episodeId.replace(/^risto__/, '');
-      } else if (episodeId.includes('__ep__')) {
-        resolvedAnimedarSlug = episodeId.split('__ep__')[0];
-      } else if (episodeId.startsWith('http')) {
-        if (episodeId.includes('ristoanime.')) {
-          resolvedRistoEpSlug = episodeId.split('/').filter(Boolean).pop() || '';
-        } else {
-          resolvedAnimedarSlug = this.extractAnimeSlugFromUrl(episodeId);
-        }
+    try {
+      let resolvedPrimarySlug = '';
+
+      if (rawInput.includes('__ep__')) {
+        resolvedPrimarySlug = rawInput.split('__ep__')[0];
+      } else if (rawInput.startsWith('http') || rawInput.includes('/episode/')) {
+        resolvedPrimarySlug = this.extractAnimeSlugFromUrl(rawInput);
       } else if (animeId && !/^\d+$/.test(String(animeId)) && !String(animeId).startsWith('search-')) {
-        resolvedAnimedarSlug = String(animeId);
+        resolvedPrimarySlug = String(animeId);
       }
 
-      let resolvedAnilistId = '';
-      let candidateTitles: string[] = [];
+      const candidateTitles: string[] = [];
+      if (animeTitle && animeTitle.trim()) {
+        candidateTitles.push(animeTitle.trim());
+      }
+      if (resolvedPrimarySlug) {
+        const titleFromSlug = resolvedPrimarySlug.replace(/-/g, ' ').trim();
+        if (titleFromSlug && !candidateTitles.includes(titleFromSlug)) {
+          candidateTitles.push(titleFromSlug);
+        }
+      }
 
-      if (jikanId || animeTitle || !resolvedAnimedarSlug) {
+      const watchServers: EpisodeServer[] = [];
+      const downloadServers: EpisodeServer[] = [];
+
+      // 1. الجلب السريع والفوري من ww3.okanime.xyz (بدون انتظار AniList إذا توفر slug أو عنوان أو رابط مباشر)
+      const [okanimeDirectResult, animedarCached] = await Promise.all([
+        (resolvedPrimarySlug || directEpPath || candidateTitles.length > 0)
+          ? this.extractOkanimeEpisodeServers(
+              resolvedPrimarySlug,
+              epNum,
+              candidateTitles,
+              directEpPath
+            ).catch(() => ({ watch: [], download: [] }))
+          : Promise.resolve({ watch: [] as EpisodeServer[], download: [] as EpisodeServer[] }),
+        resolvedPrimarySlug
+          ? this.getCached<EpisodeServer[]>(`animedar_ep_servers_v2:${resolvedPrimarySlug}__ep__${epNum}`)
+              .then(res => res || this.getCached<EpisodeServer[]>(`animedar_ep_servers_v2:${resolvedPrimarySlug}:${epNum}`))
+              .catch(() => null)
+          : Promise.resolve(null)
+      ]);
+
+      for (const w of okanimeDirectResult.watch) {
+        if (!watchServers.some(s => s.url === w.url)) watchServers.push(w);
+      }
+      for (const d of okanimeDirectResult.download) {
+        if (!downloadServers.some(s => s.url === d.url && s.quality === d.quality)) downloadServers.push(d);
+      }
+
+      // 2. فقط إذا لم نعثر على سيرفرات مشاهدة بعد، نحاول حسم العنوان عبر AniList ثم البحث في المصدر الأساسي
+      if (watchServers.length === 0 && (jikanId || animeTitle)) {
         try {
           const { anilistService } = await import('./anilistService');
-          const aniDetails = jikanId && /^\d+$/.test(jikanId)
-            ? await anilistService.getAnimeFullDetails(jikanId).catch(() => null)
-            : animeTitle
-            ? await anilistService.getAnimeFullDetails(animeTitle).catch(() => null)
-            : null;
+          const aniDetails = await Promise.race([
+            jikanId && /^\d+$/.test(jikanId)
+              ? anilistService.getAnimeFullDetails(jikanId).catch(() => null)
+              : animeTitle
+              ? anilistService.getAnimeFullDetails(animeTitle).catch(() => null)
+              : Promise.resolve(null),
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 3500))
+          ]);
 
-          if (aniDetails?.anime?.anilist_id) {
-            resolvedAnilistId = String(aniDetails.anime.anilist_id);
-          }
           if (aniDetails?.anime?.mal_id && (!jikanId || !/^\d+$/.test(jikanId))) {
             jikanId = String(aniDetails.anime.mal_id);
           }
 
           const enTitle = aniDetails?.anime?.title_english || animeTitle || '';
           const romajiTitle = aniDetails?.anime?.title || '';
-          candidateTitles = Array.from(new Set([romajiTitle, enTitle, animeTitle || ''].filter(Boolean)));
+          for (const t of [romajiTitle, enTitle, animeTitle || '']) {
+            if (t && !candidateTitles.includes(t)) candidateTitles.push(t);
+          }
 
-          if (!resolvedAnimedarSlug) {
-            for (const cand of candidateTitles) {
+          if (!resolvedPrimarySlug) {
+            for (const cand of candidateTitles.slice(0, 2)) {
               const foundSlug = await this.searchAnime(cand).catch(() => null);
               if (foundSlug) {
-                if (foundSlug.startsWith('risto__')) {
-                  resolvedRistoEpSlug = foundSlug.replace(/^risto__/, '');
-                } else {
-                  resolvedAnimedarSlug = foundSlug;
-                }
+                resolvedPrimarySlug = foundSlug;
                 break;
               }
+            }
+          }
+
+          const secondTry = await this.extractOkanimeEpisodeServers(
+            resolvedPrimarySlug,
+            epNum,
+            candidateTitles,
+            directEpPath
+          ).catch(() => ({ watch: [], download: [] }));
+
+          for (const w of secondTry.watch) {
+            if (!watchServers.some(s => s.url === w.url)) watchServers.push(w);
+          }
+          for (const d of secondTry.download) {
+            if (!downloadServers.some(s => s.url === d.url && s.quality === d.quality)) downloadServers.push(d);
+          }
+        } catch {}
+      }
+
+      // 3. دمج كاش animedar السريع إذا توفر، أو جلبه فقط عند غياب سيرفرات المشاهدة من الأساسي
+      let darServers = animedarCached;
+      if ((!darServers || darServers.length === 0) && watchServers.length === 0) {
+        const darSlug = resolvedPrimarySlug;
+        const tryFetchDar = async (slugToTry: string): Promise<EpisodeServer[]> => {
+          if (!slugToTry) return [];
+          const html = await this.fetchAnimedarHtml(`/anime-p/${slugToTry}/`, 4000);
+          const $ = cheerio.load(html);
+          const parsed = this.parseAnimedarDocument($, slugToTry);
+          if (parsed.title && !candidateTitles.includes(parsed.title)) {
+            candidateTitles.unshift(parsed.title);
+          }
+          for (const [eNum, eSrvs] of parsed.episodeServersByNum.entries()) {
+            if (eSrvs.length > 0) {
+              await this.setCache(`animedar_ep_servers_v2:${slugToTry}__ep__${eNum}`, eSrvs, 6 * 60 * 60 * 1000);
+              await this.setCache(`animedar_ep_servers_v2:${slugToTry}:${eNum}`, eSrvs, 6 * 60 * 60 * 1000);
+            }
+          }
+          return parsed.episodeServersByNum.get(String(epNum)) || [];
+        };
+
+        try {
+          if (darSlug) {
+            darServers = await tryFetchDar(darSlug).catch(() => []);
+          }
+          if ((!darServers || darServers.length === 0) && candidateTitles.length > 0) {
+            const searchedDarSlug = await Promise.race([
+              this.searchAnimedarHelperSlug(candidateTitles[0]).catch(() => null),
+              new Promise<null>((resolve) => setTimeout(() => resolve(null), 3500))
+            ]);
+            if (searchedDarSlug && searchedDarSlug !== darSlug) {
+              darServers = await tryFetchDar(searchedDarSlug).catch(() => []);
             }
           }
         } catch {}
       }
 
-      if (candidateTitles.length === 0 && resolvedAnimedarSlug) {
-        const titleFromSlug = resolvedAnimedarSlug.replace(/-/g, ' ').trim();
-        if (titleFromSlug) candidateTitles.push(titleFromSlug);
-      }
-
-      const watchServers: EpisodeServer[] = [];
-      const downloadServers: EpisodeServer[] = [];
-
-      // 1. الجلب من الموقع الأساسي #1: animedar.net
-      if (resolvedAnimedarSlug) {
-        let darServers =
-          await this.getCached<EpisodeServer[]>(`animedar_ep_servers_v2:${resolvedAnimedarSlug}__ep__${epNum}`) ||
-          await this.getCached<EpisodeServer[]>(`animedar_ep_servers_v2:${resolvedAnimedarSlug}:${epNum}`);
-
-        if (!darServers || darServers.length === 0) {
-          try {
-            const html = await this.fetchAnimedarHtml(`/anime-p/${resolvedAnimedarSlug}/`);
-            const $ = cheerio.load(html);
-            const parsed = this.parseAnimedarDocument($, resolvedAnimedarSlug);
-
-            if (parsed.title && !candidateTitles.includes(parsed.title)) {
-              candidateTitles.unshift(parsed.title);
-            }
-
-            for (const [eNum, eSrvs] of parsed.episodeServersByNum.entries()) {
-              if (eSrvs.length > 0) {
-                await this.setCache(`animedar_ep_servers_v2:${resolvedAnimedarSlug}__ep__${eNum}`, eSrvs, 6 * 60 * 60 * 1000);
-                await this.setCache(`animedar_ep_servers_v2:${resolvedAnimedarSlug}:${eNum}`, eSrvs, 6 * 60 * 60 * 1000);
-              }
-            }
-
-            darServers = parsed.episodeServersByNum.get(String(epNum)) || [];
-          } catch {}
-        }
-
-        if (darServers && darServers.length > 0) {
-          for (const srv of darServers) {
-            if (srv.category === 'watch' && !watchServers.some(s => s.url === srv.url)) {
-              watchServers.push(srv);
-            } else if (srv.category === 'download' && !downloadServers.some(s => s.url === srv.url && s.quality === srv.quality)) {
-              downloadServers.push(srv);
-            }
+      if (darServers && darServers.length > 0) {
+        for (const srv of darServers) {
+          if (srv.category === 'watch' && !watchServers.some(s => s.url === srv.url)) {
+            watchServers.push(srv);
+          } else if (srv.category === 'download' && !downloadServers.some(s => s.url === srv.url && s.quality === srv.quality)) {
+            downloadServers.push(srv);
           }
         }
       }
 
-      // 2. الجلب المتوازي من OkAnime (ww3.okanime.xyz) للحصول على سيرفرات المشاهدة وروابط التحميل الحقيقية المنفصلة (FHD/HD/SD)
-      const okanimeResult = await this.extractOkanimeEpisodeServers(
-        resolvedAnimedarSlug,
-        epNum,
-        candidateTitles
-      ).catch(() => ({ watch: [], download: [] }));
-
-      for (const w of okanimeResult.watch) {
-        if (!watchServers.some(s => s.url === w.url)) watchServers.push(w);
-      }
-      for (const d of okanimeResult.download) {
-        if (!downloadServers.some(s => s.url === d.url)) downloadServers.push(d);
-      }
-
-      // 3. الدمج التكميلي من الموقع الاحتياطي RistoAnime إذا كان عدد سيرفرات المشاهدة أو التحميل قليلاً
-      if (watchServers.length < 5 || downloadServers.length < 3 || resolvedRistoEpSlug) {
-        if (!resolvedRistoEpSlug && candidateTitles.length > 0) {
-          for (const titleCand of candidateTitles) {
-            const rSeriesSlug = await this.searchRistoAnime(titleCand);
-            if (rSeriesSlug) {
-              const rDetails = await this.getAnimeDetails(`risto__${rSeriesSlug}`, explicitSeason);
-              const matchedEp = rDetails?.episodes?.find((e: any) => String(e.num) === String(epNum));
-              if (matchedEp?.id) {
-                resolvedRistoEpSlug = String(matchedEp.id).replace(/^risto__/, '');
-                break;
-              }
-            }
-          }
-        }
-
-        if (resolvedRistoEpSlug) {
-          const ristoExtracted = await this.extractRistoServersBySlug(resolvedRistoEpSlug);
-          for (const w of ristoExtracted.watch) {
-            if (!watchServers.some(s => s.url === w.url)) watchServers.push(w);
-          }
-          for (const d of ristoExtracted.download) {
-            if (!downloadServers.some(s => s.url === d.url)) downloadServers.push(d);
-          }
-        }
-      }
-
-      // دالة استبعاد روابط اختصار الإعلانات الخبيثة المزعجة
       const isAdShortenerUrl = (u: string): boolean => {
         if (!u) return true;
         const lower = u.toLowerCase();
@@ -1854,41 +2090,31 @@ export class ScraperService {
           lower.includes('shortlink') ||
           lower.includes('earn') ||
           lower.includes('clicksfly') ||
-          lower.includes('upns.online') ||
           lower.includes('sh.st')
         );
       };
 
-      // دالة ترتيب السيرفرات بحسب الاستقرار والموثوقية وعدم وجود إعلانات معطلة
       const getServerReliabilityScore = (server: EpisodeServer): number => {
         const lowerName = (server.serverName || '').toLowerCase();
         const lowerUrl = (server.url || '').toLowerCase();
 
-        // 1. Mega: السيرفر السحابي الأقوى، بث نظيف وخالٍ من الإعلانات المنبثقة
-        if (lowerName.includes('mega') || lowerUrl.includes('mega.nz')) return 100;
-        // 2. Sendvid: استخراج فوري لملف MP4 المباشر وتشغيله على مشغل التطبيق
+        if (lowerName.includes('mega') && !lowerName.includes('megamax') && !lowerUrl.includes('share4max')) return 100;
+        if (lowerUrl.includes('mega.nz')) return 100;
         if (lowerName.includes('sendvid') || lowerUrl.includes('sendvid.com')) return 95;
-        // 3. MP4Upload: استخراج مباشر عبر البروكسي فائق السرعة
         if (lowerName.includes('mp4upload') || lowerUrl.includes('mp4upload.com')) return 90;
-        // 4. Google Drive: سحابي سريع
         if (lowerName.includes('drive') || lowerUrl.includes('drive.google')) return 85;
-        // 5. Ok.ru: مستقر ويدعم جودات متعددة
         if (lowerName.includes('ok.ru') || lowerUrl.includes('ok.ru')) return 80;
-        // 6. Uqload: يعمل كـ Embed
+        if (lowerName.includes('vk') || lowerUrl.includes('vk.com') || lowerUrl.includes('vkvideo')) return 78;
         if (lowerName.includes('uqload') || lowerUrl.includes('uqload.')) return 75;
-        // 7. Streamwish / Asnwish / Filemoon: سيرفرات شائعة
         if (lowerName.includes('streamwish') || lowerUrl.includes('asnwish') || lowerUrl.includes('filemoon')) return 70;
-        // 8. Videa / Dailymotion / 4Shared
         if (lowerName.includes('videa') || lowerName.includes('dailymotion') || lowerUrl.includes('videa.hu')) return 65;
-        // 9. Vidmoly (كثير الأعطال والملفات المحذوفة 404 - يوضع في الأسفل)
+        if (lowerName.includes('megamax') || lowerUrl.includes('share4max')) return 40;
         if (lowerName.includes('vidmoly') || lowerUrl.includes('vidmoly')) return 20;
-        // 10. Sibnet (محظور جغرافياً 403 - يوضع في الأسفل)
         if (lowerName.includes('sibnet') || lowerUrl.includes('sibnet')) return 10;
 
         return 50;
       };
 
-      // 3. ضمان توليد رابط تحميل لكل سيرفر مشاهدة إذا لم يكن مضافاً بعد في قائمة التحميل
       for (const w of watchServers) {
         const lower = w.url.toLowerCase();
         let dlUrl = '';
@@ -1916,15 +2142,12 @@ export class ScraperService {
         }
       }
 
-      // فرز سيرفرات المشاهدة بحسب درجة الاستقرار والموثوقية
       watchServers.sort((a, b) => getServerReliabilityScore(b) - getServerReliabilityScore(a));
 
-      // تصفية سيرفرات التحميل من روابط اختصار الإعلانات والفرز
       const cleanDownloadServers = downloadServers
         .filter(d => !isAdShortenerUrl(d.url))
         .sort((a, b) => getServerReliabilityScore(b) - getServerReliabilityScore(a));
 
-      // إضافة سيرفر التحميل المباشر الذكي في صدارة روابط التحميل مع تفضيل السيرفرات الداعمة للاستخراج المباشر (MP4)
       const isDirectMp4Host = (u: string) => {
         const l = u.toLowerCase();
         return (
@@ -1951,26 +2174,30 @@ export class ScraperService {
         watchServers[0]?.url ||
         '';
       const safeTitle = (animeTitle || candidateTitles[0] || 'Anime').replace(/["'<>]/g, '').trim();
-      const inAppDownloadServer: EpisodeServer = {
-        serverName: 'تحميل مباشر (MOD Fast)',
-        url: `/api/anime/download?url=${encodeURIComponent(bestDirectWatch)}&title=${encodeURIComponent(safeTitle)}&ep=${epNum}`,
-        type: 'direct',
-        quality: '1080p',
-        category: 'download'
-      };
+      const extraDownloads: EpisodeServer[] = bestDirectWatch
+        ? [
+            {
+              serverName: 'تحميل مباشر',
+              url: `/api/anime/download?url=${encodeURIComponent(bestDirectWatch)}&title=${encodeURIComponent(safeTitle)}&ep=${epNum}`,
+              type: 'direct',
+              quality: '1080p',
+              category: 'download'
+            }
+          ]
+        : [];
 
       const finalServers: EpisodeServer[] = [
         ...watchServers,
-        inAppDownloadServer,
+        ...extraDownloads,
         ...cleanDownloadServers
       ];
 
+      if (finalServers.length > 0) {
+        await this.setCache(cacheKey, finalServers, 10 * 60 * 1000);
+      }
       return finalServers;
     } catch {
       return [];
     }
-      },
-      5 * 60 * 1000
-    );
   }
 }

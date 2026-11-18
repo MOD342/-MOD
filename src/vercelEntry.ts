@@ -1,20 +1,22 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { createApiExpressApp } from './serverApp';
+
+export const maxDuration = 30;
 
 type ExpressApp = (req: IncomingMessage, res: ServerResponse) => void;
 
 let cachedApp: ExpressApp | null = null;
 
-async function getApp(): Promise<ExpressApp> {
-  if (cachedApp) return cachedApp;
-  // @ts-expect-error Compiled by esbuild into api/_lib/app.js during npm run build
-  const mod = await import('./_lib/app.js');
-  cachedApp = mod.createApiExpressApp();
+function getApp(): ExpressApp {
+  if (!cachedApp) {
+    cachedApp = createApiExpressApp();
+  }
   return cachedApp;
 }
 
 export default async function vercelHandler(req: IncomingMessage, res: ServerResponse): Promise<void> {
   try {
-    const app = await getApp();
+    const app = getApp();
     await new Promise<void>((resolve) => {
       let settled = false;
       const done = () => {

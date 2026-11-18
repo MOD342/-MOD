@@ -1,46 +1,117 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Bot, ChevronRight, Send, Sparkles, Smile, MessageCircle, AlertCircle, Award, Volume2, ShieldAlert } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import {
+  ChevronRight,
+  ChevronLeft,
+  Send,
+  Award,
+  Trash2,
+  Copy,
+  Check,
+  RotateCcw,
+  AlertCircle,
+  Gamepad2,
+  Zap,
+  Star,
+  Film,
+  Sparkles,
+  Loader2,
+} from 'lucide-react';
+import { motion } from 'motion/react';
 import { useAuth } from '../contexts/AuthContext';
 import { isStaffEmail } from '../services/moderationService';
+import { listService } from '../services/listService';
+import { useDeviceDisplay } from '../hooks/useDeviceDisplay';
 
-const MOODS = [
-  { value: 'سعيد ومبتهج 😆', label: '😆 سعيد', color: 'hover:border-yellow-500 hover:text-yellow-400 bg-yellow-500/10 border-yellow-500/30' },
-  { value: 'حزين ومكتئب 😢', label: '😢 حزين', color: 'hover:border-blue-500 hover:text-blue-400 bg-blue-500/10 border-blue-500/30' },
-  { value: 'متحمس جداً ومشتعل 🔥', label: '🔥 متحمس', color: 'hover:border-red-500 hover:text-red-400 bg-red-500/10 border-red-500/30' },
-  { value: 'طفشان وأشعر بالملل 😑', label: '😑 ملان', color: 'hover:border-emerald-500 hover:text-emerald-400 bg-emerald-500/10 border-emerald-500/30' },
-  { value: 'حائر وأدور تحفة فنية 🤔', label: '🤔 حائر', color: 'hover:border-purple-500 hover:text-purple-400 bg-purple-500/10 border-purple-500/30' }
+export interface ChatAnimeCard {
+  id: string;
+  title: string;
+  posterUrl: string;
+  rating: number | null;
+  type: string;
+  episodes: number | null;
+  year: number | null;
+  genres: string[];
+}
+
+interface ChatMessage {
+  id: string;
+  sender: 'user' | 'bot';
+  text: string;
+  animes?: ChatAnimeCard[];
+  createdAt?: number;
+}
+
+const STARTER_SUGGESTIONS = [
+  'رشّح لي أنمي يخطف الأنفاس من أول حلقة',
+  'أبغى أنمي قصير ومكتمل بنهاية فخمة',
+  'وش رأيك بأقوى آرك شفته في عالم الأنمي؟',
+  'أعطني أنمي غموض وتحقيق بمستوى Death Note',
 ];
 
-const STATUSES = [
-  { value: 'أتابع أنمي حالياً ومستمر 📺', label: '📺 أتابع أنمي' },
-  { value: 'أقرأ مانجا غامضة وأبحث عن نقاش 📚', label: '📚 أقرأ مانجا' },
-  { value: 'أنا أوتاكو قديم ومتطلب وصعب الإرضاء 🛡️', label: '🛡️ أوتاكو متطلب' },
-  { value: 'أنا مبتدئ تماماً في عالم الأنمي 🌟', label: '🌟 مبتدئ' },
-  { value: 'مروق وبس جاي أفضفض معك يا سينباي ☕', label: '☕ أفضفض' }
-];
+const SESSION_KEY = 'otaku_friend_session_v1';
 
-export default function AiChatView({ onBack }: { onBack: () => void }) {
+function renderFormattedText(text: string): React.ReactNode {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, idx) => {
+    if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
+      return (
+        <strong key={idx} className="font-black text-white">
+          {part.slice(2, -2)}
+        </strong>
+      );
+    }
+    return <React.Fragment key={idx}>{part}</React.Fragment>;
+  });
+}
+
+export default function AiChatView({
+  onBack,
+  onNavigate,
+}: {
+  onBack: () => void;
+  onNavigate?: (viewName: string, props?: any) => void;
+}) {
   const { user, userData, userRole } = useAuth();
-  const [selectedMood, setSelectedMood] = useState('سعيد ومبتهج 😆');
-  const [selectedStatus, setSelectedStatus] = useState('أتابع أنمي حالياً ومستمر 📺');
+  const display = useDeviceDisplay();
+
   const [msg, setMsg] = useState('');
   const [loading, setLoading] = useState(false);
-  const [cooldownSec, setCooldownSec] = useState(0);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [errorState, setErrorState] = useState<{ message: string; lastFailedPrompt?: string } | null>(null);
+  const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [favoriteAnimeTitles, setFavoriteAnimeTitles] = useState<string[]>([]);
 
-  const [chat, setChat] = useState<any[]>(() => {
-    // Attempt local storage cache
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const userDisplayName =
+    userData?.displayName?.trim() ||
+    user?.displayName?.trim() ||
+    '';
+
+  const displayLabel = userDisplayName || 'يا صديقي';
+
+  const [chat, setChat] = useState<ChatMessage[]>(() => {
     try {
-      const cached = localStorage.getItem('otaku_chat_history');
-      if (cached) return JSON.parse(cached);
-    } catch (_) {}
-    return [
-      { 
-        sender: 'bot', 
-        text: 'أهلاً بك يا ناكاما! أنا "السينباي المخضرم" الخاص بك في هذا التطبيق المذهل! 🌟 خبرتي في الأنمي تمتد لسنوات طوال، ويمكنني اقتراح أعظم التحف الفنية التي تناسب ذوقك ومشاعرك الآن، أو مناقشة النظريات العميقة للأحداث. \n\nاضبط مزاجك وحالتك من الأعلى، واكتب لي رسالتك وسنبدأ رحلة الحوار فوراً!' 
+      // Remove legacy static-history storage so no pre-saved welcome message appears
+      localStorage.removeItem('otaku_chat_history');
+      const saved = sessionStorage.getItem(SESSION_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.map((m: any, idx: number) => ({
+            id: m.id || `msg-${idx}`,
+            sender: m.sender === 'user' ? 'user' : 'bot',
+            text: String(m.text || ''),
+            animes: Array.isArray(m.animes) ? m.animes : undefined,
+            createdAt: m.createdAt,
+          }));
+        }
       }
-    ];
+    } catch {
+      // ignore storage failure
+    }
+    return [];
   });
 
   const MIN_LEVEL = 7;
@@ -52,219 +123,505 @@ export default function AiChatView({ onBack }: { onBack: () => void }) {
     isStaffEmail(user?.email);
   const isUnlocked = userLevel >= MIN_LEVEL || isStaff;
 
+  // Load a lightweight taste snapshot from user's anime library (non-blocking)
   useEffect(() => {
-    if (cooldownSec <= 0) return;
-    const timer = setInterval(() => {
-      setCooldownSec((prev) => Math.max(0, prev - 1));
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [cooldownSec]);
+    const uid = user?.id;
+    if (!uid) return;
+    let active = true;
+    listService
+      .getAnimeEntries(uid)
+      .then((entries) => {
+        if (!active || !Array.isArray(entries)) return;
+        const prioritized = [...entries]
+          .sort((a, b) => {
+            const aFav = a.isFavorite ? 2 : a.status === 'watching' || a.status === 'completed' ? 1 : 0;
+            const bFav = b.isFavorite ? 2 : b.status === 'watching' || b.status === 'completed' ? 1 : 0;
+            return bFav - aFav || (b.score || 0) - (a.score || 0);
+          })
+          .map((e) => e.title)
+          .filter(Boolean)
+          .slice(0, 8);
+        setFavoriteAnimeTitles(prioritized);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [user?.id]);
 
+  // Persist current live conversation across quick navigation to anime details and back
   useEffect(() => {
     try {
-      localStorage.setItem('otaku_chat_history', JSON.stringify(chat.slice(-20)));
-    } catch (_) {}
-    scrollToBottom();
-  }, [chat]);
-
-  const scrollToBottom = () => {
+      if (chat.length === 0) {
+        sessionStorage.removeItem(SESSION_KEY);
+      } else {
+        sessionStorage.setItem(SESSION_KEY, JSON.stringify(chat.slice(-24)));
+      }
+    } catch {
+      // ignore storage quota errors
+    }
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
+  }, [chat, loading, errorState]);
 
-  const send = async () => {
-    if (!msg.trim() || loading || cooldownSec > 0 || !isUnlocked) return;
-    const userMsg = msg.trim().slice(0, 500);
-    const updatedChat = [...chat, { sender: 'user', text: userMsg }];
-    setChat(updatedChat);
-    setMsg('');
+  // Auto-grow textarea height smoothly up to 4 lines
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 128)}px`;
+  }, [msg]);
+
+  const sendPrompt = async (rawText: string, isRetry = false) => {
+    const cleanText = rawText.trim().slice(0, 1200);
+    if (!cleanText || loading || !isUnlocked) return;
+
+    setErrorState(null);
+    setConfirmClear(false);
+
+    let historyForApi: ChatMessage[];
+    if (isRetry) {
+      historyForApi = chat;
+    } else {
+      const userEntry: ChatMessage = {
+        id: `u-${Date.now()}`,
+        sender: 'user',
+        text: cleanText,
+        createdAt: Date.now(),
+      };
+      historyForApi = [...chat, userEntry];
+      setChat(historyForApi);
+      setMsg('');
+    }
+
     setLoading(true);
-    setCooldownSec(3);
 
     try {
       const res = await fetch('/api/ai/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           userId: user?.id,
-          messages: updatedChat.slice(-6),
-          mood: selectedMood,
-          status: selectedStatus
-        })
+          userName: userDisplayName,
+          userLevel,
+          favoriteAnimes: favoriteAnimeTitles,
+          messages: historyForApi.slice(-14).map((m) => ({
+            sender: m.sender,
+            text: m.text,
+          })),
+        }),
       });
-      const data = await res.json();
-      if (res.status === 429 || data.rateLimited) {
-        if (data.retryAfterSec) setCooldownSec(data.retryAfterSec);
-        setChat(prev => [...prev, { sender: 'bot', text: data.message || 'مهلاً يا ناكاما! انتظر ثوانٍ معدودة قبل إرسال الرسالة التالية.' }]);
-      } else if (data.success) {
-        setChat(prev => [...prev, { sender: 'bot', text: data.text }]);
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok || !data.success || !data.text) {
+        setErrorState({
+          message: data.message || 'تعذر وصول الرسالة الآن، جرّب إرسالها مرة ثانية.',
+          lastFailedPrompt: cleanText,
+        });
       } else {
-        setChat(prev => [...prev, { sender: 'bot', text: 'أوه باكا! حدث ضغط مؤقت بالخادم. حاول مراسلتي ثانية!' }]);
+        setChat((prev) => [
+          ...prev,
+          {
+            id: `b-${Date.now()}`,
+            sender: 'bot',
+            text: String(data.text),
+            animes: Array.isArray(data.animes) ? data.animes : [],
+            createdAt: Date.now(),
+          },
+        ]);
       }
-    } catch (e) {
-      setChat(prev => [...prev, { sender: 'bot', text: 'الشبكة تلاشت كأنه جتسو انتقال سريع! تحقق من اتصالك بالإنترنت.' }]);
+    } catch {
+      setErrorState({
+        message: 'انقطع الاتصال مؤقتاً. تأكد من الإنترنت وأعد المحاولة.',
+        lastFailedPrompt: cleanText,
+      });
     } finally {
       setLoading(false);
     }
   };
 
   const clearChatHistory = () => {
-    const reset = [
-      { sender: 'bot', text: 'تم مسح ذكرياتنا السابقة كأننا فككنا شفرة المذكرة! كيف تود بدء الحوار مجدداً يا ناكاما؟' }
-    ];
-    setChat(reset);
+    setChat([]);
+    setErrorState(null);
+    setConfirmClear(false);
+    try {
+      sessionStorage.removeItem(SESSION_KEY);
+    } catch {}
   };
 
+  const handleCopy = async (id: string, text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedMsgId(id);
+      setTimeout(() => setCopiedMsgId((curr) => (curr === id ? null : curr)), 1800);
+    } catch {
+      // ignore clipboard errors
+    }
+  };
+
+  const openAnimeDetails = (animeId: string) => {
+    if (!animeId) return;
+    if (onNavigate) {
+      onNavigate('anime_details', { id: animeId });
+    }
+  };
+
+  const progressPercent = Math.min(100, Math.round((userLevel / MIN_LEVEL) * 100));
+  const showEmptyStarterStage = chat.length === 0 && !loading;
+
   return (
-    <div className="min-h-screen bg-black text-white pb-24 flex flex-col" id="ai_chat_view_container" dir="rtl">
-      {/* Header */}
-      <div className="sticky top-0 z-50 bg-[#070707]/90 backdrop-blur-md border-b border-white/5 p-4 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <button id="chat_back_btn" onClick={onBack} className="p-2 bg-neutral-900 rounded-full hover:bg-neutral-800 transition">
+    <div
+      className="h-[calc(var(--vv-height,100dvh)-var(--safe-top,0px)-var(--safe-bottom,0px))] w-full bg-[#09090b] text-white flex flex-col overflow-hidden"
+      id="ai_chat_view_container"
+      dir="rtl"
+    >
+      {/* Clean Minimal Top Header */}
+      <header className="shrink-0 bg-[#0d0d11]/95 backdrop-blur-md border-b border-zinc-800/80 px-3 sm:px-6 h-14 sm:h-16 flex items-center justify-between gap-2 z-30">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <button
+            id="chat_back_btn"
+            type="button"
+            onClick={onBack}
+            aria-label="رجوع"
+            className="min-w-[44px] min-h-[44px] rounded-xl bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 flex items-center justify-center text-zinc-200 transition cursor-pointer shrink-0"
+          >
             <ChevronRight size={20} />
           </button>
-          <div className="flex items-center gap-2.5">
-            <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-purple-600 to-pink-500 flex items-center justify-center shadow-lg border border-purple-400/20">
-              <Bot size={22} className="text-white animate-pulse" />
-            </div>
-            <div>
-              <h1 className="font-black text-base md:text-lg text-white">الدردشة مع السينباي المخضرم</h1>
-              <p className="text-[10px] text-purple-400 font-bold flex items-center gap-1"><Sparkles size={10} /> أوتاكو ليفيل ليدر (الـ AI المساعد)</p>
-            </div>
+
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-[#FF1744] to-rose-500 flex items-center justify-center text-white shrink-0 shadow-md shadow-[#FF1744]/20">
+            <Sparkles size={18} />
+          </div>
+
+          <div className="min-w-0">
+            <h1 className="font-black text-sm sm:text-base text-white truncate leading-tight">
+              صديقك الأوتاكو
+            </h1>
+            <p className="text-[11px] text-zinc-400 truncate">
+              {userDisplayName ? `يدردش مع ${userDisplayName}` : 'دردشة أنمي حرة وترشيحات فورية'}
+            </p>
           </div>
         </div>
 
-        {isUnlocked && (
-          <button 
-            onClick={clearChatHistory}
-            className="px-3 py-1.5 bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 rounded-xl text-[10px] font-bold text-neutral-400 hover:text-white transition"
-          >
-            مسح المحادثة
-          </button>
+        {isUnlocked && chat.length > 0 && (
+          <div className="flex items-center gap-1.5 shrink-0">
+            {confirmClear ? (
+              <div className="flex items-center gap-1 bg-zinc-900 border border-rose-500/40 rounded-xl p-1">
+                <button
+                  type="button"
+                  onClick={clearChatHistory}
+                  className="min-h-[36px] px-2.5 rounded-lg bg-rose-600 text-white text-[11px] font-bold cursor-pointer whitespace-nowrap"
+                >
+                  تأكيد البدء من جديد
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmClear(false)}
+                  className="min-h-[36px] px-2 text-zinc-400 hover:text-white text-[11px] font-bold cursor-pointer"
+                >
+                  إلغاء
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirmClear(true)}
+                aria-label="محادثة جديدة"
+                className="min-h-[44px] px-3 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs font-bold text-zinc-300 hover:text-white flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap"
+              >
+                <Trash2 size={15} />
+                {!display.isCoverScreen && <span>محادثة جديدة</span>}
+              </button>
+            )}
+          </div>
         )}
-      </div>
+      </header>
 
-      {/* Main UI Area */}
+      {/* Main Content */}
       {!isUnlocked ? (
-        <div className="flex-1 max-w-lg mx-auto flex flex-col items-center justify-center p-6 text-center">
-          <div className="w-20 h-20 bg-purple-600/10 border border-purple-500/15 rounded-3xl flex items-center justify-center text-4xl mb-6 shadow-2xl relative">
-            🔒
-            <Award className="absolute -bottom-2 -left-2 text-yellow-400" size={24} />
+        <div className="flex-1 overflow-y-auto flex items-center justify-center p-4 sm:p-6">
+          <div className="w-full max-w-md bg-[#111115] border border-zinc-800 rounded-2xl p-6 text-center space-y-5">
+            <div className="w-16 h-16 mx-auto rounded-2xl bg-[#FF1744]/10 border border-[#FF1744]/25 flex items-center justify-center text-[#FF1744]">
+              <Award size={30} />
+            </div>
+
+            <div className="space-y-1.5">
+              <h2 className="text-lg font-black text-white">صديقك الأوتاكو يفتح عند المستوى {MIN_LEVEL}</h2>
+              <p className="text-xs text-zinc-400 leading-relaxed">
+                ارفع مستواك بالمشاركة في التعليقات وتحديات ساحة الأوتاكو لتفتح الدردشة الحرة والترشيحات السريعة.
+              </p>
+            </div>
+
+            <div className="bg-zinc-950 border border-zinc-800/80 p-4 rounded-xl space-y-2.5 text-right">
+              <div className="flex justify-between text-xs font-bold">
+                <span className="text-zinc-400">مستواك الحالي</span>
+                <span className="text-white tabular-nums">
+                  المستوى {userLevel} / {MIN_LEVEL}
+                </span>
+              </div>
+              <div className="w-full bg-zinc-900 h-2.5 rounded-full overflow-hidden">
+                <div
+                  className="bg-[#FF1744] h-full transition-all duration-500"
+                  style={{ width: `${progressPercent}%` }}
+                />
+              </div>
+            </div>
+
+            {onNavigate && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
+                <button
+                  type="button"
+                  onClick={() => onNavigate('games')}
+                  className="min-h-[44px] px-4 rounded-xl bg-[#FF1744] hover:bg-rose-600 text-white text-xs font-bold flex items-center justify-center gap-2 transition cursor-pointer"
+                >
+                  <Gamepad2 size={16} />
+                  <span>ساحة الأوتاكو</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onNavigate('level_perks')}
+                  className="min-h-[44px] px-4 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-200 text-xs font-bold flex items-center justify-center gap-2 transition cursor-pointer"
+                >
+                  <Zap size={16} />
+                  <span>خريطة الامتيازات</span>
+                </button>
+              </div>
+            )}
           </div>
-          <h2 className="text-xl font-black text-white mb-2">هذه الميزة الفريدة مقفلة ⚔️</h2>
-          <p className="text-neutral-400 text-xs leading-relaxed max-w-sm mb-6">
-            محادثة "السينباي المخضرم" ومتابعته لمزاجك هي ميزة حصرية تتطلب مستوى مهارة أكبر. تمكّن من رفع مستواك وتأثيرك في مجتمع أوتاكو هاب لتصل للمستوى المطلوب!
-          </p>
-
-          <div className="bg-neutral-950 border border-white/5 p-4 rounded-2xl w-full text-right space-y-3 mb-6">
-            <div className="flex justify-between text-xs">
-              <span className="text-neutral-400">المستوى المطلوب:</span>
-              <span className="text-purple-400 font-bold">المستوى {MIN_LEVEL}</span>
-            </div>
-            <div className="flex justify-between text-xs">
-              <span className="text-neutral-400">مستواك الحالي:</span>
-              <span className="text-pink-400 font-bold">المستوى {userLevel}</span>
-            </div>
-
-            <div className="w-full bg-neutral-900 h-2 rounded-full overflow-hidden">
-              <div 
-                className="bg-gradient-to-r from-purple-500 to-pink-500 h-full"
-                style={{ width: `${Math.min(100, (userLevel / MIN_LEVEL) * 100)}%` }}
-              ></div>
-            </div>
-          </div>
-
-          <p className="text-[10px] text-neutral-500 leading-normal">
-            💡 نصيحة للارتفاع بسرعة: شارك في كتابة التعليقات، فز بجولات تخمين الألعاب، وأضف توصيات الأنمي المعتمدة لدعم أصدقائك لتكتسب نقاط الخبرة (EXP).
-          </p>
         </div>
       ) : (
-        <div className="flex-1 flex flex-col max-w-4xl mx-auto w-full overflow-hidden">
-          {/* Settings Panel (Mood / Status) */}
-          <div className="bg-neutral-950 p-4 border-b border-white/5 space-y-4 shrink-0">
-            {/* Mood selector */}
-            <div>
-              <span className="text-[10px] font-extrabold text-neutral-400 block mb-2 tracking-wide uppercase">ضبط مزاجك الحالي (تغيير أسلوب حواري):</span>
-              <div className="flex gap-2 overflow-x-auto hide-scrollbar pb-1">
-                {MOODS.map(m => (
-                  <button
-                    key={m.value}
-                    onClick={() => setSelectedMood(m.value)}
-                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition whitespace-nowrap border cursor-pointer ${selectedMood === m.value ? 'bg-purple-600 border-purple-500 text-white shadow-lg shadow-purple-500/20' : 'bg-neutral-900 border-neutral-800 text-neutral-400 hover:text-white'}`}
-                  >
-                    {m.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Status selector */}
-            <div>
-              <span className="text-[10px] font-extrabold text-neutral-400 block mb-2 tracking-wide uppercase">وضعك الحالي كأوتاكو:</span>
-              <div className="flex gap-2 overflow-x-auto hide-scrollbar pb-1">
-                {STATUSES.map(s => (
-                  <button
-                    key={s.value}
-                    onClick={() => setSelectedStatus(s.value)}
-                    className={`px-3 py-1.5 rounded-xl text-[11px] font-bold transition whitespace-nowrap border cursor-pointer ${selectedStatus === s.value ? 'bg-pink-600 border-pink-500 text-white shadow-lg shadow-pink-500/20' : 'bg-neutral-900 border-neutral-800 text-neutral-400 hover:text-white'}`}
-                  >
-                    {s.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* Chat Messages Log */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-zinc-950/20">
-            {chat.map((c, i) => (
-              <div key={i} className={`flex ${c.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
-                <div className="flex gap-2 max-w-[85%]">
-                  {c.sender === 'bot' && (
-                    <div className="w-7 h-7 rounded-lg bg-purple-600 shrink-0 flex items-center justify-center text-white font-mono text-[10px] font-bold shadow">
-                      M
+        <div className="flex-1 min-h-0 w-full max-w-4xl mx-auto flex flex-col">
+          {/* Messages Stream */}
+          <div className="flex-1 min-h-0 overflow-y-auto px-3.5 sm:px-6 py-4 space-y-5">
+            {/* In-Chat Starter Welcome & Quick Prompts (vanishes permanently on 1st message) */}
+            {showEmptyStarterStage && (
+              <div className="min-h-full flex flex-col items-center justify-center py-6">
+                <div className="w-full max-w-xl space-y-6 text-center">
+                  <div className="space-y-2.5">
+                    <div className="w-14 h-14 mx-auto rounded-2xl bg-gradient-to-tr from-[#FF1744] to-rose-500 flex items-center justify-center text-white shadow-lg shadow-[#FF1744]/20">
+                      <Sparkles size={26} />
                     </div>
-                  )}
-                  <div className={`p-3 text-sm leading-relaxed rounded-2xl shadow-xl whitespace-pre-wrap ${c.sender === 'user' ? 'bg-gradient-to-l from-purple-600 to-indigo-600 text-white rounded-tl-sm' : 'bg-neutral-900 text-neutral-100 border border-neutral-800 rounded-tr-sm'}`}>
-                    {c.text}
+                    <h2 className="text-xl sm:text-2xl font-black text-white">
+                      {userDisplayName ? `هلا ${userDisplayName}!` : 'هلا بك يا صاحبي!'}
+                    </h2>
+                    <p className="text-xs sm:text-sm text-zinc-400 leading-relaxed max-w-md mx-auto">
+                      سولف معي عن أي أنمي أو شخصية أو نظرية تخطر ببالك، ولو تبغى ترشيح بعطيك العمل ومعه بطاقته تدخل عليها فوراً.
+                    </p>
+                  </div>
+
+                  <div
+                    className={`grid gap-2.5 text-right ${
+                      display.isCoverScreen ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-2'
+                    }`}
+                  >
+                    {STARTER_SUGGESTIONS.map((prompt) => (
+                      <button
+                        key={prompt}
+                        type="button"
+                        onClick={() => sendPrompt(prompt)}
+                        className="min-h-[48px] p-3.5 rounded-2xl bg-[#121217] hover:bg-[#1a1a22] border border-zinc-800 hover:border-[#FF1744]/50 text-xs sm:text-[13px] font-bold text-zinc-200 hover:text-white transition text-right cursor-pointer leading-relaxed"
+                      >
+                        {prompt}
+                      </button>
+                    ))}
                   </div>
                 </div>
               </div>
-            ))}
-            
+            )}
+
+            {/* Real Conversation Bubbles */}
+            {chat.map((c) => {
+              const isUser = c.sender === 'user';
+              return (
+                <motion.div
+                  key={c.id}
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.16, ease: 'easeOut' }}
+                  className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}
+                >
+                  <div
+                    className={`flex items-start gap-2.5 ${
+                      display.isCoverScreen ? 'max-w-[94%]' : 'max-w-[88%] sm:max-w-[80%]'
+                    }`}
+                  >
+                    {!isUser && (
+                      <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-[#FF1744]/20 to-rose-500/10 border border-[#FF1744]/30 shrink-0 flex items-center justify-center text-[#FF1744] mt-0.5">
+                        <Sparkles size={15} />
+                      </div>
+                    )}
+
+                    <div className="space-y-2.5 min-w-0 flex-1">
+                      <div
+                        className={`px-4 py-3 text-[13px] sm:text-sm leading-relaxed rounded-2xl whitespace-pre-wrap break-words ${
+                          isUser
+                            ? 'bg-[#FF1744] text-white rounded-tl-sm font-medium'
+                            : 'bg-[#131318] text-zinc-100 border border-zinc-800/90 rounded-tr-sm'
+                        }`}
+                      >
+                        {renderFormattedText(c.text)}
+                      </div>
+
+                      {/* Interactive Anime Recommendation Cards */}
+                      {!isUser && Array.isArray(c.animes) && c.animes.length > 0 && (
+                        <div
+                          className={`grid gap-2.5 ${
+                            c.animes.length > 1 && !display.isCoverScreen
+                              ? 'grid-cols-1 sm:grid-cols-2'
+                              : 'grid-cols-1'
+                          }`}
+                        >
+                          {c.animes.map((anime) => (
+                            <button
+                              key={`${c.id}-${anime.id}`}
+                              type="button"
+                              onClick={() => openAnimeDetails(anime.id)}
+                              className="group w-full min-h-[84px] bg-[#111116] hover:bg-[#191922] border border-zinc-800 hover:border-[#FF1744]/60 rounded-2xl p-2.5 flex items-center gap-3 text-right transition cursor-pointer"
+                            >
+                              <div className="w-14 h-20 rounded-xl overflow-hidden bg-zinc-900 border border-zinc-800 shrink-0 flex items-center justify-center">
+                                {anime.posterUrl ? (
+                                  <img
+                                    src={anime.posterUrl}
+                                    alt={anime.title}
+                                    referrerPolicy="no-referrer"
+                                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                                  />
+                                ) : (
+                                  <Film size={20} className="text-zinc-600" />
+                                )}
+                              </div>
+
+                              <div className="min-w-0 flex-1 space-y-1">
+                                <h4 className="text-xs sm:text-sm font-black text-white group-hover:text-[#FF1744] transition-colors line-clamp-1">
+                                  {anime.title}
+                                </h4>
+
+                                <div className="flex items-center flex-wrap gap-1.5 text-[11px] text-zinc-400 tabular-nums">
+                                  {anime.rating && (
+                                    <span className="inline-flex items-center gap-0.5 text-amber-400 font-bold">
+                                      <Star size={11} className="fill-amber-400" />
+                                      <span>{anime.rating.toFixed(1)}</span>
+                                    </span>
+                                  )}
+                                  {anime.rating && <span aria-hidden="true">·</span>}
+                                  <span>{anime.type}</span>
+                                  {anime.episodes && (
+                                    <>
+                                      <span aria-hidden="true">·</span>
+                                      <span>{anime.episodes} حلقة</span>
+                                    </>
+                                  )}
+                                  {anime.year && (
+                                    <>
+                                      <span aria-hidden="true">·</span>
+                                      <span>{anime.year}</span>
+                                    </>
+                                  )}
+                                </div>
+
+                                {anime.genres && anime.genres.length > 0 && (
+                                  <p className="text-[11px] text-zinc-500 truncate">
+                                    {anime.genres.join(' · ')}
+                                  </p>
+                                )}
+
+                                <div className="pt-0.5 flex items-center gap-1 text-[11px] font-bold text-[#FF1744]">
+                                  <span>فتح صفحة الأنمي</span>
+                                  <ChevronLeft size={13} className="group-hover:-translate-x-0.5 transition-transform" />
+                                </div>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      {!isUser && (
+                        <div className="flex items-center gap-2 px-1">
+                          <button
+                            type="button"
+                            onClick={() => handleCopy(c.id, c.text)}
+                            className="min-h-[36px] px-2 rounded-lg text-[11px] font-bold text-zinc-400 hover:text-white hover:bg-zinc-900 flex items-center gap-1 transition cursor-pointer"
+                          >
+                            {copiedMsgId === c.id ? (
+                              <>
+                                <Check size={12} className="text-emerald-400" />
+                                <span className="text-emerald-400">تم النسخ</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy size={12} />
+                                <span>نسخ</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </motion.div>
+              );
+            })}
+
             {loading && (
               <div className="flex justify-start">
-                <div className="flex gap-2 items-center bg-neutral-900 text-neutral-400 px-4 py-3 rounded-2xl border border-neutral-800 text-xs">
-                  <Bot size={14} className="animate-spin text-purple-400" />
-                  <span>السينباي يكتب بحماس ويفكر حالياً...</span>
+                <div className="flex items-center gap-2 bg-[#131318] border border-zinc-800/90 px-4 py-3 rounded-2xl rounded-tr-sm text-xs font-bold text-zinc-300">
+                  <Loader2 size={14} className="text-[#FF1744] animate-spin" />
+                  <span>يكتب لك الآن...</span>
                 </div>
               </div>
             )}
+
+            {errorState && (
+              <div className="bg-rose-950/30 border border-rose-500/30 rounded-2xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-start gap-2.5 text-xs text-rose-200 leading-relaxed">
+                  <AlertCircle size={16} className="text-rose-400 shrink-0 mt-0.5" />
+                  <span>{errorState.message}</span>
+                </div>
+                {errorState.lastFailedPrompt && (
+                  <button
+                    type="button"
+                    onClick={() => sendPrompt(errorState.lastFailedPrompt!, true)}
+                    disabled={loading}
+                    className="min-h-[44px] px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 shrink-0 transition cursor-pointer disabled:opacity-40"
+                  >
+                    <RotateCcw size={13} />
+                    <span>إعادة المحاولة</span>
+                  </button>
+                )}
+              </div>
+            )}
+
             <div ref={messagesEndRef} />
           </div>
 
-          {/* Chat Input */}
-          <div className="bg-neutral-900 p-4 border-t border-white/5 shrink-0">
-            <div className="flex gap-2 bg-black border border-neutral-800 rounded-2xl p-1.5 pr-4 pl-2 shadow-inner items-center max-w-4xl mx-auto">
-              <input 
-                type="text"
+          {/* Pinned Auto-Growing Composer */}
+          <div className="shrink-0 bg-[#0d0d11] border-t border-zinc-800/80 p-2.5 sm:p-3.5">
+            <div className="flex items-end gap-2 bg-zinc-950 border border-zinc-800 focus-within:border-zinc-600 rounded-2xl p-1.5 pr-3.5 transition-colors">
+              <textarea
+                ref={textareaRef}
+                rows={1}
                 value={msg}
-                maxLength={500}
+                maxLength={1200}
                 onChange={(e) => setMsg(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && send()}
-                placeholder={cooldownSec > 0 ? `انتظر ${cooldownSec} ثوانٍ لإرسال الرسالة التالية...` : "اكتب رسالة إلى السينباي المخضرم..."}
-                disabled={loading || cooldownSec > 0}
-                className="flex-1 bg-transparent text-sm text-white focus:outline-none disabled:opacity-50"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    sendPrompt(msg);
+                  }
+                }}
+                placeholder={
+                  userDisplayName ? `اسأل أو فضفض يا ${displayLabel}...` : 'اكتب رسالتك هنا...'
+                }
+                disabled={loading}
+                className="flex-1 min-h-[44px] max-h-32 py-2.5 bg-transparent text-sm text-white placeholder:text-zinc-500 focus:outline-none disabled:opacity-50 resize-none leading-relaxed"
               />
-              <button 
-                onClick={send}
-                disabled={loading || cooldownSec > 0 || !msg.trim()}
-                className="w-10 h-10 rounded-xl bg-gradient-to-r from-purple-600 to-pink-500 flex items-center justify-center text-white shrink-0 shadow-lg hover:brightness-110 active:scale-95 transition disabled:opacity-40 cursor-pointer"
+              <button
+                type="button"
+                onClick={() => sendPrompt(msg)}
+                disabled={loading || !msg.trim()}
+                aria-label="إرسال"
+                className="min-w-[44px] min-h-[44px] px-3 rounded-xl bg-[#FF1744] hover:bg-rose-600 flex items-center justify-center text-white shrink-0 transition disabled:opacity-40 cursor-pointer"
               >
-                {cooldownSec > 0 ? (
-                  <span className="text-xs font-black">{cooldownSec}s</span>
-                ) : (
-                  <Send size={16} />
-                )}
+                <Send size={17} />
               </button>
             </div>
           </div>

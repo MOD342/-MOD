@@ -24,9 +24,13 @@ import {
   Smile,
   Clock,
   Ghost,
+  RefreshCw,
+  AlertCircle,
 } from 'lucide-react';
 import { clientCache } from '../utils/clientCache';
 import { cleanAnimeTitle } from '../utils/animeTitleCleaner';
+import ViewportPortal from '../components/ViewportPortal';
+import PullToRefresh from '../components/PullToRefresh';
 import {
   useGlobalLayoutMode,
   LayoutModeToggleButton,
@@ -151,6 +155,8 @@ export default function CommunityView({ onAnimeClick, onNavigate }: CommunityVie
   const [characterSearch, setCharacterSearch] = useState<string>('');
   const [debouncedCharSearch, setDebouncedCharSearch] = useState<string>('');
   const [selectedCharacter, setSelectedCharacter] = useState<any | null>(null);
+  const [refreshing, setRefreshing] = useState<boolean>(false);
+  const [tabError, setTabError] = useState<boolean>(false);
 
   // Debounce character search
   useEffect(() => {
@@ -160,36 +166,52 @@ export default function CommunityView({ onAnimeClick, onNavigate }: CommunityVie
     return () => clearTimeout(timer);
   }, [characterSearch]);
 
+  const loadMoodTab = async (forceBypass = false) => {
+    const preset = MOOD_PRESETS.find((m) => m.id === selectedMood) || MOOD_PRESETS[0];
+    const cacheKey = `elite_mood_v2_${preset.id}`;
+    setTabError(false);
+
+    if (!forceBypass) {
+      const cached = clientCache.get<any[]>(cacheKey);
+      if (cached && cached.length > 0) {
+        setMoodAnimeList(cached);
+        if (!spotlightAnime) {
+          setSpotlightAnime(cached[Math.floor(Math.random() * cached.length)]);
+        }
+        setLoadingMood(false);
+        return;
+      }
+    }
+
+    if (forceBypass) setRefreshing(true);
+    else setLoadingMood(true);
+
+    try {
+      const ts = forceBypass ? `&bypass=true&_t=${Date.now()}` : '';
+      const res = await fetch(
+        `/api/anime/search?genres=${preset.genreId}&min_score=${preset.minScore}&order_by=score&sort=desc&page=1${ts}`,
+        forceBypass ? { cache: 'no-store' } : undefined
+      ).then((r) => r.json());
+      if (res.success && Array.isArray(res.data) && res.data.length > 0) {
+        clientCache.set(cacheKey, res.data, 10 * 60 * 1000);
+        setMoodAnimeList(res.data);
+        setSpotlightAnime(res.data[Math.floor(Math.random() * res.data.length)]);
+      } else if (moodAnimeList.length === 0) {
+        setTabError(true);
+      }
+    } catch (err) {
+      console.error('Mood fetch error:', err);
+      if (moodAnimeList.length === 0) setTabError(true);
+    } finally {
+      setLoadingMood(false);
+      setRefreshing(false);
+    }
+  };
+
   // Fetch Mood Anime
   useEffect(() => {
     if (activeTab !== 'discover') return;
-    const preset = MOOD_PRESETS.find((m) => m.id === selectedMood) || MOOD_PRESETS[0];
-    const cacheKey = `elite_mood_v2_${preset.id}`;
-
-    const cached = clientCache.get<any[]>(cacheKey);
-    if (cached && cached.length > 0) {
-      setMoodAnimeList(cached);
-      if (!spotlightAnime) {
-        setSpotlightAnime(cached[Math.floor(Math.random() * cached.length)]);
-      }
-      setLoadingMood(false);
-      return;
-    }
-
-    setLoadingMood(true);
-    fetch(
-      `/api/anime/search?genres=${preset.genreId}&min_score=${preset.minScore}&order_by=score&sort=desc&page=1`
-    )
-      .then((res) => res.json())
-      .then((res) => {
-        if (res.success && Array.isArray(res.data) && res.data.length > 0) {
-          clientCache.set(cacheKey, res.data, 10 * 60 * 1000);
-          setMoodAnimeList(res.data);
-          setSpotlightAnime(res.data[Math.floor(Math.random() * res.data.length)]);
-        }
-      })
-      .catch((err) => console.error('Mood fetch error:', err))
-      .finally(() => setLoadingMood(false));
+    void loadMoodTab(false);
   }, [selectedMood, activeTab]);
 
   // Spin Roulette Pick
@@ -205,66 +227,102 @@ export default function CommunityView({ onAnimeClick, onNavigate }: CommunityVie
     }, 350);
   };
 
-  // Fetch Hall of Fame Anime
-  useEffect(() => {
-    if (activeTab !== 'hall_of_fame') return;
+  const loadHallOfFameTab = async (forceBypass = false) => {
     const cacheKey = `elite_fame_v2_${fameFilter}`;
+    setTabError(false);
 
-    const cached = clientCache.get<any[]>(cacheKey);
-    if (cached && cached.length > 0) {
-      setFameAnimeList(cached);
-      setLoadingFame(false);
-      return;
+    if (!forceBypass) {
+      const cached = clientCache.get<any[]>(cacheKey);
+      if (cached && cached.length > 0) {
+        setFameAnimeList(cached);
+        setLoadingFame(false);
+        return;
+      }
     }
 
-    setLoadingFame(true);
+    if (forceBypass) setRefreshing(true);
+    else setLoadingFame(true);
+
     let url = `/api/anime/search?order_by=score&sort=desc&page=1`;
     if (fameFilter === 'popularity') {
       url = `/api/anime/search?order_by=popularity&sort=asc&page=1`;
     } else if (fameFilter === 'airing') {
       url = `/api/anime/search?status=airing&order_by=score&sort=desc&page=1`;
     }
+    if (forceBypass) url += `&bypass=true&_t=${Date.now()}`;
 
-    fetch(url)
-      .then((res) => res.json())
-      .then((res) => {
-        if (res.success && Array.isArray(res.data)) {
-          clientCache.set(cacheKey, res.data, 15 * 60 * 1000);
-          setFameAnimeList(res.data);
-        }
-      })
-      .catch((err) => console.error('Hall of fame error:', err))
-      .finally(() => setLoadingFame(false));
+    try {
+      const res = await fetch(url, forceBypass ? { cache: 'no-store' } : undefined).then((r) => r.json());
+      if (res.success && Array.isArray(res.data) && res.data.length > 0) {
+        clientCache.set(cacheKey, res.data, 15 * 60 * 1000);
+        setFameAnimeList(res.data);
+      } else if (fameAnimeList.length === 0) {
+        setTabError(true);
+      }
+    } catch (err) {
+      console.error('Hall of fame error:', err);
+      if (fameAnimeList.length === 0) setTabError(true);
+    } finally {
+      setLoadingFame(false);
+      setRefreshing(false);
+    }
+  };
+
+  // Fetch Hall of Fame Anime
+  useEffect(() => {
+    if (activeTab !== 'hall_of_fame') return;
+    void loadHallOfFameTab(false);
   }, [activeTab, fameFilter]);
+
+  const loadCharactersTab = async (forceBypass = false) => {
+    const cacheKey = `elite_chars_v2_${debouncedCharSearch || 'all'}`;
+    setTabError(false);
+
+    if (!forceBypass) {
+      const cached = clientCache.get<any[]>(cacheKey);
+      if (cached && cached.length > 0) {
+        setCharactersList(cached);
+        setLoadingCharacters(false);
+        return;
+      }
+    }
+
+    if (forceBypass) setRefreshing(true);
+    else setLoadingCharacters(true);
+
+    let url = debouncedCharSearch
+      ? `/api/anime/characters?q=${encodeURIComponent(debouncedCharSearch)}&page=1`
+      : `/api/anime/characters?page=1`;
+    if (forceBypass) url += `&bypass=true&_t=${Date.now()}`;
+
+    try {
+      const res = await fetch(url, forceBypass ? { cache: 'no-store' } : undefined).then((r) => r.json());
+      if (res.success && Array.isArray(res.data) && res.data.length > 0) {
+        clientCache.set(cacheKey, res.data, 15 * 60 * 1000);
+        setCharactersList(res.data);
+      } else if (charactersList.length === 0) {
+        setTabError(true);
+      }
+    } catch (err) {
+      console.error('Characters fetch error:', err);
+      if (charactersList.length === 0) setTabError(true);
+    } finally {
+      setLoadingCharacters(false);
+      setRefreshing(false);
+    }
+  };
 
   // Fetch Legendary Characters
   useEffect(() => {
     if (activeTab !== 'characters') return;
-    const cacheKey = `elite_chars_v2_${debouncedCharSearch || 'all'}`;
-
-    const cached = clientCache.get<any[]>(cacheKey);
-    if (cached && cached.length > 0) {
-      setCharactersList(cached);
-      setLoadingCharacters(false);
-      return;
-    }
-
-    setLoadingCharacters(true);
-    const url = debouncedCharSearch
-      ? `/api/anime/characters?q=${encodeURIComponent(debouncedCharSearch)}&page=1`
-      : `/api/anime/characters?page=1`;
-
-    fetch(url)
-      .then((res) => res.json())
-      .then((res) => {
-        if (res.success && Array.isArray(res.data)) {
-          clientCache.set(cacheKey, res.data, 15 * 60 * 1000);
-          setCharactersList(res.data);
-        }
-      })
-      .catch((err) => console.error('Characters fetch error:', err))
-      .finally(() => setLoadingCharacters(false));
+    void loadCharactersTab(false);
   }, [activeTab, debouncedCharSearch]);
+
+  const handleRefreshActiveTab = async () => {
+    if (activeTab === 'discover') await loadMoodTab(true);
+    else if (activeTab === 'hall_of_fame') await loadHallOfFameTab(true);
+    else await loadCharactersTab(true);
+  };
 
   const activeMoodPreset = useMemo(
     () => MOOD_PRESETS.find((m) => m.id === selectedMood) || MOOD_PRESETS[0],
@@ -376,7 +434,7 @@ export default function CommunityView({ onAnimeClick, onNavigate }: CommunityVie
       <div
         key={`${anime._id}-${idx}`}
         onClick={() => onAnimeClick && onAnimeClick(String(anime._id))}
-        className="cursor-pointer group relative aspect-[2/3] w-full overflow-hidden bg-neutral-900 border-[0.5px] border-black/40"
+        className="theme-keep-dark cursor-pointer group relative aspect-[2/3] w-full overflow-hidden bg-neutral-900 border-[0.5px] border-black/40"
       >
         <img
           src={anime.posterUrl}
@@ -425,6 +483,7 @@ export default function CommunityView({ onAnimeClick, onNavigate }: CommunityVie
   };
 
   return (
+    <PullToRefresh onRefresh={handleRefreshActiveTab}>
     <div
       className="min-h-screen bg-[#0b0c10] text-white font-sans pb-28 select-none"
       dir="rtl"
@@ -557,7 +616,7 @@ export default function CommunityView({ onAnimeClick, onNavigate }: CommunityVie
                   key={spotlightAnime._id}
                   initial={{ opacity: 0, scale: 0.98 }}
                   animate={{ opacity: 1, scale: 1 }}
-                  className="relative rounded-2xl overflow-hidden border border-purple-500/25 bg-[#12141c] shadow-xl"
+                  className="theme-keep-dark relative rounded-2xl overflow-hidden border border-purple-500/25 bg-[#12141c] shadow-xl"
                 >
                   {/* خلفية ضبابية من البوستر */}
                   <div className="absolute inset-0 opacity-20 pointer-events-none">
@@ -694,6 +753,23 @@ export default function CommunityView({ onAnimeClick, onNavigate }: CommunityVie
                     />
                   ))}
                 </div>
+              ) : moodAnimeList.length === 0 ? (
+                <div className="text-center py-14 m-4 bg-[#12141c] rounded-2xl border border-white/5 space-y-3">
+                  <AlertCircle className={`mx-auto ${tabError ? 'text-rose-500' : 'text-neutral-500'}`} size={34} />
+                  <p className="text-xs font-bold text-neutral-300">
+                    {tabError ? 'تعذر تحميل ترشيحات المزاج حالياً' : 'لا توجد ترشيحات حالياً'}
+                  </p>
+                  {tabError && (
+                    <button
+                      onClick={handleRefreshActiveTab}
+                      disabled={refreshing}
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-black transition cursor-pointer"
+                    >
+                      <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
+                      <span>إعادة المحاولة</span>
+                    </button>
+                  )}
+                </div>
               ) : (
                 <div className={getLayoutGridClasses(layoutMode)}>
                   {moodAnimeList.map((anime, idx) => renderAnimeCard(anime, idx, false))}
@@ -748,6 +824,23 @@ export default function CommunityView({ onAnimeClick, onNavigate }: CommunityVie
                     />
                   ))}
                 </div>
+              ) : fameAnimeList.length === 0 ? (
+                <div className="text-center py-14 m-4 bg-[#12141c] rounded-2xl border border-white/5 space-y-3">
+                  <AlertCircle className={`mx-auto ${tabError ? 'text-rose-500' : 'text-neutral-500'}`} size={34} />
+                  <p className="text-xs font-bold text-neutral-300">
+                    {tabError ? 'تعذر تحميل قائمة الأساطير حالياً' : 'لا توجد بيانات متاحة حالياً'}
+                  </p>
+                  {tabError && (
+                    <button
+                      onClick={handleRefreshActiveTab}
+                      disabled={refreshing}
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-black transition cursor-pointer"
+                    >
+                      <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
+                      <span>إعادة المحاولة</span>
+                    </button>
+                  )}
+                </div>
               ) : (
                 <div className={getLayoutGridClasses(layoutMode)}>
                   {fameAnimeList.map((anime, idx) => renderAnimeCard(anime, idx, true))}
@@ -801,9 +894,21 @@ export default function CommunityView({ onAnimeClick, onNavigate }: CommunityVie
                   ))}
                 </div>
               ) : charactersList.length === 0 ? (
-                <div className="text-center py-16 text-neutral-500">
-                  <Users size={40} className="mx-auto mb-2 opacity-40" />
-                  <p className="text-xs font-bold">لم يتم العثور على شخصيات مطابقة</p>
+                <div className="text-center py-16 m-4 bg-[#12141c] rounded-2xl border border-white/5 text-neutral-400 space-y-3">
+                  <Users size={40} className="mx-auto opacity-40" />
+                  <p className="text-xs font-bold">
+                    {tabError ? 'تعذر جلب شخصيات الأنمي حالياً' : 'لم يتم العثور على شخصيات مطابقة'}
+                  </p>
+                  {tabError && (
+                    <button
+                      onClick={handleRefreshActiveTab}
+                      disabled={refreshing}
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-black transition cursor-pointer"
+                    >
+                      <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
+                      <span>إعادة المحاولة</span>
+                    </button>
+                  )}
                 </div>
               ) : (
                 <div className={getLayoutGridClasses(layoutMode)}>
@@ -882,7 +987,7 @@ export default function CommunityView({ onAnimeClick, onNavigate }: CommunityVie
                       <div
                         key={`${char.id}-${idx}`}
                         onClick={() => setSelectedCharacter(char)}
-                        className="cursor-pointer group relative aspect-[2/3] w-full overflow-hidden bg-neutral-900 border-[0.5px] border-black/40"
+                        className="theme-keep-dark cursor-pointer group relative aspect-[2/3] w-full overflow-hidden bg-neutral-900 border-[0.5px] border-black/40"
                       >
                         <img
                           src={char.imageUrl}
@@ -932,6 +1037,7 @@ export default function CommunityView({ onAnimeClick, onNavigate }: CommunityVie
       </div>
 
       {/* نافذة تفاصيل الشخصية ومؤدي الصوت والعمل المرتبط */}
+      <ViewportPortal>
       <AnimatePresence>
         {selectedCharacter && (
           <motion.div
@@ -939,6 +1045,11 @@ export default function CommunityView({ onAnimeClick, onNavigate }: CommunityVie
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={() => setSelectedCharacter(null)}
+            style={{
+              height: 'var(--vv-height, 100dvh)',
+              paddingTop: 'calc(var(--safe-top, 0px) + 1rem)',
+              paddingBottom: 'calc(var(--safe-bottom, 0px) + 1rem)',
+            }}
             className="fixed inset-0 z-[120] bg-black/85 backdrop-blur-md flex items-center justify-center p-4"
           >
             <motion.div
@@ -1079,6 +1190,8 @@ export default function CommunityView({ onAnimeClick, onNavigate }: CommunityVie
           </motion.div>
         )}
       </AnimatePresence>
+      </ViewportPortal>
     </div>
+    </PullToRefresh>
   );
 }

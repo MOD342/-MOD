@@ -1,23 +1,29 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
+import { anilistService } from '../services/anilistService';
+import { cleanAnimeTitle } from '../utils/animeTitleCleaner';
+import { translateGenresListToArabic } from './helpers/translation';
 
 const router = Router();
 let aiInstance: GoogleGenAI | null = null;
+let lastLoadedKey: string | null = null;
 
 function getAi(): GoogleGenAI | null {
-  if (!process.env.GEMINI_API_KEY) {
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  if (!apiKey) {
     return null;
   }
-  if (!aiInstance) {
+  if (!aiInstance || lastLoadedKey !== apiKey) {
     try {
       aiInstance = new GoogleGenAI({
-        apiKey: process.env.GEMINI_API_KEY,
+        apiKey,
         httpOptions: {
           headers: {
             'User-Agent': 'aistudio-build',
           },
         },
       });
+      lastLoadedKey = apiKey;
     } catch (e: any) {
       console.error("Failed to initialize GoogleGenAI:", e.message);
       return null;
@@ -33,7 +39,7 @@ function getAi(): GoogleGenAI | null {
 // 1. Per-User / Per-IP Sliding Window Rate Limiter (protects global API quota)
 const userRateMap = new Map<string, { timestamps: number[] }>();
 const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
-const MAX_CHAT_REQ_PER_MIN = 8; // Max 8 chat messages per minute per user
+const MAX_CHAT_REQ_PER_MIN = 20; // Generous limit for natural multi-turn conversations
 
 function checkRateLimit(identifier: string): { allowed: boolean; retryAfterSec?: number } {
   const now = Date.now();
@@ -62,49 +68,78 @@ function checkRateLimit(identifier: string): { allowed: boolean; retryAfterSec?:
   return { allowed: true };
 }
 
-// 2. Smart LRU Response Cache & In-Flight Request Deduplication for Chat
-const chatResponseCache = new Map<string, { text: string; expiresAt: number }>();
-const inFlightChatRequests = new Map<string, Promise<string>>();
-const CHAT_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes cache for common prompts
-
-function normalizePromptKey(promptText: string, mood: string): string {
-  return `${promptText.trim().toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, '').replace(/\s+/g, ' ')}|${mood.slice(0, 12)}`;
-}
-
-// 3. Multi-User Games & Anti-Cheat Pool Cache (prevents calling Gemini on every game start)
+// 2. Multi-User Games & Anti-Cheat Pool Cache (prevents calling Gemini on every game start)
 const gamesPoolCache = new Map<string, { questions: any[]; expiresAt: number; refreshing: boolean }>();
 const antiCheatCache = new Map<string, { data: any; expiresAt: number }>();
 const GAMES_CACHE_TTL_MS = 20 * 60 * 1000; // 20 minutes shared pool per game type
 
-// 4. Intelligent Local Otaku Senpai Knowledge Base (Zero-Downtime Fallback under extreme load)
-function generateSmartOtakuFallback(lastMessage: string, mood: string): string {
-  const q = lastMessage.toLowerCase();
+export interface ChatAnimeCard {
+  id: string;
+  title: string;
+  posterUrl: string;
+  rating: number | null;
+  type: string;
+  episodes: number | null;
+  year: number | null;
+  genres: string[];
+}
 
-  if (q.includes('fate') || q.includes('فيت')) {
-    return `أهلاً بك يا ناكاما! ⚔️ سلسلة **Fate** عالم أسطوري مترابط، وإليك الترتيب الأفضل والأصح للمشاهدة بدون حرق:\n\n1️⃣ **Fate/stay night: Unlimited Blade Works (2014)** — البداية المثالية لفهم نظام حرب الكأس المقدسة بأقوى تحريك من استوديو Ufotable.\n2️⃣ **أفلام Fate/stay night: Heaven's Feel (الثلاثية)** — المسار الأعمق والأكثر سوداوية وإثارة.\n3️⃣ **Fate/Zero** — القصة السابقة (Prequel) التي تشرح حرب الكأس المقدسة الرابعة بكتابة عبقرية.\n\nبعد إنهاء هذه الثلاثية يمكنك مشاهدة أي جزء فرعي مثل *Fate/Apocrypha* أو *Fate/Grand Order* بحرية تامة! 🌟`;
+async function resolveSuggestedAnimeCards(titles: string[]): Promise<ChatAnimeCard[]> {
+  const cleaned = Array.from(
+    new Set(
+      (titles || [])
+        .map((t) => String(t || '').trim())
+        .filter((t) => t.length >= 2 && t.length <= 120)
+    )
+  ).slice(0, 4);
+
+  if (cleaned.length === 0) return [];
+
+  const lookupOne = async (query: string): Promise<ChatAnimeCard | null> => {
+    try {
+      const res = await anilistService.searchAnime({ q: query, page: 1 });
+      const first = res?.data?.[0];
+      if (!first) return null;
+      const id = String(first.mal_id || first.anilist_id || '');
+      if (!id) return null;
+      const posterUrl = first.images?.jpg?.large_image_url || first.images?.jpg?.image_url || '';
+      const rawTitle = first.title_english || first.title || query;
+      const genres = translateGenresListToArabic(first.genres || []).slice(0, 2);
+
+      return {
+        id,
+        title: cleanAnimeTitle(rawTitle) || rawTitle,
+        posterUrl,
+        rating: typeof first.score === 'number' ? first.score : null,
+        type: String(first.type || 'TV'),
+        episodes: typeof first.episodes === 'number' ? first.episodes : null,
+        year: typeof first.year === 'number' ? first.year : null,
+        genres,
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  try {
+    const resolved = await Promise.race([
+      Promise.all(cleaned.map((t) => lookupOne(t))),
+      new Promise<Array<ChatAnimeCard | null>>((resolve) =>
+        setTimeout(() => resolve([]), 2600)
+      ),
+    ]);
+    const seenIds = new Set<string>();
+    const cards: ChatAnimeCard[] = [];
+    for (const item of resolved) {
+      if (item && !seenIds.has(item.id)) {
+        seenIds.add(item.id);
+        cards.push(item);
+      }
+    }
+    return cards;
+  } catch {
+    return [];
   }
-
-  if (q.includes('death note') || q.includes('مذكرة الموت') || q.includes('غموض') || q.includes('تحقيق') || q.includes('ذكاء')) {
-    return `ذوقك رفيع جداً يا صديقي! 🧠 بما أنك تبحث عن صراع عقول وغموض بمستوى **Death Note**، إليك 4 تحف فنية ستجعلك تحبس أنفاسك:\n\n1️⃣ **Monster** — تحفة نفسية خالدة عن الطبيب "تينما" ومطاردته لأخطر عبقري شرير في التاريخ.\n2️⃣ **Code Geass** — إذا أعجبك دهاء "لايت ياغامي"، فإن "لولوش" سيذهلك بتخطيطه الاستراتيجي الخارق.\n3️⃣ **The Promised Neverland (الموسم الأول)** — حرب نفسية وتخطيط هروب عبقري لا يهدأ لحظة واحدة.\n4️⃣ **Tomodachi Game** — ألعاب نفسية ملتوية تكشف الوجه الحقيقي للأصدقاء تحت الضغط.\n\nأي واحد منها يشد انتباهك لنبدأ به؟ 🔥`;
-  }
-
-  if (q.includes('قصير') || q.includes('مكتمل') || q.includes('سريع') || q.includes('12 حلقة')) {
-    return `طلبك عندي يا ناكاما! ⚡ هذه قائمة بأقوى الأنميات القصيرة والمكتملة (11 إلى 24 حلقة) التي تشدك من أول دقيقة حتى النهاية:\n\n1️⃣ **Erased (Boku dake ga Inai Machi)** — (12 حلقة) سفر عبر الزمن لإنقاذ ضحايا جريمة غامضة، مشوق لأقصى درجة!\n2️⃣ **Cyberpunk: Edgerunners** — (10 حلقات) أكشن مستقبلي وقصة مؤثرة جداً بإنتاج بصري خارق.\n3️⃣ **91 Days** — (12 حلقة) قصة انتقام ومافيا كلاسيكية محبوكة بإتقان.\n4️⃣ **Parasyte: The Maxim** — (24 حلقة) قتالات وتطور شخصية أسطوري ونهاية مكتملة ومُرضية.\n\nاختر واحداً منها وأضمن لك سهرة لا تُنسى! 🍿`;
-  }
-
-  if (q.includes('كوميد') || q.includes('ضحك') || mood.includes('حزين')) {
-    return `لا مكان للحزن وأنا هنا يا ناكاما! 😆🌟 إذا أردت أنمي يجعلك تضحك من قلبك وينسيك تعب اليوم، فهذه اختيارات السينباي الذهبية:\n\n1️⃣ **Grand Blue** — كوميديا جامعية هستيرية، مستحيل تشاهد حلقة بدون ضحك متواصل!\n2️⃣ **Gintama** — ملك الكوميديا والأكشن الساخر بلا منازع.\n3️⃣ **Saiki Kusuo no Psi-nan** — حلقات سريعة وخفيفة عن طالب بقدرات خارقة يحاول فقط العيش بهدوء.\n4️⃣ **Spy x Family** — مزيج رائع ودافئ بين الكوميديا العائلية، الأكشن، ولطافة "آنيا"!\n\nجرب أول حلقة من أي منها وستشكرني فوراً! ✨`;
-  }
-
-  if (q.includes('أكشن') || q.includes('قتال') || q.includes('حماس') || q.includes('شونين') || mood.includes('متحمس')) {
-    return `هذا هو الحماس الذي أحبه يا صديقي! 🔥⚔️ إذا كنت تريد معارك ملحمية وتحريك يفجر الشاشة، إليك نخبة الشونين والأكشن:\n\n1️⃣ **Solo Leveling** — تطور قوة البطل "سونغ جين-وو" وقتالات الظلال ترفع الأدرينالين لأقصى حد!\n2️⃣ **Jujutsu Kaisen** — خصوصاً آرك شيبويا، تحريك قتالي خارق للطبيعة.\n3️⃣ **Demon Slayer (Kimetsu no Yaiba)** — لوحات فنية متحركة في كل معركة.\n4️⃣ **Hunter x Hunter (2011)** — أفضل نظام قوة (Nen) وأعمق رحلة مغامرة في عالم الشونين.\n\nهل تابعت أياً منها أم تريد توصيات أعمق وأندر؟ 💪`;
-  }
-
-  if (q.includes('موسم') || q.includes('جديد') || q.includes('حالي')) {
-    return `سؤال في محله يا ناكاما! 🌟 الساحة حالياً مشتعلة بأعمال قوية جداً تتصدر التقييمات:\n\n🔥 **أبرز الأعمال التي يجب أن تضعها في قائمتك:**\n• **Solo Leveling** — لا يزال يكتسح الشعبية بقتالاته الملحمية.\n• **Frieren: Beyond Journey's End** — تحفة فنية تجمع بين السحر، الفلسفة، والقتالات المذهلة.\n• **Dandadan** — إبداع بصري وسرعة أحداث تجمع الأكشن والكوميديا بطابع فريد.\n• **Kaiju No. 8** — أكشن وحماس منذ الحلقة الأولى.\n\nيمكنك تصفح تبويب **"موسم الأنمي"** في التطبيق لرؤية الحلقات المحدثة أولاً بأول! 📺`;
-  }
-
-  return `موشي موشي يا ناكاما! 🌟 بصفتي "السينباي المخضرم" وبناءً على مزاجك الحالي (${mood})، أنصحك بتجربة أحد هذه الأعمال الاستثنائية حسب ذوقك:\n\n• **للغموض والتشويق الذهني:** *Steins;Gate* أو *Monster*\n• **للأكشن والحماس الملحمي:** *Attack on Titan* أو *Hunter x Hunter*\n• **للقصص العميقة والفانتازيا:** *Frieren* أو *Fullmetal Alchemist: Brotherhood*\n\nأخبرني بنوعك المفضل (أكشن، غموض، خيال، كوميديا، أو أنمي قصير) أو اذكر لي آخر أنمي أعجبك لأعطيك توصية مفصلة على مقاسك تماماً! 🔥`;
 }
 
 const FALLBACK_GAMES: Record<string, any[]> = {
@@ -314,12 +349,12 @@ const handleAsync = (fn: (req: Request, res: Response, next: NextFunction) => Pr
 };
 
 router.post('/chat', handleAsync(async (req: Request, res: Response) => {
-  const { messages, mood, status, userId } = req.body;
+  const { messages, userId, userName, userLevel, favoriteAnimes } = req.body;
   if (!messages || !Array.isArray(messages) || messages.length === 0) {
     return res.status(400).json({ success: false, message: 'Invalid messages array.' });
   }
 
-  // 1. Identify user for fair multi-user rate limiting
+  // 1. Fair multi-user rate limit
   const clientId = String(userId || req.headers['x-forwarded-for'] || req.ip || 'anon');
   const rateCheck = checkRateLimit(clientId);
   if (!rateCheck.allowed) {
@@ -327,119 +362,196 @@ router.post('/chat', handleAsync(async (req: Request, res: Response) => {
       success: false,
       rateLimited: true,
       retryAfterSec: rateCheck.retryAfterSec,
-      message: `مهلاً يا ناكاما! 🔥 أنت ترسل الرسائل بسرعة البرق. انتظر ${rateCheck.retryAfterSec} ثانية فقط للحفاظ على سرعة الخادم لجميع الأوتاكو!`
+      message: `مهلاً! أرسل الرسائل بهدوء، انتظر ${rateCheck.retryAfterSec} ثانية فقط.`,
     });
   }
 
-  const userMood = String(mood || 'طبيعي');
-  const userStatus = String(status || 'أتابع أنمي');
+  const cleanUserName = String(userName || '').trim().slice(0, 60);
+  const librarySample = Array.isArray(favoriteAnimes)
+    ? favoriteAnimes.map((t: any) => String(t || '').trim()).filter(Boolean).slice(0, 8)
+    : [];
 
-  // 2. Context Window Optimization: Keep only the last 6 messages and cap length at 600 chars
-  // This reduces token usage by up to 85% for long conversations across thousands of users.
-  const recentMessages = messages.slice(-6).map((m: any) => ({
-    sender: m.sender === 'user' ? 'user' : 'bot',
-    text: String(m.text || '').slice(0, 600).trim(),
-  })).filter((m: any) => m.text.length > 0);
+  // Keep rich conversational memory (up to last 14 turns) with zero static cache
+  const recentMessages = messages
+    .slice(-14)
+    .map((m: any) => ({
+      sender: m.sender === 'user' ? 'user' : 'bot',
+      text: String(m.text || '').slice(0, 1400).trim(),
+    }))
+    .filter((m: any) => m.text.length > 0);
 
   const lastUserMsg = [...recentMessages].reverse().find((m) => m.sender === 'user')?.text || '';
-
-  // 3. Check shared response cache for common/quick prompts
-  const isSingleTurnOrQuickPrompt = recentMessages.filter((m) => m.sender === 'user').length <= 2;
-  const cacheKey = normalizePromptKey(lastUserMsg, userMood);
-
-  if (isSingleTurnOrQuickPrompt && cacheKey.length > 4) {
-    const cached = chatResponseCache.get(cacheKey);
-    if (cached && cached.expiresAt > Date.now()) {
-      return res.json({
-        success: true,
-        cached: true,
-        text: cached.text,
-      });
-    }
+  if (!lastUserMsg) {
+    return res.status(400).json({ success: false, message: 'Message text is required.' });
   }
 
   const ai = getAi();
   if (!ai) {
-    return res.json({
-      success: true,
-      fallback: true,
-      text: generateSmartOtakuFallback(lastUserMsg, userMood),
+    return res.status(503).json({
+      success: false,
+      aiMissingKey: true,
+      message: 'مفتاح GEMINI_API_KEY غير مضبوط على الخادم الحالي. يرجى التحقق من إعدادات الأسرار في الخادم.',
     });
   }
 
   try {
-    // 4. Deduplicate identical concurrent requests from multiple users clicking the same prompt simultaneously
-    const executeGeneration = async (): Promise<string> => {
-      const systemInstruction = `أنت "السينباي المخضرم" (أوتاكو قديم مخضرم لديه خبرة شاسعة ومعرفة عميقة بكل تفاصيل وأسرار الأنمي والمانغا من الثمانينيات وحتى أحدث مواسم الأنمي الحالية).
-تحدث باللغة العربية بأسلوب الأوتاكو الحقيقي والودود، بحماس وحركية ممتعة، واستخدم الكلمات اليابانية الشهيرة باعتدال مثل ("يا ناكاما"، "سينباي"، "سوغوي").
-مزاج المستخدم الحالي ووضعه هو: [المزاج: ${userMood} | الحالة: ${userStatus}].
-اجعل ردك منظماً، واضحاً، ومختصراً بشكل مفيد (لا يتجاوز 150 كلمة إلا عند الضرورة) لتوفير قراءة سريعة وممتعة.`;
+    const identityContext = cleanUserName
+      ? `صديقك الذي تتحدث معه الآن اسمه المعروض في حسابه: "${cleanUserName}"${userLevel ? ` (مستواه في التطبيق ${userLevel})` : ''}.`
+      : 'صديقك يتصفح حالياً كزائر بدون اسم عرض مسجل.';
 
-      const contents = recentMessages.map((m: any) => ({
-        role: m.sender === 'user' ? 'user' : 'model',
-        parts: [{ text: m.text }]
-      }));
+    const tasteContext =
+      librarySample.length > 0
+        ? `من الأنميات الموجودة في قائمته/مفضلته حالياً: ${librarySample.join('، ')}. استخدم هذه المعلومة بذكاء وعفوية فقط إذا ناسب السياق لتفهم ذوقه أو تفاجئه بتوصية قريبة من جوه.`
+        : '';
 
-      // Load-balanced model cascade across high-throughput Flash models
-      const modelsToTry = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-2.5-flash'];
-      for (const modelName of modelsToTry) {
-        try {
-          const response = await ai.models.generateContent({
-            model: modelName,
-            contents,
-            config: {
-              systemInstruction,
-              temperature: 0.75,
-              maxOutputTokens: 550,
-            }
-          });
-          if (response?.text) {
-            return response.text;
-          }
-        } catch (err: any) {
-          console.warn(`[Otaku AI Scale] Model ${modelName} busy, cascading to next model:`, err.message || err);
-        }
-      }
-      // If all models hit temporary quota saturation under heavy multi-user spike, return intelligent Otaku response
-      return generateSmartOtakuFallback(lastUserMsg, userMood);
+    const systemInstruction = `أنت صديق أوتاكو حقيقي، ذكي، ومقرّب تتحدث مع المستخدم بعفوية تامة داخل تطبيق أنمي MOD. لست روبوت دعم ولا مساعداً رسمياً مقيداً، بل صديق يحب الأنمي ويسولف بأريحية وروح حلوة.
+
+معلومات صديقك:
+${identityContext}
+${tasteContext}
+
+أسلوبك في الكلام:
+- ${
+      cleanUserName
+        ? `نادِ صديقك باسمه المعروض "${cleanUserName}" أحياناً بشكل طبيعي ودافئ، ولا تنادِه أبداً بمعرّف الحساب (@) أو الـ ID أو الأرقام أو البريد.`
+        : 'نادِ صديقك بعبارات ودية مثل "يا صديقي" أو "يا صاحبي" دون استخدام أي معرّفات أو أرقام.'
+    }
+- تفاعل مع كلامه بنفس طاقته وروحه: إذا رحّب بك بشكل عفوي مثل "هوووووي" أو سألك "كيف الحال" أو رد بكلمة قصيرة مثل "اهااا"، جارِه بنفس العفوية وخفة الدم كصاحب حقيقي بدلاً من إلقاء خطبة أو محاولة حشر توصيات بالقوة!
+- تحدث بعربية حية وبسيطة وقريبة من القلب، ونوّع في أسلوبك وردودك حسب السياق: رد قصير سريع للسوالف الخفيفة، ونقاش عميق ومفصل وقت النظريات والانطباعات والترشيحات.
+- ممنوع تماماً القوالب المكررة أو العبارات الآلية مثل "أهلاً بك يا بطل الأوتاكو" أو "بصفتي مساعدك" أو "بخصوص سؤالك حول" أو "كيف يمكنني مساعدتك اليوم؟".
+- تجنّب الحرق إلا إذا طلب صديقك صراحةً التعمق في الأحداث.
+
+قواعد البطاقات التفاعلية (مهم جداً):
+- أخرج ردك دائماً بصيغة JSON مطابقة للـ schema:
+  1. "reply": نص ردك الطبيعي الكامل لصديقك (يمكنك استخدام **الخط العريض** لتمييز أسماء الأعمال فقط عند الحاجة).
+  2. "suggestedAnimes": مصفوفة تحتوي فقط على الأسماء الإنجليزية أو الرومانجية الدقيقة للأنميات التي رشّحتها أو ركّزت الحديث عليها في ردك (بحد أقصى 4 أنميات، مثال: ["Steins;Gate", "Monster"]) ليتم عرض بطاقتها التفاعلية للانتقال السريع. إذا كانت الرسالة مجرد دردشة عادية دون ذكر أو ترشيح أنمي، اتركها مصفوفة فارغة [] تماماً.`;
+
+    const historyMessages = recentMessages.slice(0, -1).map((m: any) => ({
+      role: m.sender === 'user' ? 'user' : 'model',
+      parts: [{ text: m.text }],
+    }));
+
+    const chatSchema = {
+      type: Type.OBJECT,
+      properties: {
+        reply: {
+          type: Type.STRING,
+          description: 'Full natural conversational reply as an Otaku friend in Arabic',
+        },
+        suggestedAnimes: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING },
+          description: 'Up to 4 exact English/Romaji titles of anime specifically recommended or discussed so interactive cards can be attached',
+        },
+      },
+      required: ['reply', 'suggestedAnimes'],
     };
 
-    let responseText = '';
-    if (isSingleTurnOrQuickPrompt && inFlightChatRequests.has(cacheKey)) {
-      responseText = await inFlightChatRequests.get(cacheKey)!;
-    } else {
-      const promise = executeGeneration();
-      if (isSingleTurnOrQuickPrompt) {
-        inFlightChatRequests.set(cacheKey, promise);
-      }
+    const candidates: Array<{ model: string; thinkingLevel: ThinkingLevel; timeoutMs: number }> = [
+      { model: 'gemini-3.1-flash-lite', thinkingLevel: ThinkingLevel.MINIMAL, timeoutMs: 11_000 },
+      { model: 'gemini-4-hydrogen', thinkingLevel: ThinkingLevel.LOW, timeoutMs: 10_000 },
+    ];
+
+    let parsedPayload: { reply: string; suggestedAnimes: string[] } | null = null;
+    let usedModel = 'gemini-3.1-flash-lite';
+    let lastErr: any = null;
+
+    for (const candidate of candidates) {
       try {
-        responseText = await promise;
-      } finally {
-        inFlightChatRequests.delete(cacheKey);
+        const chat = ai.chats.create({
+          model: candidate.model,
+          history: historyMessages,
+          config: {
+            systemInstruction,
+            thinkingConfig: { thinkingLevel: candidate.thinkingLevel },
+            responseMimeType: 'application/json',
+            responseSchema: chatSchema,
+            abortSignal: AbortSignal.timeout(candidate.timeoutMs),
+          },
+        });
+
+        const response = await chat.sendMessage({ message: lastUserMsg });
+        const raw = (response?.text ?? '').trim();
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed.reply === 'string' && parsed.reply.trim()) {
+              parsedPayload = {
+                reply: parsed.reply.trim(),
+                suggestedAnimes: Array.isArray(parsed.suggestedAnimes)
+                  ? parsed.suggestedAnimes.map((x: any) => String(x || '').trim()).filter(Boolean)
+                  : [],
+              };
+              usedModel = candidate.model;
+              break;
+            }
+          } catch {
+            // If model returned plain text despite json mime, preserve it cleanly
+            parsedPayload = { reply: raw, suggestedAnimes: [] };
+            usedModel = candidate.model;
+            break;
+          }
+        }
+      } catch (err: any) {
+        lastErr = err;
+        const status = Number(err?.status || err?.code || 0);
+        const msg = String(err?.message || err || '');
+        console.warn(`[Otaku AI Friend] ${candidate.model} error (${status}):`, msg);
+        if (
+          status === 400 ||
+          status === 401 ||
+          status === 403 ||
+          msg.includes('API_KEY_INVALID') ||
+          msg.includes('PERMISSION_DENIED')
+        ) {
+          throw err;
+        }
       }
     }
 
-    if (isSingleTurnOrQuickPrompt && responseText) {
-      if (chatResponseCache.size > 1000) {
-        const oldestKey = chatResponseCache.keys().next().value;
-        if (oldestKey) chatResponseCache.delete(oldestKey);
-      }
-      chatResponseCache.set(cacheKey, {
-        text: responseText,
-        expiresAt: Date.now() + CHAT_CACHE_TTL_MS,
+    if (!parsedPayload) {
+      throw lastErr || new Error('Empty response from Gemini models');
+    }
+
+    const animeCards = await resolveSuggestedAnimeCards(parsedPayload.suggestedAnimes);
+
+    return res.json({
+      success: true,
+      engine: usedModel,
+      text: parsedPayload.reply,
+      animes: animeCards,
+    });
+  } catch (error: any) {
+    const status = Number(error?.status || error?.code || 502);
+    const errText = String(error?.message || error || '');
+    console.error('[Gemini Chat Error]:', status, errText);
+
+    if (
+      status === 400 ||
+      status === 401 ||
+      status === 403 ||
+      errText.includes('API_KEY_INVALID') ||
+      errText.includes('PERMISSION_DENIED')
+    ) {
+      return res.status(401).json({
+        success: false,
+        aiInvalidKey: true,
+        message: 'مفتاح Gemini API غير صالح أو مرفوض. يرجى مراجعة المفتاح في إعدادات البيئة والأسرار.',
       });
     }
 
-    res.json({
-      success: true,
-      text: responseText
-    });
-  } catch (error: any) {
-    console.warn('Gemini Chat Fallback triggered:', error.message);
-    res.json({
-      success: true,
-      fallback: true,
-      text: generateSmartOtakuFallback(lastUserMsg, userMood),
+    if (status === 429 || errText.includes('RESOURCE_EXHAUSTED')) {
+      return res.status(429).json({
+        success: false,
+        rateLimited: true,
+        retryAfterSec: 8,
+        message: 'تم الوصول للحد المؤقت لطلبات الذكاء الاصطناعي. انتظر بضع ثوانٍ ثم أعد المحاولة.',
+      });
+    }
+
+    return res.status(502).json({
+      success: false,
+      message: 'تعذر الحصول على رد من خدمة Gemini حالياً. يرجى إعادة المحاولة.',
     });
   }
 }));
@@ -596,15 +708,18 @@ router.get('/games/generate', handleAsync(async (req: Request, res: Response) =>
     }
 
     let response;
-    const modelsToTry = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-2.5-flash'];
+    const candidates: Array<{ model: string; thinkingLevel: ThinkingLevel }> = [
+      { model: 'gemini-3.1-flash-lite', thinkingLevel: ThinkingLevel.MINIMAL },
+      { model: 'gemini-4-hydrogen', thinkingLevel: ThinkingLevel.LOW },
+    ];
     let success = false;
-    for (const modelName of modelsToTry) {
+    for (const candidate of candidates) {
       try {
         response = await ai.models.generateContent({
-          model: modelName,
+          model: candidate.model,
           contents: prompt,
           config: {
-            temperature: 0.9,
+            thinkingConfig: { thinkingLevel: candidate.thinkingLevel },
             responseMimeType: 'application/json',
             responseSchema: {
               type: Type.OBJECT,
@@ -618,7 +733,7 @@ router.get('/games/generate', handleAsync(async (req: Request, res: Response) =>
           break;
         }
       } catch (err: any) {
-        console.warn(`[Gemini Games] Generation failed with ${modelName}: ${err.message || err}. Trying next fallback...`);
+        console.warn(`[Gemini Games] Generation failed with ${candidate.model}: ${err.message || err}. Trying next fallback...`);
       }
     }
 
@@ -871,17 +986,20 @@ ${contextParts.join('\n')}
 - تجنب الأسئلة السطحية أو البديهية التي تُعرف من البوستر أو الحلقة الأولى فقط.
 - اجعل الخيارات الأربعة منطقية ومن نفس أجواء العمل بحيث لا يعرف الإجابة الصحيحة إلا من شاهد الموسم بالكامل.`;
 
-    const modelsToTry = ['gemini-3.8-flash', 'gemini-flash-latest'];
+    const candidates: Array<{ model: string; thinkingLevel: ThinkingLevel }> = [
+      { model: 'gemini-3.1-flash-lite', thinkingLevel: ThinkingLevel.MINIMAL },
+      { model: 'gemini-4-hydrogen', thinkingLevel: ThinkingLevel.LOW },
+    ];
     let response;
     let success = false;
 
-    for (const modelName of modelsToTry) {
+    for (const candidate of candidates) {
       try {
         response = await ai.models.generateContent({
-          model: modelName,
+          model: candidate.model,
           contents: prompt,
           config: {
-            temperature: 0.7,
+            thinkingConfig: { thinkingLevel: candidate.thinkingLevel },
             responseMimeType: 'application/json',
             responseSchema: {
               type: Type.OBJECT,
@@ -908,7 +1026,7 @@ ${contextParts.join('\n')}
           break;
         }
       } catch (err: any) {
-        console.warn(`[Gemini Anti-Cheat] Failed with ${modelName}: ${err.message || err}. Trying next fallback...`);
+        console.warn(`[Gemini Anti-Cheat] Failed with ${candidate.model}: ${err.message || err}. Trying next fallback...`);
       }
     }
 

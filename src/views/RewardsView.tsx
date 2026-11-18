@@ -1,14 +1,17 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { 
   ChevronRight, Award, Trophy, Zap, Gift, CheckCircle2, Lock, Flame, Target, 
-  Star, ChevronLeft, Shield, Sparkles, Calendar, Heart, MessageSquare, Compass, 
-  Clock, Layers, Activity
+  Star, Sparkles, Calendar, Heart, MessageSquare, Compass, 
+  Clock, Layers
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAuth } from '../contexts/AuthContext';
 import { doc, getDoc, updateDoc, increment, arrayUnion } from 'firebase/firestore';
 import { db } from '../firebase';
 import { notificationsService } from '../services/notificationsService';
+import { listService } from '../services/listService';
+import ViewportPortal from '../components/ViewportPortal';
+import { useDeviceDisplay } from '../hooks/useDeviceDisplay';
 
 export const ACHIEVEMENTS = [
   { id: 'first_login', title: 'البداية', req: 'تسجيل الدخول لأول مرة', rewardType: 'xp', rewardVal: 50, condition: (u: any) => !!u, progress: (u: any) => !!u ? 1 : 0, max: 1 },
@@ -79,12 +82,28 @@ export const ACHIEVEMENTS = [
 
 export default function RewardsView({ onBack }: { onBack: () => void }) {
   const { user, userData } = useAuth();
+  const display = useDeviceDisplay();
   const [activeTab, setActiveTab] = useState<'daily_claim' | 'daily_quests' | 'season_pass' | 'achievements'>('daily_claim');
-  const [claimed, setClaimed] = useState<string[]>(userData?.claimedAchievements || []);
+  const [achFilter, setAchFilter] = useState<'all' | 'completed' | 'closest'>('all');
+  const [optimisticClaimed, setOptimisticClaimed] = useState<string[]>([]);
   const [claimingId, setClaimingId] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [promoCodeInput, setPromoCodeInput] = useState('');
   const [redeemingPromo, setRedeemingPromo] = useState(false);
+
+  const claimed = useMemo(() => {
+    const serverClaimed: string[] = Array.isArray(userData?.claimedAchievements)
+      ? userData.claimedAchievements
+      : [];
+    return Array.from(new Set([...serverClaimed, ...optimisticClaimed]));
+  }, [userData?.claimedAchievements, optimisticClaimed]);
+
+  // Reconcile library stats quietly so achievements (listCount / completedAnimeCount) reflect reality
+  useEffect(() => {
+    if (user?.id) {
+      void listService.reconcileUserStats(user.id, undefined, userData);
+    }
+  }, [user?.id]);
 
   const showRewardToast = (msg: string) => {
     setToastMessage(msg);
@@ -317,25 +336,28 @@ export default function RewardsView({ onBack }: { onBack: () => void }) {
   };
 
   const handleClaim = async (ach: typeof ACHIEVEMENTS[0]) => {
-    if (!user || claimingId) return;
+    if (!user || claimingId || claimed.includes(ach.id)) return;
     setClaimingId(ach.id);
-    
+
     try {
       const p: any = {
         claimedAchievements: arrayUnion(ach.id)
       };
       if (ach.rewardType === 'coins') p.coins = increment(ach.rewardVal);
-      if (ach.rewardType === 'xp') p.xp = increment(ach.rewardVal);
       if (ach.rewardType === 'modPoints') p.modPoints = increment(ach.rewardVal);
 
       await updateDoc(doc(db, 'users', user.id), p);
+      if (ach.rewardType === 'xp') {
+        const { awardXP } = await import('../services/gamificationService');
+        await awardXP(user.id, ach.rewardVal);
+      }
       await notificationsService.createUserNotification(user.id, {
         title: '🎖️ إنجاز مميز مكتمل!',
         body: `تهانينا! لقد حققت إنجاز "${ach.title}" لكسب +${ach.rewardVal} من ${ach.rewardType === 'coins' ? 'الكوينز' : ach.rewardType === 'xp' ? 'نقاط الخبرة' : 'نقاط الإشراف'}!`,
         type: 'tournament',
         linkTo: 'rewards'
       });
-      setClaimed(prev => [...prev, ach.id]);
+      setOptimisticClaimed(prev => [...prev, ach.id]);
       showRewardToast(`تهانينا! تم استلام مكافأة إنجاز "${ach.title}" (+${ach.rewardVal})`);
     } catch (e) {
       console.error(e);
@@ -359,28 +381,89 @@ export default function RewardsView({ onBack }: { onBack: () => void }) {
   const xpNeeded = Math.floor(Math.pow(userLevel, 1.5) * 500) + 500;
   const levelProgress = Math.min(100, Math.max(0, ((userData?.xp || 0) / xpNeeded) * 100));
 
+  // Sorted Daily Quests: ready to claim -> closest progress -> claimed
+  const sortedDailyQuests = [...dailyQuests].sort((a, b) => {
+    const aCanClaim = a.current >= a.max && !a.isClaimed ? 1 : 0;
+    const bCanClaim = b.current >= b.max && !b.isClaimed ? 1 : 0;
+    if (aCanClaim !== bCanClaim) return bCanClaim - aCanClaim;
+    if (a.isClaimed !== b.isClaimed) return a.isClaimed ? 1 : -1;
+    const aRatio = Math.min(1, a.current / Math.max(1, a.max));
+    const bRatio = Math.min(1, b.current / Math.max(1, b.max));
+    return bRatio - aRatio;
+  });
+
+  // Sorted Season Milestones: ready to claim -> closest unlock level -> claimed
+  const sortedSeasonMilestones = [...SEASON_MILESTONES].sort((a, b) => {
+    const aClaimed = claimedSeason.includes(a.claimedField);
+    const bClaimed = claimedSeason.includes(b.claimedField);
+    const aReady = userLevel >= a.level && !aClaimed;
+    const bReady = userLevel >= b.level && !bClaimed;
+    if (aReady !== bReady) return aReady ? -1 : 1;
+    if (aClaimed !== bClaimed) return aClaimed ? 1 : -1;
+    return a.level - b.level;
+  });
+
+  // Enriched & Sorted Achievements:
+  // 1) Completed & ready to claim
+  // 2) Completed & claimed
+  // 3) In-progress closest to completion (highest ratio -> smallest remaining)
+  // 4) Not started (0%) sorted easiest max ascending
+  const sortedAchievements = ACHIEVEMENTS.map((ach) => {
+    const isClaimed = claimed.includes(ach.id);
+    const isUnlocked = ach.condition(userData);
+    const currentProgress = Math.min(ach.max, Math.max(0, ach.progress(userData)));
+    const ratio = Math.min(1, currentProgress / Math.max(1, ach.max));
+    const remaining = Math.max(0, ach.max - currentProgress);
+    const rankBucket = isUnlocked && !isClaimed ? 0 : isUnlocked && isClaimed ? 1 : currentProgress > 0 ? 2 : 3;
+    return { ach, isClaimed, isUnlocked, currentProgress, ratio, remaining, rankBucket };
+  }).sort((a, b) => {
+    if (a.rankBucket !== b.rankBucket) return a.rankBucket - b.rankBucket;
+    if (a.rankBucket === 2 && b.rankBucket === 2) {
+      if (Math.abs(b.ratio - a.ratio) > 0.0001) return b.ratio - a.ratio;
+      return a.remaining - b.remaining;
+    }
+    if (a.rankBucket === 3 && b.rankBucket === 3) {
+      return a.ach.max - b.ach.max;
+    }
+    return a.ach.max - b.ach.max;
+  });
+
+  const claimableAchievementsCount = sortedAchievements.filter((item) => item.isUnlocked && !item.isClaimed).length;
+  const unlockedAchievementsCount = sortedAchievements.filter((item) => item.isUnlocked).length;
+  const claimableQuestsCount = dailyQuests.filter((q) => q.current >= q.max && !q.isClaimed).length;
+  const claimableSeasonCount = SEASON_MILESTONES.filter((ms) => userLevel >= ms.level && !claimedSeason.includes(ms.claimedField)).length;
+
+  const displayedAchievements = sortedAchievements.filter((item) => {
+    if (achFilter === 'completed') return item.isUnlocked;
+    if (achFilter === 'closest') return !item.isUnlocked;
+    return true;
+  });
+
   return (
     <motion.div 
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="min-h-screen bg-[#09090b] text-white pb-24 font-sans selection:bg-yellow-500/30 font-medium"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      className="min-h-[var(--vv-height,100dvh)] bg-[#09090b] text-white pb-24 font-sans selection:bg-yellow-500/30 font-medium"
     >
       {/* Dynamic Header */}
-      <AnimatePresence>
-        {toastMessage && (
-          <motion.div
-            initial={{ opacity: 0, y: -25 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -20 }}
-            className="fixed top-5 left-4 right-4 z-[9999] max-w-md mx-auto bg-zinc-900/95 border border-yellow-500/40 px-4 py-3.5 rounded-2xl shadow-2xl flex items-center gap-3 backdrop-blur-md"
-          >
-            <div className="w-9 h-9 rounded-xl bg-yellow-500/20 text-yellow-400 flex items-center justify-center shrink-0">
-              <Gift size={18} />
-            </div>
-            <p className="text-xs font-bold text-white leading-relaxed">{toastMessage}</p>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <ViewportPortal>
+        <AnimatePresence>
+          {toastMessage && (
+            <motion.div
+              initial={{ opacity: 0, y: -25 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              style={{ top: 'calc(var(--safe-top, 0px) + 0.75rem)' }}
+              className="fixed left-4 right-4 z-[9999] max-w-md mx-auto bg-zinc-900/95 border border-yellow-500/40 px-4 py-3.5 rounded-2xl shadow-2xl flex items-center gap-3 backdrop-blur-md pointer-events-none"
+            >
+              <div className="w-9 h-9 rounded-xl bg-yellow-500/20 text-yellow-400 flex items-center justify-center shrink-0">
+                <Gift size={18} />
+              </div>
+              <p className="text-xs font-bold text-white leading-relaxed">{toastMessage}</p>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </ViewportPortal>
       <div className="sticky top-0 z-50 bg-[#09090b]/80 backdrop-blur-2xl border-b border-white/5 px-4 py-4 flex items-center justify-between shadow-2xl">
         <div className="flex items-center gap-4">
           <button onClick={onBack} className="p-2.5 bg-white/5 rounded-xl hover:bg-white/10 transition-colors border border-white/5 shadow-sm text-neutral-300">
@@ -392,7 +475,7 @@ export default function RewardsView({ onBack }: { onBack: () => void }) {
         </div>
       </div>
 
-      <div className="max-w-3xl mx-auto p-4 space-y-6 mt-2">
+      <div className="max-w-5xl mx-auto p-4 space-y-6 mt-2">
         {/* Luxury Stats Hero Card */}
         <div className="bg-gradient-to-br from-[#1a1a1e] to-[#0f0f13] border border-white/5 rounded-3xl p-6 shadow-2xl relative overflow-hidden group">
            <div className="absolute -top-24 -right-24 w-64 h-64 bg-yellow-500/10 rounded-full blur-3xl opacity-50 group-hover:opacity-70 transition-opacity"></div>
@@ -404,17 +487,17 @@ export default function RewardsView({ onBack }: { onBack: () => void }) {
                     <Trophy className="text-yellow-500 -ml-1 drop-shadow-md" size={36} />
                   </div>
               </div>
-              <h2 className="text-3xl font-black tracking-tight text-white">{userData?.coins || 0}</h2>
+              <h2 className="text-3xl font-black tracking-tight text-white tabular-nums">{userData?.coins || 0}</h2>
               <span className="text-xs text-yellow-500/80 font-bold tracking-wider uppercase">رصيد الكوينز الأوتاكو</span>
            </div>
 
-           <div className="grid grid-cols-2 gap-4 relative z-10">
+           <div className={`grid gap-3 sm:gap-4 relative z-10 ${display.isCoverScreen ? 'grid-cols-1' : 'grid-cols-2'}`}>
               <div className="bg-black/40 backdrop-blur-md rounded-2xl p-4 border border-white/5 flex items-center gap-4">
                  <div className="w-12 h-12 rounded-xl bg-blue-500/10 flex items-center justify-center">
                     <Zap className="text-blue-400" size={24} />
                  </div>
                  <div>
-                    <span className="block text-2xl font-black text-white leading-none mb-1">{userData?.xp || 0}</span>
+                    <span className="block text-2xl font-black text-white leading-none mb-1 tabular-nums">{userData?.xp || 0}</span>
                     <span className="text-[10px] text-blue-400/80 font-bold uppercase tracking-wider">نقطة خبرة (XP)</span>
                  </div>
               </div>
@@ -424,14 +507,14 @@ export default function RewardsView({ onBack }: { onBack: () => void }) {
                     <Star className="text-purple-400" size={24} />
                  </div>
                  <div>
-                    <span className="block text-2xl font-black text-white leading-none mb-1">{userData?.modPoints || 0}</span>
+                    <span className="block text-2xl font-black text-white leading-none mb-1 tabular-nums">{userData?.modPoints || 0}</span>
                     <span className="text-[10px] text-purple-400/80 font-bold uppercase tracking-wider">نقاط الأنمي (Mod)</span>
                  </div>
               </div>
            </div>
            
            {/* Total Episodes Watched & Completed Anime Stats */}
-            <div className="mt-4 mb-4 grid grid-cols-2 gap-3 relative z-10">
+            <div className={`mt-4 mb-4 grid gap-3 relative z-10 ${display.isCoverScreen ? 'grid-cols-1' : 'grid-cols-2'}`}>
                <div className="bg-black/30 rounded-2xl p-3 border border-white/5 flex items-center gap-3 font-medium">
                   <div className="w-9 h-9 rounded-xl bg-sky-500/10 flex items-center justify-center text-sky-400">
                      <Clock size={18} />
@@ -499,30 +582,46 @@ export default function RewardsView({ onBack }: { onBack: () => void }) {
         </div>
 
         {/* Tab Switcher Interface */}
-        <div className="flex gap-1 overflow-x-auto hide-scrollbar bg-neutral-900/60 p-1 rounded-2xl border border-white/5">
+        <div className="flex gap-1.5 overflow-x-auto hide-scrollbar bg-neutral-900/60 p-1.5 rounded-2xl border border-white/5">
           <button 
             onClick={() => setActiveTab('daily_claim')}
-            className={`flex-1 min-w-[120px] py-3 text-xs md:text-sm font-black rounded-xl transition flex items-center justify-center gap-2 whitespace-nowrap ${activeTab === 'daily_claim' ? 'bg-yellow-500 text-black shadow-md' : 'text-neutral-400 hover:text-white'}`}
+            className={`flex-1 min-w-[125px] min-h-[44px] px-3 text-xs md:text-sm font-black rounded-xl transition flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer ${activeTab === 'daily_claim' ? 'bg-yellow-500 text-black shadow-md' : 'text-neutral-400 hover:text-white'}`}
           >
-            <Calendar size={16} /> الهدية اليومية
+            <Calendar size={15} />
+            <span>الحضور اليومي</span>
+            {!hasClaimedCheckInToday && (
+              <span className={`px-1.5 py-0.5 rounded-md text-[10px] font-mono ${activeTab === 'daily_claim' ? 'bg-black/20 text-black' : 'bg-yellow-500/20 text-yellow-400'}`}>1</span>
+            )}
           </button>
           <button 
             onClick={() => setActiveTab('daily_quests')}
-            className={`flex-1 min-w-[120px] py-3 text-xs md:text-sm font-black rounded-xl transition flex items-center justify-center gap-2 whitespace-nowrap ${activeTab === 'daily_quests' ? 'bg-blue-600 text-white shadow-md' : 'text-neutral-400 hover:text-white'}`}
+            className={`flex-1 min-w-[125px] min-h-[44px] px-3 text-xs md:text-sm font-black rounded-xl transition flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer ${activeTab === 'daily_quests' ? 'bg-blue-600 text-white shadow-md' : 'text-neutral-400 hover:text-white'}`}
           >
-            <Target size={16} /> المهام اليومية
+            <Target size={15} />
+            <span>المهام اليومية</span>
+            {claimableQuestsCount > 0 && (
+              <span className="px-1.5 py-0.5 rounded-md text-[10px] font-mono bg-emerald-500 text-black">{claimableQuestsCount}</span>
+            )}
           </button>
           <button 
             onClick={() => setActiveTab('season_pass')}
-            className={`flex-1 min-w-[120px] py-3 text-xs md:text-sm font-black rounded-xl transition flex items-center justify-center gap-2 whitespace-nowrap ${activeTab === 'season_pass' ? 'bg-purple-600 text-white shadow-md' : 'text-neutral-400 hover:text-white'}`}
+            className={`flex-1 min-w-[125px] min-h-[44px] px-3 text-xs md:text-sm font-black rounded-xl transition flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer ${activeTab === 'season_pass' ? 'bg-purple-600 text-white shadow-md' : 'text-neutral-400 hover:text-white'}`}
           >
-            <Sparkles size={16} /> الموسم الذهبي
+            <Sparkles size={15} />
+            <span>الموسم الذهبي</span>
+            {claimableSeasonCount > 0 && (
+              <span className="px-1.5 py-0.5 rounded-md text-[10px] font-mono bg-emerald-500 text-black">{claimableSeasonCount}</span>
+            )}
           </button>
           <button 
             onClick={() => setActiveTab('achievements')}
-            className={`flex-1 min-w-[120px] py-3 text-xs md:text-sm font-black rounded-xl transition flex items-center justify-center gap-2 whitespace-nowrap ${activeTab === 'achievements' ? 'bg-amber-600 text-white shadow-md' : 'text-neutral-400 hover:text-white'}`}
+            className={`flex-1 min-w-[125px] min-h-[44px] px-3 text-xs md:text-sm font-black rounded-xl transition flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer ${activeTab === 'achievements' ? 'bg-amber-600 text-white shadow-md' : 'text-neutral-400 hover:text-white'}`}
           >
-            <Trophy size={16} /> الإنجازات الكبرى
+            <Trophy size={15} />
+            <span>الإنجازات</span>
+            {claimableAchievementsCount > 0 && (
+              <span className="px-1.5 py-0.5 rounded-md text-[10px] font-mono bg-yellow-400 text-black">{claimableAchievementsCount}</span>
+            )}
           </button>
         </div>
 
@@ -546,12 +645,12 @@ export default function RewardsView({ onBack }: { onBack: () => void }) {
                       <p className="text-xs text-neutral-400 mt-1">سجل دخولك يومياً دون مقاطعة لجمع كوينز مضاعفة ولقب المحارب الأخير الأسطوري!</p>
                     </div>
                     <div className="bg-black/40 px-3 py-1.5 rounded-xl border border-white/10 flex items-center gap-1.5 text-xs text-yellow-500 font-bold">
-                      <Flame size={14} className="text-orange-500 animate-pulse" /> سلسلة الحضور: {claimStreakToShow} أيام متتالية
+                      <Flame size={14} className="text-orange-500" /> سلسلة الحضور: {claimStreakToShow} أيام متتالية
                     </div>
                   </div>
 
                   {/* 7 Days Row */}
-                  <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-3 mb-6">
+                  <div className={`grid gap-3 mb-6 ${display.isCoverScreen ? 'grid-cols-2' : 'grid-cols-2 sm:grid-cols-4 md:grid-cols-7'}`}>
                     {dailyCheckInRewards.map((rew) => {
                       const isPast = rew.day < claimStreakToShow || (rew.day === claimStreakToShow && hasClaimedCheckInToday);
                       const isCurrent = rew.day === (claimStreakToShow + 1) && !hasClaimedCheckInToday;
@@ -570,7 +669,7 @@ export default function RewardsView({ onBack }: { onBack: () => void }) {
                         >
                           <span className="text-[10px] font-black uppercase tracking-wider mb-2">اليوم {rew.day}</span>
                           <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-2 ${isPast ? 'bg-green-500/10' : isCurrent ? 'bg-yellow-500/20' : 'bg-neutral-800'}`}>
-                            {isPast ? <CheckCircle2 size={20} /> : rew.special ? <Sparkles size={20} className="animate-pulse" /> : <Trophy size={18} />}
+                            {isPast ? <CheckCircle2 size={20} /> : rew.special ? <Sparkles size={20} /> : <Trophy size={18} />}
                           </div>
                           <span className="text-xs font-black block text-white">{rew.label}</span>
                           <span className="text-[9px] text-neutral-500 font-bold mt-1">+{rew.xp} XP</span>
@@ -618,8 +717,11 @@ export default function RewardsView({ onBack }: { onBack: () => void }) {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 gap-4">
-                  {dailyQuests.map((quest) => {
+                <div
+                  className="grid grid-cols-1 lg:grid-cols-2 gap-4"
+                  style={display.isBookPosture ? { gap: 'var(--fold-hinge-gap, 20px)' } : undefined}
+                >
+                  {sortedDailyQuests.map((quest) => {
                     const isCompleted = quest.current >= quest.max;
                     const canClaim = isCompleted && !quest.isClaimed;
                     const QuestIcon = quest.icon;
@@ -711,8 +813,11 @@ export default function RewardsView({ onBack }: { onBack: () => void }) {
                   </div>
                 </div>
 
-                <div className="space-y-4">
-                  {SEASON_MILESTONES.map((ms, idx) => {
+                <div
+                  className="grid grid-cols-1 lg:grid-cols-2 gap-4"
+                  style={display.isBookPosture ? { gap: 'var(--fold-hinge-gap, 20px)' } : undefined}
+                >
+                  {sortedSeasonMilestones.map((ms) => {
                     const isUnlocked = userLevel >= ms.level;
                     const isClaimed = claimedSeason.includes(ms.claimedField);
                     const canClaim = isUnlocked && !isClaimed;
@@ -772,7 +877,7 @@ export default function RewardsView({ onBack }: { onBack: () => void }) {
               </motion.div>
             )}
 
-            {/* TAB 4: Epic Achievements */}
+            {/* TAB 4: Achievements (Completed first -> Closest to completion next) */}
             {activeTab === 'achievements' && (
               <motion.div 
                 initial={{ opacity: 0, y: 15 }}
@@ -781,83 +886,122 @@ export default function RewardsView({ onBack }: { onBack: () => void }) {
                 className="space-y-4"
                 key="achievements"
               >
-                <div className="flex items-center justify-between mb-5">
-                   <div className="flex flex-col">
-                     <h2 className="text-lg font-black text-white flex items-center gap-2">الإنجازات الكبرى وعوالم التحدي</h2>
-                     <p className="text-xs text-neutral-400">إنجازات لا تنتهي تكافئك طوال رحلة متابعتك للأنمي ونشاطك العام بالمنصة</p>
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                   <div>
+                     <h2 className="text-lg font-black text-white">الإنجازات والتحديات</h2>
+                     <p className="text-xs text-neutral-400">تُعرض الإنجازات المكتملة أولاً، تليها الأقرب للاكتمال</p>
                    </div>
-                   <div className="px-3 py-1.5 bg-white/5 rounded-full border border-white/10 text-xs font-bold text-neutral-400 shrink-0">
-                     {claimed.length} / {ACHIEVEMENTS.length} مكتمل
+                   <div className="px-3 py-1.5 bg-white/5 rounded-xl border border-white/10 text-xs font-bold text-neutral-200 shrink-0 self-start sm:self-auto">
+                     {unlockedAchievementsCount} / {ACHIEVEMENTS.length} منجز · {claimed.length} مستلم
                    </div>
                 </div>
 
-                <div className="space-y-4">
-                  {ACHIEVEMENTS.map((ach, idx) => {
-                    const isClaimed = claimed.includes(ach.id);
-                    const isUnlocked = ach.condition(userData);
+                {/* Filter Tabs */}
+                <div className="grid grid-cols-3 gap-1.5 p-1 bg-neutral-900/70 border border-white/5 rounded-xl">
+                  {[
+                    { id: 'all' as const, label: `الكل (${ACHIEVEMENTS.length})` },
+                    { id: 'completed' as const, label: `المكتملة (${unlockedAchievementsCount})` },
+                    { id: 'closest' as const, label: `قيد التقدم (${ACHIEVEMENTS.length - unlockedAchievementsCount})` },
+                  ].map((tab) => (
+                    <button
+                      key={tab.id}
+                      onClick={() => setAchFilter(tab.id)}
+                      className={`min-h-[40px] rounded-lg text-xs font-black transition cursor-pointer ${
+                        achFilter === tab.id
+                          ? 'bg-amber-500 text-black shadow'
+                          : 'text-neutral-400 hover:text-white'
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="space-y-3">
+                  {displayedAchievements.map(({ ach, isClaimed, isUnlocked, currentProgress, ratio, rankBucket }, idx) => {
                     const RewardIcon = ach.rewardType === 'coins' ? Trophy : ach.rewardType === 'xp' ? Zap : Star;
-                    const rewardColor = ach.rewardType === 'coins' ? 'text-yellow-500 bg-yellow-500/10' : ach.rewardType === 'xp' ? 'text-blue-400 bg-blue-500/10' : 'text-purple-400 bg-purple-500/10';
-                    const currentProgress = Math.min(ach.max, ach.progress(userData));
-                    const progressPct = (currentProgress / ach.max) * 100;
+                    const rewardColor = ach.rewardType === 'coins' ? 'text-yellow-400 bg-yellow-500/10' : ach.rewardType === 'xp' ? 'text-blue-400 bg-blue-500/10' : 'text-purple-400 bg-purple-500/10';
+                    const progressPct = Math.round(ratio * 100);
+                    const prevBucket = idx > 0 ? displayedAchievements[idx - 1].rankBucket : -1;
+                    const showCompletedDivider = achFilter === 'all' && idx === 0 && (rankBucket === 0 || rankBucket === 1);
+                    const showClosestDivider = achFilter === 'all' && rankBucket >= 2 && (idx === 0 || prevBucket <= 1);
 
                     return (
-                      <motion.div 
-                        initial={{ opacity: 0, x: -20 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        transition={{ delay: Math.min(10, idx) * 0.05 }}
-                        key={ach.id} 
-                        className={`relative overflow-hidden bg-[#121215] border ${isClaimed ? 'border-green-500/20' : isUnlocked ? 'border-yellow-500/40 shadow-[0_0_15px_rgba(234,179,8,0.1)]' : 'border-white/5'} rounded-3xl p-5 flex flex-col md:flex-row md:items-center justify-between transition-all duration-300 gap-4 group`}
-                      >
-                        {isClaimed && <div className="absolute inset-0 bg-green-500/5 pointer-events-none"></div>}
-                        
-                        <div className="flex items-start md:items-center gap-4 relative z-10 w-full md:w-auto">
-                          <div className={`shrink-0 w-16 h-16 rounded-2xl flex items-center justify-center transition-transform group-hover:scale-105 ${isClaimed ? 'bg-green-500/10 text-green-500 border border-green-500/20' : isUnlocked ? 'bg-gradient-to-br from-yellow-500/20 to-amber-600/20 text-yellow-500 border border-yellow-500/30' : 'bg-[#1a1a1e] text-neutral-600 border border-white/5'}`}>
-                            {isClaimed ? <CheckCircle2 size={32} /> : ach.rewardType === 'coins' ? <Trophy size={32} /> : ach.rewardType === 'xp' ? <Zap size={32} /> : <Target size={32} />}
-                          </div>
-                          <div className="flex-1">
-                            <div className="flex items-center gap-2 mb-1">
-                               <h3 className={`font-black text-base md:text-lg tracking-tight ${isClaimed ? 'text-green-400' : isUnlocked ? 'text-white' : 'text-neutral-300'}`}>{ach.title}</h3>
-                               {isClaimed && <span className="text-[9px] bg-green-500/20 text-green-500 px-2 py-0.5 rounded-sm font-bold uppercase tracking-wider hidden sm:block">مكتمل</span>}
+                      <React.Fragment key={ach.id}>
+                        {showCompletedDivider && (
+                          <div className="text-xs font-black text-emerald-400 pt-1">الإنجازات المكتملة</div>
+                        )}
+                        {showClosestDivider && (
+                          <div className="text-xs font-black text-amber-400 pt-2">الأقرب للإنجاز</div>
+                        )}
+                        <div 
+                          className={`relative overflow-hidden bg-[#121215] border ${
+                            isUnlocked && !isClaimed
+                              ? 'border-yellow-500/50 shadow-[0_0_18px_rgba(234,179,8,0.12)]'
+                              : isClaimed
+                              ? 'border-emerald-500/25'
+                              : 'border-white/[0.07]'
+                          } rounded-2xl p-4 flex flex-col md:flex-row md:items-center justify-between transition-all gap-4`}
+                        >
+                          <div className="flex items-start md:items-center gap-3.5 relative z-10 w-full md:w-auto">
+                            <div className={`shrink-0 w-12 h-12 rounded-xl flex items-center justify-center border ${
+                              isClaimed
+                                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                                : isUnlocked
+                                ? 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30'
+                                : 'bg-[#1a1a1e] text-neutral-500 border-white/5'
+                            }`}>
+                              {isClaimed ? <CheckCircle2 size={24} /> : ach.rewardType === 'coins' ? <Trophy size={24} /> : ach.rewardType === 'xp' ? <Zap size={24} /> : <Target size={24} />}
                             </div>
-                            <p className="text-xs text-neutral-500 font-medium">{ach.req}</p>
-                            
-                            {!isClaimed && (
-                              <div className="mt-3">
-                                 <div className="flex items-center justify-between mb-1.5 opacity-80">
-                                   <span className="text-[10px] text-neutral-400 font-bold">{currentProgress} / {ach.max}</span>
-                                   <span className="text-[10px] text-neutral-400 font-bold">{progressPct.toFixed(0)}%</span>
-                                 </div>
-                                 <div className="h-1.5 w-full bg-black/60 rounded-full overflow-hidden border border-white/5">
-                                    <div className={`h-full rounded-full transition-all duration-700 ${isUnlocked ? 'bg-yellow-500' : 'bg-blue-500'}`} style={{ width: `${progressPct}%` }}></div>
-                                 </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <h3 className={`font-black text-sm md:text-base tracking-tight ${isClaimed ? 'text-emerald-300' : isUnlocked ? 'text-white' : 'text-neutral-200'}`}>{ach.title}</h3>
+                                {isUnlocked && !isClaimed && (
+                                  <span className="text-[11px] bg-yellow-500/15 text-yellow-400 px-2 py-0.5 rounded-md font-black">جاهز للاستلام</span>
+                                )}
+                              </div>
+                              <p className="text-xs text-neutral-400 font-medium mt-0.5">{ach.req}</p>
+
+                              {!isUnlocked && (
+                                <div className="mt-2.5">
+                                  <div className="flex items-center justify-between mb-1 text-[11px] font-bold text-neutral-400">
+                                    <span>{currentProgress} / {ach.max}</span>
+                                    <span className="text-amber-300 font-mono">{progressPct}%</span>
+                                  </div>
+                                  <div className="h-1.5 w-full bg-black/70 rounded-full overflow-hidden border border-white/5">
+                                    <div className="h-full rounded-full transition-all duration-500 bg-blue-500" style={{ width: `${progressPct}%` }} />
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="flex flex-row md:flex-col items-center md:items-end justify-between md:justify-center gap-2.5 relative z-10 shrink-0 w-full md:w-auto pt-2 md:pt-0 border-t border-white/5 md:border-none">
+                            <div className={`flex items-center gap-1.5 font-bold text-xs px-3 py-1.5 rounded-lg ${rewardColor} border border-current/15`}>
+                              +{ach.rewardVal} <RewardIcon size={14} />
+                            </div>
+                            {isClaimed ? (
+                              <div className="flex items-center gap-1 text-emerald-400 font-bold text-xs">
+                                <CheckCircle2 size={15} />
+                                <span>تم الإنجاز والاستلام</span>
+                              </div>
+                            ) : isUnlocked ? (
+                              <button 
+                                disabled={claimingId === ach.id}
+                                onClick={() => handleClaim(ach)}
+                                className="min-h-[42px] bg-gradient-to-r from-yellow-500 to-amber-600 text-black text-xs font-black px-5 rounded-xl hover:from-yellow-400 hover:to-amber-500 transition cursor-pointer"
+                              >
+                                {claimingId === ach.id ? 'جاري الاستلام...' : 'استلام المكافأة'}
+                              </button>
+                            ) : (
+                              <div className="flex items-center gap-1 text-neutral-500 font-bold text-xs">
+                                <Lock size={13} />
+                                <span>متبقي {ach.max - currentProgress}</span>
                               </div>
                             )}
                           </div>
                         </div>
-
-                        <div className="flex flex-row md:flex-col items-center md:items-end justify-between md:justify-center gap-3 relative z-10 shrink-0 w-full md:w-auto p-3 md:p-0 bg-black/20 md:bg-transparent rounded-xl border border-white/5 md:border-none">
-                          <div className={`flex items-center gap-1.5 font-bold text-sm px-3 py-1.5 rounded-lg ${rewardColor} border border-current/10 shadow-sm`}>
-                            +{ach.rewardVal} <RewardIcon size={16} />
-                          </div>
-                          {isClaimed ? (
-                            <div className="flex items-center gap-1.5 text-green-500 font-bold text-sm">
-                               تم الاستلام <CheckCircle2 size={16} />
-                            </div>
-                          ) : isUnlocked ? (
-                            <button 
-                              disabled={claimingId === ach.id}
-                              onClick={() => handleClaim(ach)}
-                              className="bg-gradient-to-r from-yellow-500 to-amber-600 text-black text-sm font-black px-6 py-2 rounded-xl hover:from-yellow-400 hover:to-amber-500 transition-all shadow-[0_0_20px_rgba(234,179,8,0.3)] hover:shadow-[0_0_25px_rgba(234,179,8,0.5)] transform hover:-translate-y-0.5 border border-yellow-400/50 cursor-pointer select-none"
-                            >
-                              {claimingId === ach.id ? 'استلام...' : 'استلام المكافأة'}
-                            </button>
-                          ) : (
-                            <div className="flex items-center gap-1 text-neutral-600 font-bold text-sm bg-[#1a1a1e] px-4 py-2 rounded-xl border border-white/5 select-none">
-                              <Lock size={14} /> مقفلة
-                            </div>
-                          )}
-                        </div>
-                      </motion.div>
+                      </React.Fragment>
                     );
                   })}
                 </div>

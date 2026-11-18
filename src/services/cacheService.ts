@@ -35,7 +35,7 @@ class CacheService {
   private mode: '10k_smart_ram' | 'zero_live' = '10k_smart_ram';
   private ramStore = new Map<string, CacheEntry<any>>();
   private inFlight = new Map<string, Promise<any>>();
-  private readonly maxKeys = 350;
+  private readonly maxKeys = 1500;
   private readonly defaultTtlMs = 120 * 1000; // 2 minutes fresh window
 
   private hits = 0;
@@ -194,11 +194,15 @@ class CacheService {
         const now = Date.now();
         if (now < entry.expireAt) {
           this.hits++;
+          this.ramStore.delete(key);
+          this.ramStore.set(key, entry);
           return entry.data as T;
         }
         if (now < entry.staleUntil) {
           // Stale-While-Revalidate: serve cached data immediately and refresh silently in background
           this.staleHits++;
+          this.ramStore.delete(key);
+          this.ramStore.set(key, entry);
           void this.launchInFlight(key, fetcher, ttlMs).catch(() => {});
           return entry.data as T;
         }
@@ -232,10 +236,14 @@ class CacheService {
         const now = Date.now();
         if (now < entry.expireAt) {
           this.hits++;
+          this.ramStore.delete(key);
+          this.ramStore.set(key, entry);
           return entry.data as T;
         }
         if (now < entry.staleUntil) {
           this.staleHits++;
+          this.ramStore.delete(key);
+          this.ramStore.set(key, entry);
           void this.launchInFlight(key, fetcher, freshTtlMs, staleWindowMs).catch(() => {});
           return entry.data as T;
         }

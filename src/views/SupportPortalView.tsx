@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   ChevronRight,
@@ -29,7 +29,8 @@ import {
   UserCheck,
   Trash2,
   MessageCircle,
-  Zap
+  Zap,
+  PlayCircle
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { db } from '../firebase';
@@ -46,30 +47,14 @@ import {
 } from 'firebase/firestore';
 import { handleFirestoreError, OperationType } from '../firebaseUtils';
 import { moderationService } from '../services/moderationService';
-import AdScriptRunner from '../components/AdScriptRunner';
+import { openExternalUrl } from '../utils/externalNavigation';
+import { useDeviceDisplay } from '../hooks/useDeviceDisplay';
+import RewardedVideoAdModal, { MonetizationConfig } from '../components/RewardedVideoAdModal';
 
 interface SupportPortalViewProps {
   onBack: () => void;
   initialTab?: 'ad_support' | 'help' | 'suggestions' | 'donate' | 'chat' | 'news' | 'tickets' | 'rewards';
 }
-
-const SAMPLE_ADS = [
-  {
-    sponsor: 'أنمي فيرس - المتجر الحصري',
-    title: 'احصل على أكواب وملابس شخصياتك المفضلة بخصم 25% مع رمز OTAKU25.',
-    bannerUrl: 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=600&auto=format&fit=crop&q=60'
-  },
-  {
-    sponsor: 'صندوق اليابان المدهش',
-    title: 'جرب نكهات الحلويات اليابانية التقليدية والرامن الأصلي مباشرة لباب بيتك.',
-    bannerUrl: 'https://images.unsplash.com/photo-1541658016709-82535e94bc69?w=600&auto=format&fit=crop&q=60'
-  },
-  {
-    sponsor: 'مجسمات طوكيو الأسطورية',
-    title: 'مجسمات أنمي نادرة وحصرية بجودة يابانية أصلية 100% وشحن سريع.',
-    bannerUrl: 'https://images.unsplash.com/photo-1607604276583-eef5d076aa5f?w=600&auto=format&fit=crop&q=60'
-  }
-];
 
 const TICKET_CATEGORIES = [
   { id: 'حلقة لا تعمل / سيرفر معطل', label: 'حلقة لا تعمل', icon: Film, type: 'complaint' as const },
@@ -81,29 +66,30 @@ const TICKET_CATEGORIES = [
 
 const FAQ_ITEMS = [
   {
+    q: 'ما فكرة زر «ادعم التطبيق» وكيف يختلف عن الإعلانات المزعجة؟',
+    a: 'في الكثير من التطبيقات تظهر لك إعلانات فيديو مدتها 30 ثانية فجأة أثناء التصفح أو المشاهدة دون استئذان. هنا الأمر مختلف تماماً: لن يظهر لك أي إعلان مفاجئ أثناء المشاهدة، وبالمقابل يمكنك باختيارك الضغط على «ادعم التطبيق» لمشاهدة إعلان فيديو مدته 30 ثانية مع زر إغلاق واضح والحصول على كوينز وخبرة فورية.'
+  },
+  {
+    q: 'هل يمكنني إغلاق إعلان «ادعم التطبيق» في أي وقت؟',
+    a: 'نعم، زر الإغلاق متاح دائماً أعلى شاشة الإعلان. إذا أغلقت الإعلان قبل انتهاء الـ 30 ثانية فلن يتم احتساب المكافأة، وبعد اكتمال العداد يتم إضافة الكوينز والخبرة مباشرة ويمكنك إغلاق النافذة بضغطة واحدة.'
+  },
+  {
     q: 'كيف أكسب الكوينز ونقاط الخبرة (XP) مجاناً؟',
-    a: 'يمكنك كسب الكوينز والـ XP من خلال مشاهدة إعلانات الدعم في تبويب «المكافآت والأكواد»، أو التفاعل بالتعليقات والتوصيات، أو المشاركة في تحديات ساحة الأوتاكو، أو استرداد أكواد الهدايا التي يوزعها المشرفون.'
+    a: 'يمكنك كسب الكوينز والـ XP من خلال زر «ادعم التطبيق» ومكافأة السلسلة كل 5 إعلانات، أو المشاركة في حلبة الأوتاكو، أو استرداد أكواد الهدايا التي ينشرها المشرفون.'
   },
   {
     q: 'ماذا أفعل إذا واجهت حلقة لا تعمل أو سيرفر متوقف؟',
-    a: 'جرب أولاً التبديل إلى سيرفر آخر من قائمة السيرفرات أعلى المشغل. إذا استمرت المشكلة، افتح تبويب «التذاكر والمقترحات» واختر تصنيف «حلقة لا تعمل» مع ذكر اسم الأنمي ورقم الحلقة ليتم إصلاحها فوراً.'
+    a: 'جرب أولاً التبديل إلى سيرفر آخر من قائمة السيرفرات أعلى المشغل. إذا استمرت المشكلة، افتح تبويب «التذاكر والمقترحات» واختر «حلقة لا تعمل» مع ذكر اسم الأنمي ورقم الحلقة ليتم إصلاحها.'
   },
   {
-    q: 'أين أجد الرد على تذكرتي أو شكواي بعد إرسالها؟',
-    a: 'يصل رد الإدارة كإشعار فوري في حسابك، كما يظهر الرد مسجلاً بشكل دائم داخل تبويب «التذاكر والمقترحات» أسفل قسم «تذاكري السابقة» مع حالة التذكرة.'
-  },
-  {
-    q: 'من أين أحصل على أكواد الهدايا الترويجية (Promo Codes)؟',
-    a: 'يتم نشر الأكواد الترويجية في قناة ومجموعة تليجرام الرسمية وفي الإشعارات العامة بالموقع خلال الفعاليات والمسابقات الأسبوعية.'
-  },
-  {
-    q: 'لماذا قد يتأخر فتح إعلان الدعم في بعض الهواتف؟',
-    a: 'بعض المتصفحات الداخلية تمنع النوافذ المنبثقة تلقائياً. عند الضغط على زر المشاهدة سيظهر لك زر مباشر لفتح صفحة الراعي يدوياً بينما يستمر العداد في احتساب مكافأتك.'
+    q: 'أين أجد الرد على تذكرتي أو مقترحي؟',
+    a: 'يصل رد الإدارة كإشعار فوري في حسابك، كما يظهر مسجلاً بشكل دائم أسفل قائمة «تذاكري السابقة» داخل تبويب التذاكر.'
   }
 ];
 
 export default function SupportPortalView({ onBack, initialTab = 'tickets' }: SupportPortalViewProps) {
   const { user, userData } = useAuth();
+  const display = useDeviceDisplay();
 
   const getMappedTab = (tab?: string): 'tickets' | 'rewards' | 'channels' => {
     if (tab === 'ad_support' || tab === 'rewards') return 'rewards';
@@ -111,7 +97,11 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
     return 'tickets';
   };
 
-  const [activeTab, setActiveTab] = useState<'tickets' | 'rewards' | 'channels'>(getMappedTab(initialTab));
+  const [activeTab, setActiveTab] = useState<'tickets' | 'rewards' | 'channels'>(() => getMappedTab(initialTab));
+
+  useEffect(() => {
+    setActiveTab(getMappedTab(initialTab));
+  }, [initialTab]);
 
   // Dynamic Telegram URLs fetched from DB
   const [helpTelegramUrl, setHelpTelegramUrl] = useState('https://t.me/otaku_help_support');
@@ -133,6 +123,7 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
   const [myTickets, setMyTickets] = useState<any[]>([]);
   const [loadingTickets, setLoadingTickets] = useState(false);
   const [ticketFilter, setTicketFilter] = useState<'all' | 'pending' | 'replied'>('all');
+  const [confirmDeleteTicketId, setConfirmDeleteTicketId] = useState<string | null>(null);
 
   // Promo code redemption state
   const [promoInput, setPromoInput] = useState('');
@@ -145,7 +136,7 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
   // FAQ accordion state
   const [openFaqIndex, setOpenFaqIndex] = useState<number | null>(0);
 
-  // AD SUPPORT STATE LOGIC
+  // OPT-IN 30s VIDEO AD SUPPORT STATE
   const todayDateStr = new Date().toISOString().split('T')[0];
   const storageCountKey = `ad_watches_${user?.id || 'guest'}_${todayDateStr}`;
 
@@ -158,51 +149,33 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
     }
   });
 
-  const [activeAd, setActiveAd] = useState<{
-    sponsor: string;
-    title: string;
-    bannerUrl: string;
-    targetUrl?: string;
-    buttonText?: string;
-  } | null>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [countdown, setCountdown] = useState(12);
-  const [rewardGranted, setRewardGranted] = useState<{ coins: number; xp: number; bonusCoins?: number } | null>(null);
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(storageCountKey);
+      setWatchedToday(stored ? parseInt(stored, 10) : 0);
+    } catch {
+      setWatchedToday(0);
+    }
+  }, [storageCountKey]);
+
+  const [isVideoAdOpen, setIsVideoAdOpen] = useState(false);
+  const [rewardBanner, setRewardBanner] = useState<{ coins: number; xp: number; bonusCoins?: number } | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
   const [limitError, setLimitError] = useState(false);
   const [cooldownError, setCooldownError] = useState<number | null>(null);
-  const [hasClickedSponsorLink, setHasClickedSponsorLink] = useState(false);
-  const [isUsingWebView, setIsUsingWebView] = useState(false);
-  const [copiedPageUrl, setCopiedPageUrl] = useState(false);
 
-  const [monetization, setMonetization] = useState<{
-    mode: 'simulation' | 'direct_link' | 'script' | 'hybrid';
-    directLinkUrl: string;
-    backupDirectLinkUrl?: string;
-    scriptCode: string;
-    requireClickVerification?: boolean;
-    cooldownSeconds?: number;
-    stayTime: number;
-    rewardCoins: number;
-    rewardXp: number;
-    dailyLimit: number;
-    customAds: Array<{
-      id: string;
-      sponsor: string;
-      title: string;
-      bannerUrl: string;
-      targetUrl: string;
-      buttonText?: string;
-    }>;
-  }>({
+  const [monetization, setMonetization] = useState<MonetizationConfig>({
     mode: 'hybrid',
     directLinkUrl: 'https://uplcm.com/4/11992531',
     backupDirectLinkUrl: 'https://www.profitableratecpmnetwork.com/xw38hehu?key=f928ec53ec71574a775e118d9d0b4f38',
+    videoAdUrl: '',
+    vastTagUrl: '',
+    admobRewardedId: '',
     scriptCode: '',
-    requireClickVerification: true,
+    requireClickVerification: false,
     cooldownSeconds: 20,
-    stayTime: 12,
-    rewardCoins: 25,
+    stayTime: 30,
+    rewardCoins: 35,
     rewardXp: 120,
     dailyLimit: 20,
     customAds: []
@@ -211,19 +184,7 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
   const DAILY_LIMIT = monetization.dailyLimit || 20;
   const STREAK_STEP = 5;
   const STREAK_BONUS_COINS = 100;
-
-  // Detect In-App WebView (Telegram, Instagram, etc.) which ad networks penalize
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const ua = navigator.userAgent || navigator.vendor || (window as any).opera || '';
-      const checkWebView =
-        /webview/i.test(ua) ||
-        /wv/i.test(ua) ||
-        /(iPhone|iPod|iPad).*AppleWebKit(?!.*Safari)/i.test(ua) ||
-        /FBAV|FBAN|Instagram|Twitter|Telegram|Snapchat/i.test(ua);
-      setIsUsingWebView(Boolean(checkWebView));
-    }
-  }, []);
+  const adDurationSeconds = Math.max(30, Number(monetization.stayTime) || 30);
 
   // Load settings
   useEffect(() => {
@@ -252,11 +213,14 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
             mode: data.mode ?? 'hybrid',
             directLinkUrl: savedPrimary,
             backupDirectLinkUrl: savedSecondary,
+            videoAdUrl: data.videoAdUrl ?? '',
+            vastTagUrl: data.vastTagUrl ?? '',
+            admobRewardedId: data.admobRewardedId ?? '',
             scriptCode: data.scriptCode ?? '',
-            requireClickVerification: data.requireClickVerification ?? true,
+            requireClickVerification: data.requireClickVerification ?? false,
             cooldownSeconds: Number(data.cooldownSeconds) || 20,
-            stayTime: Number(data.stayTime) || 12,
-            rewardCoins: Number(data.rewardCoins) || 25,
+            stayTime: Math.max(30, Number(data.stayTime) || 30),
+            rewardCoins: Number(data.rewardCoins) || 35,
             rewardXp: Number(data.rewardXp) || 120,
             dailyLimit: Number(data.dailyLimit) || 20,
             customAds: Array.isArray(data.customAds) ? data.customAds : []
@@ -294,28 +258,6 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
     return () => unsub();
   }, [user?.id]);
 
-  // Ad timer loop (with click verification gate for Direct Link / Hybrid modes)
-  useEffect(() => {
-    let timer: NodeJS.Timeout;
-    const needsClickGate =
-      (monetization.mode === 'direct_link' || monetization.mode === 'hybrid') &&
-      monetization.requireClickVerification !== false &&
-      Boolean(monetization.directLinkUrl);
-
-    if (isPlaying && countdown > 0) {
-      // If click verification is enabled, pause the last 3 seconds until user opens the sponsor link
-      if (needsClickGate && !hasClickedSponsorLink && countdown <= 3) {
-        return;
-      }
-      timer = setTimeout(() => {
-        setCountdown(prev => prev - 1);
-      }, 1000);
-    } else if (isPlaying && countdown === 0) {
-      finishAdPlay();
-    }
-    return () => clearTimeout(timer);
-  }, [isPlaying, countdown, hasClickedSponsorLink, monetization]);
-
   // Cooldown ticker
   useEffect(() => {
     if (cooldownError === null || cooldownError <= 0) {
@@ -326,20 +268,12 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
     return () => clearTimeout(t);
   }, [cooldownError]);
 
-  const getActiveSmartlinkUrl = () => {
-    if (monetization.backupDirectLinkUrl && watchedToday % 2 === 1) {
-      return monetization.backupDirectLinkUrl;
-    }
-    return monetization.directLinkUrl;
-  };
-
-  const startAdPlay = () => {
+  const handleOpenOptInAd = () => {
     if (watchedToday >= DAILY_LIMIT) {
       setLimitError(true);
       return;
     }
 
-    // Anti-bot / Ad-Network Policy Cooldown Check
     const cooldownSec = monetization.cooldownSeconds || 20;
     try {
       const lastWatchTs = Number(localStorage.getItem(`last_ad_ts_${user?.id || 'guest'}`) || '0');
@@ -352,48 +286,26 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
 
     setLimitError(false);
     setCooldownError(null);
-    setHasClickedSponsorLink(false);
-
-    if (monetization.mode === 'direct_link' || monetization.mode === 'hybrid') {
-      setIsPlaying(true);
-      setCountdown(monetization.stayTime);
-      setRewardGranted(null);
-    } else if (monetization.mode === 'script') {
-      setIsPlaying(true);
-      setCountdown(monetization.stayTime);
-      setRewardGranted(null);
-    } else {
-      const adPool =
-        monetization.customAds && monetization.customAds.length > 0
-          ? monetization.customAds
-          : SAMPLE_ADS;
-      const randAd = adPool[Math.floor(Math.random() * adPool.length)];
-      setActiveAd(randAd);
-      setIsPlaying(true);
-      setCountdown(monetization.stayTime);
-      setRewardGranted(null);
-    }
+    setRewardBanner(null);
+    setIsVideoAdOpen(true);
   };
 
-  const finishAdPlay = async () => {
-    setIsPlaying(false);
+  const handleAdRewardEarned = useCallback(async () => {
     const newCount = watchedToday + 1;
     setWatchedToday(newCount);
 
     const isStreakMilestone = newCount > 0 && newCount % STREAK_STEP === 0;
     const bonusCoins = isStreakMilestone ? STREAK_BONUS_COINS : 0;
-    const baseCoins = monetization.rewardCoins || 25;
+    const baseCoins = monetization.rewardCoins || 35;
     const totalCoinsReward = baseCoins + bonusCoins;
     const xpReward = monetization.rewardXp || 120;
 
-    setRewardGranted({ coins: totalCoinsReward, xp: xpReward, bonusCoins });
+    setRewardBanner({ coins: totalCoinsReward, xp: xpReward, bonusCoins });
 
     try {
       localStorage.setItem(storageCountKey, newCount.toString());
       localStorage.setItem(`last_ad_ts_${user?.id || 'guest'}`, Date.now().toString());
-    } catch {
-      // Ignore storage error
-    }
+    } catch {}
 
     setIsSyncing(true);
     try {
@@ -405,7 +317,6 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
         });
       }
 
-      // Record live ad view statistics in globalSettings/adStats
       const statsRef = doc(db, 'globalSettings', 'adStats');
       await setDoc(
         statsRef,
@@ -423,7 +334,7 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
     } finally {
       setIsSyncing(false);
     }
-  };
+  }, [watchedToday, monetization.rewardCoins, monetization.rewardXp, storageCountKey, todayDateStr, user?.id]);
 
   const handleCopyUid = () => {
     if (!user?.id) return;
@@ -469,9 +380,10 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
     }
   };
 
-  const handleDeleteMyTicket = async (ticketId: string) => {
+  const handleConfirmDeleteTicket = async (ticketId: string) => {
     try {
       await deleteDoc(doc(db, 'suggestions', ticketId));
+      setConfirmDeleteTicketId(null);
     } catch (err) {
       console.warn('Could not delete ticket:', err);
     }
@@ -522,20 +434,20 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
 
   return (
     <div
-      className="pb-24 pt-5 px-4 md:px-6 max-w-4xl mx-auto font-sans text-right min-h-screen space-y-5"
+      className={`pb-24 pt-4 ${display.isCoverScreen ? 'px-3' : 'px-4 md:px-6'} max-w-6xl mx-auto font-sans text-right min-h-screen space-y-5`}
       dir="rtl"
       id="support_portal_screen"
     >
-      {/* Top Header */}
-      <div className="bg-[#111115] border border-white/5 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-lg">
-        <div className="flex items-center gap-3">
+      {/* Top Header Bar */}
+      <div className="bg-[#111115] border border-white/5 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="flex items-center gap-3 min-w-0">
           <div className="w-11 h-11 rounded-2xl bg-[#FF1744]/15 border border-[#FF1744]/30 text-[#FF1744] flex items-center justify-center shrink-0">
             <ShieldCheck size={22} />
           </div>
-          <div>
-            <h1 className="text-base sm:text-lg font-black text-white">مركز الدعم والمساندة</h1>
-            <p className="text-[11px] text-zinc-400">
-              تذاكر الدعم الفني، استرداد الأكواد ومكافآت الإعلانات، وقنوات التواصل الرسمية
+          <div className="min-w-0">
+            <h1 className="text-base sm:text-lg font-black text-white truncate">مركز الدعم والمساندة</h1>
+            <p className="text-xs text-zinc-400 truncate">
+              دعم التطبيق باختيارك، التذاكر المباشرة، وقنوات المساعدة
             </p>
           </div>
         </div>
@@ -543,78 +455,167 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
         <div className="flex items-center justify-between sm:justify-end gap-2">
           {user?.id && (
             <button
+              type="button"
               onClick={handleCopyUid}
-              className="flex items-center gap-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 px-3 py-1.5 rounded-xl text-[11px] font-bold transition cursor-pointer"
+              className="min-h-[44px] flex items-center gap-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 px-3 rounded-xl text-xs font-bold transition cursor-pointer"
               title="نسخ معرّف حسابك للدعم السريع"
             >
               {copiedUid ? (
                 <>
-                  <Check size={12} className="text-emerald-400" />
-                  <span className="text-emerald-400">تم نسخ المعرّف</span>
+                  <Check size={14} className="text-emerald-400" />
+                  <span className="text-emerald-400">تم النسخ</span>
                 </>
               ) : (
                 <>
-                  <Copy size={12} className="text-zinc-400" />
-                  <span>معرّف الحساب: {user.id.slice(0, 6)}...</span>
+                  <Copy size={14} className="text-zinc-400" />
+                  <span className="tabular-nums">المعرّف: {user.id.slice(0, 6)}</span>
                 </>
               )}
             </button>
           )}
 
           <button
+            type="button"
             onClick={onBack}
-            className="flex items-center gap-1 bg-zinc-900 hover:bg-zinc-800 text-zinc-200 font-bold px-3.5 py-1.5 rounded-xl border border-zinc-800 transition text-xs cursor-pointer shrink-0"
+            className="min-h-[44px] flex items-center gap-1 bg-zinc-900 hover:bg-zinc-800 text-zinc-200 font-bold px-4 rounded-xl border border-zinc-800 transition text-xs cursor-pointer shrink-0"
           >
             <span>رجوع</span>
-            <ChevronRight size={14} />
+            <ChevronRight size={15} />
           </button>
         </div>
       </div>
 
-      {/* Main Navigation Tabs */}
-      <div className="grid grid-cols-3 gap-2 bg-[#111115] p-1.5 rounded-2xl border border-white/5" id="support_tabs_bar">
+      {/* PRIMARY OPT-IN "ادعم التطبيق" HERO CARD */}
+      <section
+        className="bg-gradient-to-l from-[#1c1317] via-[#121218] to-[#111115] border border-[#FF1744]/25 rounded-2xl p-4 sm:p-5 shadow-lg"
+        id="support_app_hero_card"
+      >
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="space-y-2 max-w-2xl">
+            <div className="flex items-center gap-2 text-xs font-bold text-amber-400">
+              <HeartHandshake size={16} />
+              <span>دعم اختياري بدون إزعاج</span>
+              <span className="text-zinc-600">·</span>
+              <span className="text-zinc-300 tabular-nums">{adDurationSeconds} ثانية</span>
+              <span className="text-zinc-600">·</span>
+              <span className="text-emerald-400 tabular-nums">+{monetization.rewardCoins} كوينز</span>
+            </div>
+
+            <h2 className="text-base sm:text-xl font-black text-white leading-snug">
+              ادعم استمرار التطبيق بمشاهدة إعلان فيديو باختيارك
+            </h2>
+
+            <p className="text-xs sm:text-sm text-zinc-300 leading-relaxed">
+              لن تظهر لك إعلانات الـ 30 ثانية المفاجئة أثناء تصفحك أو مشاهدتك للأنمي. هنا أنت من يختار تشغيل الإعلان لدعم الخوادم مقابل مكافأة فورية، مع زر إغلاق واضح في أي لحظة.
+            </p>
+          </div>
+
+          <div className="flex flex-col sm:flex-row lg:flex-col items-stretch sm:items-center lg:items-end gap-2.5 shrink-0">
+            <button
+              type="button"
+              onClick={handleOpenOptInAd}
+              disabled={watchedToday >= DAILY_LIMIT || (cooldownError !== null && cooldownError > 0)}
+              className="min-h-[48px] px-6 bg-gradient-to-r from-[#FF1744] to-rose-600 hover:from-red-500 hover:to-rose-500 disabled:opacity-45 text-white font-black text-sm rounded-xl shadow-lg shadow-[#FF1744]/20 transition flex items-center justify-center gap-2.5 cursor-pointer"
+              id="btn_support_app_watch_ad"
+            >
+              <PlayCircle size={19} />
+              <span>
+                {cooldownError !== null && cooldownError > 0
+                  ? `انتظر ${cooldownError} ثانية...`
+                  : watchedToday >= DAILY_LIMIT
+                  ? 'اكتمل الحد اليومي'
+                  : `ادعم التطبيق · إعلان ${adDurationSeconds}ث`}
+              </span>
+            </button>
+
+            <div className="flex items-center justify-center lg:justify-end gap-3 text-[11px] text-zinc-400 font-bold tabular-nums">
+              <span>اليوم: {watchedToday} / {DAILY_LIMIT}</span>
+              <span className="text-zinc-600">·</span>
+              <span className="text-sky-400">+{monetization.rewardXp} XP</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Inline feedback alerts right below Hero CTA if needed */}
+        {(limitError || (cooldownError !== null && cooldownError > 0) || rewardBanner) && (
+          <div className="mt-4 pt-3.5 border-t border-white/10 space-y-2">
+            {limitError && (
+              <div className="bg-rose-500/10 border border-rose-500/25 text-rose-300 px-3.5 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2">
+                <AlertTriangle size={15} className="shrink-0" />
+                <span>وصلت للحد اليومي ({DAILY_LIMIT} إعلاناً). شكراً لدعمك الكبير اليوم!</span>
+              </div>
+            )}
+
+            {cooldownError !== null && cooldownError > 0 && (
+              <div className="bg-amber-500/10 border border-amber-500/25 text-amber-300 px-3.5 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2 tabular-nums">
+                <Clock size={15} className="shrink-0" />
+                <span>يرجى الانتظار {cooldownError} ثانية قبل تشغيل الإعلان التالي لحماية مكافأتك.</span>
+              </div>
+            )}
+
+            {rewardBanner && (
+              <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 px-4 py-3 rounded-xl text-xs font-bold flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 size={16} className="text-emerald-400 shrink-0" />
+                  <span>
+                    شكراً لدعمك! تمت إضافة <strong className="text-amber-300">+{rewardBanner.coins} كوينز</strong> و{' '}
+                    <strong className="text-sky-300">+{rewardBanner.xp} XP</strong> لحسابك
+                    {rewardBanner.bonusCoins ? ` (تشمل مكافأة سلسلة +${rewardBanner.bonusCoins})` : ''}.
+                  </span>
+                </div>
+                {isSyncing && <span className="text-[11px] text-zinc-400">جاري المزامنة...</span>}
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+
+      {/* Main Segmented Workspace Tabs (>= 44px height) */}
+      <div
+        className={`grid ${display.isCoverScreen ? 'grid-cols-1' : 'grid-cols-3'} gap-2 bg-[#111115] p-1.5 rounded-2xl border border-white/5`}
+        id="support_tabs_bar"
+      >
         <button
+          type="button"
           onClick={() => setActiveTab('tickets')}
-          className={`py-2.5 px-3 rounded-xl text-xs font-black transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+          className={`min-h-[44px] px-3 rounded-xl text-xs font-black transition-all flex items-center justify-center gap-2 cursor-pointer ${
             activeTab === 'tickets'
               ? 'bg-[#FF1744] text-white shadow-lg shadow-[#FF1744]/20'
               : 'text-zinc-400 hover:text-white hover:bg-zinc-900/70'
           }`}
         >
-          <Ticket size={14} />
+          <Ticket size={15} />
           <span>التذاكر والمقترحات</span>
           {repliedTicketsCount > 0 && (
-            <span
-              className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
-                activeTab === 'tickets' ? 'bg-black/30 text-white' : 'bg-emerald-500/20 text-emerald-400'
-              }`}
-            >
-              {repliedTicketsCount}
+            <span className="font-mono text-[11px] tabular-nums opacity-90">
+              ({repliedTicketsCount})
             </span>
           )}
         </button>
 
         <button
+          type="button"
           onClick={() => setActiveTab('rewards')}
-          className={`py-2.5 px-3 rounded-xl text-xs font-black transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+          className={`min-h-[44px] px-3 rounded-xl text-xs font-black transition-all flex items-center justify-center gap-2 cursor-pointer ${
             activeTab === 'rewards'
               ? 'bg-[#FF1744] text-white shadow-lg shadow-[#FF1744]/20'
               : 'text-zinc-400 hover:text-white hover:bg-zinc-900/70'
           }`}
         >
-          <Gift size={14} />
-          <span>المكافآت والأكواد</span>
+          <Gift size={15} />
+          <span>الإعلانات والأكواد</span>
         </button>
 
         <button
+          type="button"
           onClick={() => setActiveTab('channels')}
-          className={`py-2.5 px-3 rounded-xl text-xs font-black transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+          className={`min-h-[44px] px-3 rounded-xl text-xs font-black transition-all flex items-center justify-center gap-2 cursor-pointer ${
             activeTab === 'channels'
               ? 'bg-[#FF1744] text-white shadow-lg shadow-[#FF1744]/20'
               : 'text-zinc-400 hover:text-white hover:bg-zinc-900/70'
           }`}
         >
-          <HelpCircle size={14} />
+          <HelpCircle size={15} />
           <span>التواصل والأسئلة</span>
         </button>
       </div>
@@ -622,7 +623,7 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
       {/* Tab Content */}
       <AnimatePresence mode="wait">
         {/* ============================================================
-            TAB 1: TICKETS & SUGGESTIONS (التذاكر والمقترحات + تذاكري السابقة)
+            TAB 1: TICKETS & SUGGESTIONS (Adaptive 2-column on desktop/foldables)
            ============================================================ */}
         {activeTab === 'tickets' && (
           <motion.div
@@ -630,24 +631,23 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -8 }}
-            className="space-y-5"
+            className={`grid grid-cols-1 ${display.isBookPosture || display.isWideOrUnfolded ? 'lg:grid-cols-12' : ''} gap-5 items-start`}
+            style={display.isBookPosture ? { gap: 'var(--fold-hinge-gap, 24px)' } : undefined}
           >
             {/* Create New Ticket Card */}
-            <div className="bg-[#111115] border border-white/5 rounded-2xl p-5 space-y-4">
+            <div className={`${display.isBookPosture || display.isWideOrUnfolded ? 'lg:col-span-6' : ''} bg-[#111115] border border-white/5 rounded-2xl p-4 sm:p-5 space-y-4`}>
               <div className="flex items-center justify-between border-b border-white/5 pb-3">
                 <div className="flex items-center gap-2">
                   <MessageSquare size={16} className="text-[#FF1744]" />
-                  <h2 className="text-sm font-black text-white">فتح تذكرة دعم أو إرسال مقترح</h2>
+                  <h2 className="text-sm font-black text-white">فتح تذكرة دعم أو مقترح</h2>
                 </div>
-                <span className="text-[10px] text-zinc-400 bg-zinc-900 px-2.5 py-1 rounded-lg border border-zinc-800">
-                  رد مباشر من الإدارة
-                </span>
+                <span className="text-[11px] text-zinc-400 font-bold">رد مباشر من الإدارة</span>
               </div>
 
-              {/* Category Chips */}
+              {/* Category Selection */}
               <div className="space-y-2">
-                <label className="text-xs font-bold text-zinc-300 block">اختر نوع الطلب:</label>
-                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                <label className="text-xs font-bold text-zinc-300 block">نوع الطلب</label>
+                <div className={`grid ${display.isCoverScreen ? 'grid-cols-2' : 'grid-cols-2 sm:grid-cols-3'} gap-2`}>
                   {TICKET_CATEGORIES.map(cat => {
                     const Icon = cat.icon;
                     const isSelected = selectedCategory.id === cat.id;
@@ -656,17 +656,14 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
                         key={cat.id}
                         type="button"
                         onClick={() => setSelectedCategory(cat)}
-                        className={`p-2.5 rounded-xl border text-right transition flex flex-col gap-1.5 cursor-pointer ${
+                        className={`min-h-[46px] p-2.5 rounded-xl border text-right transition flex items-center gap-2 cursor-pointer ${
                           isSelected
                             ? 'bg-[#FF1744]/15 border-[#FF1744] text-white'
                             : 'bg-zinc-900/60 border-zinc-800/80 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700'
                         }`}
                       >
-                        <div className="flex items-center justify-between">
-                          <Icon size={14} className={isSelected ? 'text-[#FF1744]' : 'text-zinc-500'} />
-                          {isSelected && <span className="w-1.5 h-1.5 rounded-full bg-[#FF1744]" />}
-                        </div>
-                        <span className="text-[11px] font-black leading-tight">{cat.label}</span>
+                        <Icon size={15} className={isSelected ? 'text-[#FF1744] shrink-0' : 'text-zinc-500 shrink-0'} />
+                        <span className="text-xs font-black leading-tight truncate">{cat.label}</span>
                       </button>
                     );
                   })}
@@ -676,7 +673,7 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
               <form onSubmit={handleSendTicket} className="space-y-3.5">
                 <div>
                   <label className="text-xs font-bold text-zinc-300 block mb-1.5">
-                    العنوان المختصر (مثل: اسم الأنمي أو رقم الحلقة):
+                    العنوان المختصر
                   </label>
                   <input
                     type="text"
@@ -685,24 +682,24 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
                     maxLength={120}
                     placeholder={
                       selectedCategory.label === 'حلقة لا تعمل'
-                        ? 'مثال: أنمي One Piece الحلقة 1120 السيرفر الأول'
+                        ? 'مثال: One Piece الحلقة 1120 السيرفر الأول'
                         : selectedCategory.label === 'طلب أنمي'
-                        ? 'مثال: طلب توفير أنمي Solo Leveling الموسم الثاني'
+                        ? 'مثال: طلب توفير أنمي Solo Leveling'
                         : 'اكتب عنواناً مختصراً لطلبك...'
                     }
-                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-[#FF1744] transition"
+                    className="w-full min-h-[44px] bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-[#FF1744] transition"
                   />
                 </div>
 
                 <div>
-                  <label className="text-xs font-bold text-zinc-300 block mb-1.5">التفاصيل:</label>
+                  <label className="text-xs font-bold text-zinc-300 block mb-1.5">التفاصيل</label>
                   <textarea
                     rows={4}
                     value={ticketMessage}
                     onChange={e => setTicketMessage(e.target.value)}
                     maxLength={2500}
                     required
-                    placeholder="اشرح المشكلة أو الفكرة بوضوح ليتمكن فريق الإشراف من مساعدتك بأسرع وقت..."
+                    placeholder="اشرح المشكلة أو الفكرة بوضوح ليتمكن فريق الإشراف من مساعدتك..."
                     className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-3.5 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-[#FF1744] transition leading-relaxed"
                   />
                 </div>
@@ -724,13 +721,13 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
                         className="text-emerald-400 font-bold text-xs flex items-center gap-1.5"
                       >
                         <CheckCircle2 size={15} />
-                        <span>تم إرسال تذكرتك بنجاح! يمكنك متابعة حالة الرد بالأسفل.</span>
+                        <span>تم إرسال تذكرتك بنجاح!</span>
                       </motion.div>
                     ) : (
                       <span className="text-[11px] text-zinc-500">
                         {user
-                          ? 'سيصلك إشعار فوري عند رد الإدارة على تذكرتك.'
-                          : 'سجل دخولك لتتمكن من متابعة تذاكرك واستلام الإشعارات.'}
+                          ? 'سيصلك إشعار فوري عند رد الإدارة.'
+                          : 'سجل دخولك لمتابعة حالة تذاكرك.'}
                       </span>
                     )}
                   </AnimatePresence>
@@ -738,16 +735,13 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
                   <button
                     type="submit"
                     disabled={isSubmittingTicket || !ticketMessage.trim()}
-                    className="mr-auto px-6 py-2.5 bg-[#FF1744] hover:bg-red-600 disabled:bg-zinc-800 disabled:text-zinc-500 text-white font-black text-xs rounded-xl transition flex items-center gap-2 cursor-pointer shadow-lg shadow-[#FF1744]/15"
+                    className="min-h-[44px] mr-auto px-6 bg-[#FF1744] hover:bg-red-600 disabled:bg-zinc-800 disabled:text-zinc-500 text-white font-black text-xs rounded-xl transition flex items-center gap-2 cursor-pointer shadow-lg shadow-[#FF1744]/15"
                   >
                     {isSubmittingTicket ? (
-                      <>
-                        <div className="w-3.5 h-3.5 border-2 border-t-transparent border-white rounded-full animate-spin" />
-                        <span>جاري الإرسال...</span>
-                      </>
+                      <span>جاري الإرسال...</span>
                     ) : (
                       <>
-                        <Send size={13} className="transform rotate-180" />
+                        <Send size={14} className="transform rotate-180" />
                         <span>إرسال التذكرة</span>
                       </>
                     )}
@@ -757,27 +751,26 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
             </div>
 
             {/* User's Ticket History & Admin Replies */}
-            <div className="bg-[#111115] border border-white/5 rounded-2xl p-5 space-y-4">
+            <div className={`${display.isBookPosture || display.isWideOrUnfolded ? 'lg:col-span-6' : ''} bg-[#111115] border border-white/5 rounded-2xl p-4 sm:p-5 space-y-4`}>
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/5 pb-3">
                 <div className="flex items-center gap-2">
                   <Ticket size={16} className="text-sky-400" />
-                  <h3 className="text-sm font-black text-white">تذاكري ومقترحاتي السابقة</h3>
-                  <span className="text-[10px] bg-zinc-900 border border-zinc-800 text-zinc-300 px-2 py-0.5 rounded-full font-mono">
-                    {myTickets.length}
-                  </span>
+                  <h3 className="text-sm font-black text-white">تذاكري السابقة</h3>
+                  <span className="text-xs text-zinc-400 font-mono tabular-nums">({myTickets.length})</span>
                 </div>
 
                 {myTickets.length > 0 && (
                   <div className="flex items-center gap-1 bg-zinc-950 p-1 rounded-xl border border-zinc-800/80">
                     {[
                       { id: 'all', label: 'الكل' },
-                      { id: 'pending', label: 'قيد المراجعة' },
+                      { id: 'pending', label: 'بانتظار الرد' },
                       { id: 'replied', label: 'تم الرد' }
                     ].map(f => (
                       <button
                         key={f.id}
+                        type="button"
                         onClick={() => setTicketFilter(f.id as any)}
-                        className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition cursor-pointer ${
+                        className={`min-h-[36px] px-3 rounded-lg text-[11px] font-bold transition cursor-pointer ${
                           ticketFilter === f.id ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:text-white'
                         }`}
                       >
@@ -789,22 +782,23 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
               </div>
 
               {!user ? (
-                <div className="text-center py-8 text-zinc-400 text-xs space-y-1">
+                <div className="text-center py-10 text-zinc-400 text-xs space-y-1.5">
                   <p className="font-bold text-zinc-300">سجل دخولك لعرض سجل تذاكرك وردود الإدارة</p>
                   <p className="text-[11px] text-zinc-500">يتم حفظ جميع محادثاتك وتذاكرك تلقائياً على حسابك.</p>
                 </div>
               ) : loadingTickets ? (
-                <div className="text-center py-8 text-zinc-500 text-xs font-bold">جاري تحميل تذاكرك...</div>
+                <div className="text-center py-10 text-zinc-500 text-xs font-bold">جاري تحميل تذاكرك...</div>
               ) : filteredTickets.length === 0 ? (
-                <div className="text-center py-8 text-zinc-500 text-xs font-bold">
-                  لا توجد تذاكر في هذا القسم حالياً
+                <div className="text-center py-10 text-zinc-500 text-xs font-bold">
+                  لا توجد تذاكر في هذا التصنيف حالياً
                 </div>
               ) : (
-                <div className="space-y-3">
+                <div className="space-y-3 max-h-[540px] overflow-y-auto pl-1">
                   {filteredTickets.map(ticket => {
                     const hasReply = Boolean(ticket.adminReply) || ticket.status === 'replied';
                     const isResolved = ticket.status === 'resolved';
                     const isInProgress = ticket.status === 'in_progress';
+                    const isConfirmingDelete = confirmDeleteTicketId === ticket.id;
 
                     return (
                       <div
@@ -812,45 +806,66 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
                         className="bg-zinc-950/80 border border-zinc-800/80 rounded-xl p-4 space-y-3"
                       >
                         <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div className="flex flex-wrap items-center gap-2">
+                          <div className="flex flex-wrap items-center gap-2 text-[11px] font-bold">
                             <span
-                              className={`text-[10px] font-bold px-2.5 py-0.5 rounded-lg border ${
+                              className={
                                 hasReply || isResolved
-                                  ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                                  ? 'text-emerald-400'
                                   : isInProgress
-                                  ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
-                                  : 'bg-zinc-900 text-zinc-400 border-zinc-800'
-                              }`}
+                                  ? 'text-amber-400'
+                                  : 'text-zinc-400'
+                              }
                             >
                               {hasReply
-                                ? '✓ تم الرد من الإدارة'
+                                ? '✓ تم الرد'
                                 : isResolved
                                 ? '✓ مكتملة'
                                 : isInProgress
-                                ? '⏳ قيد المعالجة'
+                                ? 'قيد المعالجة'
                                 : 'قيد المراجعة'}
                             </span>
-
                             {ticket.category && (
-                              <span className="text-[10px] font-bold text-zinc-300 bg-zinc-900 px-2 py-0.5 rounded-lg border border-zinc-800">
-                                {ticket.category}
-                              </span>
+                              <>
+                                <span className="text-zinc-700">·</span>
+                                <span className="text-zinc-300">{ticket.category}</span>
+                              </>
                             )}
                           </div>
 
                           <div className="flex items-center gap-2">
-                            <span className="text-[10px] text-zinc-500">
+                            <span className="text-[11px] text-zinc-500 tabular-nums">
                               {ticket.createdAt?.seconds
                                 ? new Date(ticket.createdAt.seconds * 1000).toLocaleDateString('ar-EG')
                                 : 'الآن'}
                             </span>
-                            <button
-                              onClick={() => handleDeleteMyTicket(ticket.id)}
-                              className="p-1 text-zinc-500 hover:text-rose-400 transition cursor-pointer"
-                              title="حذف التذكرة"
-                            >
-                              <Trash2 size={13} />
-                            </button>
+
+                            {isConfirmingDelete ? (
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => handleConfirmDeleteTicket(ticket.id)}
+                                  className="px-2.5 py-1 rounded-lg bg-rose-600 text-white text-[10px] font-black cursor-pointer"
+                                >
+                                  تأكيد الحذف
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteTicketId(null)}
+                                  className="px-2 py-1 rounded-lg bg-zinc-800 text-zinc-300 text-[10px] font-bold cursor-pointer"
+                                >
+                                  إلغاء
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteTicketId(ticket.id)}
+                                className="w-8 h-8 rounded-lg flex items-center justify-center text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer"
+                                title="حذف التذكرة"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            )}
                           </div>
                         </div>
 
@@ -860,7 +875,7 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
 
                         {ticket.adminReply && (
                           <div className="bg-emerald-500/10 border border-emerald-500/25 rounded-xl p-3.5 space-y-1.5">
-                            <div className="flex items-center gap-1.5 text-emerald-400 text-[11px] font-black">
+                            <div className="flex items-center gap-1.5 text-emerald-400 text-xs font-black">
                               <ShieldCheck size={14} />
                               <span>رد الإدارة ({ticket.repliedBy || 'فريق الدعم'}):</span>
                             </div>
@@ -879,7 +894,7 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
         )}
 
         {/* ============================================================
-            TAB 2: REWARDS & PROMO CODES (المكافآت والأكواد + إعلان الدعم)
+            TAB 2: ADS & REWARDS + PROMO CODES
            ============================================================ */}
         {activeTab === 'rewards' && (
           <motion.div
@@ -890,26 +905,25 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
             className="space-y-5"
           >
             {/* Quick Wallet & Stats Bar */}
-            <div className="grid grid-cols-3 gap-3">
-              <div className="bg-[#111115] border border-white/5 rounded-2xl p-3.5 flex flex-col items-center justify-center text-center">
-                <span className="text-zinc-400 text-[10px] font-bold">رصيدك الحالي</span>
-                <div className="flex items-center gap-1.5 mt-1">
-                  <Coins size={15} className="text-yellow-400" />
-                  <strong className="text-white font-mono text-base font-black">
+            <div className={`grid ${display.isCoverScreen ? 'grid-cols-1' : 'grid-cols-3'} gap-3`}>
+              <div className="bg-[#111115] border border-white/5 rounded-2xl p-4 flex flex-col items-center justify-center text-center">
+                <span className="text-zinc-400 text-xs font-bold">رصيدك الحالي</span>
+                <div className="flex items-center gap-1.5 mt-1.5">
+                  <Coins size={16} className="text-yellow-400" />
+                  <strong className="text-white font-mono text-lg font-black tabular-nums">
                     {userData?.coins ?? 0}
                   </strong>
                 </div>
-                <span className="text-[9px] text-zinc-500 mt-0.5">عملة متجر</span>
               </div>
 
-              <div className="bg-[#111115] border border-white/5 rounded-2xl p-3.5 flex flex-col items-center justify-center text-center">
-                <span className="text-zinc-400 text-[10px] font-bold">مشاهدات اليوم</span>
-                <div className="text-white font-mono text-base font-black mt-1">
+              <div className="bg-[#111115] border border-white/5 rounded-2xl p-4 flex flex-col items-center justify-center text-center">
+                <span className="text-zinc-400 text-xs font-bold">مشاهدات اليوم</span>
+                <div className="text-white font-mono text-lg font-black mt-1.5 tabular-nums">
                   <span className="text-yellow-400">{watchedToday}</span>
                   <span className="text-zinc-600 mx-1">/</span>
                   <span>{DAILY_LIMIT}</span>
                 </div>
-                <div className="w-full bg-zinc-900 h-1.5 rounded-full overflow-hidden mt-1.5">
+                <div className="w-full max-w-[140px] bg-zinc-900 h-1.5 rounded-full overflow-hidden mt-2">
                   <div
                     className="bg-yellow-400 h-full rounded-full transition-all duration-300"
                     style={{ width: `${Math.min(100, (watchedToday / DAILY_LIMIT) * 100)}%` }}
@@ -917,386 +931,138 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
                 </div>
               </div>
 
-              <div className="bg-[#111115] border border-white/5 rounded-2xl p-3.5 flex flex-col items-center justify-center text-center">
-                <span className="text-zinc-400 text-[10px] font-bold">مكافأة الإعلان</span>
-                <div className="flex items-center gap-1 text-emerald-400 font-black text-sm mt-1">
-                  <Zap size={14} />
+              <div className="bg-[#111115] border border-white/5 rounded-2xl p-4 flex flex-col items-center justify-center text-center">
+                <span className="text-zinc-400 text-xs font-bold">عائد كل إعلان</span>
+                <div className="flex items-center gap-1 text-emerald-400 font-black text-base mt-1.5 tabular-nums">
+                  <Zap size={15} />
                   <span>+{monetization.rewardCoins} كوين</span>
                 </div>
-                <span className="text-[9px] text-sky-400 font-bold mt-0.5">+{monetization.rewardXp} XP خبرة</span>
+                <span className="text-[11px] text-sky-400 font-bold mt-0.5 tabular-nums">+{monetization.rewardXp} XP</span>
               </div>
             </div>
 
-            {/* Streak Milestone Progress Bar (Every 5 Ads = +100 Bonus Coins) */}
-            <div className="bg-gradient-to-l from-amber-500/10 via-[#111115] to-[#111115] border border-amber-500/20 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 flex items-center justify-center shrink-0">
-                  <Sparkles size={18} />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h4 className="text-xs font-black text-white">صندوق مكافأة السلسلة الإعلانية</h4>
-                    <span className="text-[10px] bg-amber-500 text-black font-black px-2 py-0.5 rounded-full">
-                      +{STREAK_BONUS_COINS} كوين إضافي
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-zinc-400 mt-0.5">
-                    شاهد {STREAK_STEP} إعلانات لتحصل على مكافأة كبرى فورية فوق مكافأة كل إعلان!
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-1.5 self-end sm:self-center">
-                {Array.from({ length: STREAK_STEP }).map((_, idx) => {
-                  const currentStepInCycle = watchedToday % STREAK_STEP;
-                  const isCompletedStep = idx < currentStepInCycle || (watchedToday > 0 && currentStepInCycle === 0 && !isPlaying);
-                  return (
-                    <div
-                      key={idx}
-                      className={`w-7 h-7 rounded-lg text-[10px] font-black flex items-center justify-center border transition-all ${
-                        isCompletedStep
-                          ? 'bg-amber-400 text-black border-amber-300 shadow-sm shadow-amber-400/30'
-                          : 'bg-zinc-900 text-zinc-500 border-zinc-800'
-                      }`}
-                    >
-                      {idx === STREAK_STEP - 1 ? '🎁' : idx + 1}
+            {/* Two-column layout for Video Ad Launch Card & Promo Code Redemption */}
+            <div
+              className={`grid grid-cols-1 ${display.isBookPosture || display.isWideOrUnfolded ? 'lg:grid-cols-12' : ''} gap-5 items-stretch`}
+              style={display.isBookPosture ? { gap: 'var(--fold-hinge-gap, 24px)' } : undefined}
+            >
+              {/* Video Ad Support & Streak Milestone Card */}
+              <div className={`${display.isBookPosture || display.isWideOrUnfolded ? 'lg:col-span-7' : ''} bg-[#111115] border border-white/5 rounded-2xl p-5 flex flex-col justify-between gap-5`}>
+                <div className="space-y-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/5 pb-3">
+                    <div className="flex items-center gap-2">
+                      <Tv size={17} className="text-amber-400" />
+                      <h3 className="text-sm font-black text-white">نظام إعلان الفيديو الاختياري (30 ثانية)</h3>
                     </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Promo Code Redemption Box */}
-            <div className="bg-[#111115] border border-white/5 rounded-2xl p-5 space-y-3.5">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 flex items-center justify-center">
-                    <KeyRound size={16} />
+                    <span className="text-xs font-bold text-emerald-400">مباشر داخل التطبيق</span>
                   </div>
-                  <div>
-                    <h3 className="text-sm font-black text-white">استرداد كود هدية (Promo Code)</h3>
-                    <p className="text-[11px] text-zinc-400">
-                      أدخل الكود الترويجي للحصول على كوينز ونقاط خبرة فورية
-                    </p>
-                  </div>
-                </div>
-              </div>
 
-              <form onSubmit={handleRedeemPromo} className="flex flex-col sm:flex-row gap-2.5">
-                <input
-                  type="text"
-                  value={promoInput}
-                  onChange={e => setPromoInput(e.target.value.toUpperCase())}
-                  placeholder="أدخل رمز الكود هنا (مثال: OTAKU2026)..."
-                  className="flex-1 bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2.5 text-xs font-mono font-bold text-white placeholder-zinc-500 focus:outline-none focus:border-amber-400 uppercase tracking-wider"
-                />
-                <button
-                  type="submit"
-                  disabled={isRedeemingPromo || !promoInput.trim()}
-                  className="px-6 py-2.5 bg-amber-500 hover:bg-amber-400 disabled:bg-zinc-800 disabled:text-zinc-500 text-black font-black text-xs rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer shrink-0"
-                >
-                  <Sparkles size={14} />
-                  <span>{isRedeemingPromo ? 'جاري التحقق...' : 'تفعيل الكود'}</span>
-                </button>
-              </form>
-
-              {promoFeedback && (
-                <div
-                  className={`p-3 rounded-xl text-xs font-bold flex items-center gap-2 border ${
-                    promoFeedback.type === 'success'
-                      ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-400'
-                      : 'bg-rose-500/10 border-rose-500/25 text-rose-400'
-                  }`}
-                >
-                  {promoFeedback.type === 'success' ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}
-                  <span>{promoFeedback.message}</span>
-                </div>
-              )}
-            </div>
-
-            {/* Ad Support Interactive Player */}
-            <div className="bg-[#111115] border border-white/5 rounded-2xl p-5 space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/5 pb-3">
-                <div className="flex items-center gap-2">
-                  <Tv size={16} className="text-yellow-400" />
-                  <h3 className="text-sm font-black text-white">دعم السيرفرات بمشاهدة إعلان</h3>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2.5 py-0.5 rounded-full font-bold">
-                    ✓ متوافق مع سياسات الإعلانات العالمية
-                  </span>
-                </div>
-              </div>
-
-              {/* In-App WebView Protection Banner (Prevents Adsterra/Monetag Invalid Traffic Ban) */}
-              {isUsingWebView && (
-                <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div className="space-y-1 text-right">
-                    <div className="flex items-center gap-1.5 text-amber-400 text-xs font-black">
-                      <AlertTriangle size={14} />
-                      <span>تنبيه المتصفح الداخلي (WebView):</span>
+                  {/* Streak Milestone Bar */}
+                  <div className="bg-zinc-950/90 border border-amber-500/20 rounded-xl p-4 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <h4 className="text-xs font-black text-white">سلسلة الدعم المتواصل</h4>
+                        <p className="text-[11px] text-zinc-400 mt-0.5 tabular-nums">
+                          كل {STREAK_STEP} إعلانات تمنحك +{STREAK_BONUS_COINS} كوينز إضافية تلقائياً
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        {Array.from({ length: STREAK_STEP }).map((_, idx) => {
+                          const currentStepInCycle = watchedToday % STREAK_STEP;
+                          const isCompletedStep = idx < currentStepInCycle || (watchedToday > 0 && currentStepInCycle === 0);
+                          return (
+                            <div
+                              key={idx}
+                              className={`w-8 h-8 rounded-lg text-xs font-black flex items-center justify-center border tabular-nums ${
+                                isCompletedStep
+                                  ? 'bg-amber-400 text-black border-amber-300'
+                                  : 'bg-zinc-900 text-zinc-500 border-zinc-800'
+                              }`}
+                            >
+                              {idx === STREAK_STEP - 1 ? <Gift size={14} /> : idx + 1}
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
-                    <p className="text-[11px] text-zinc-300 leading-relaxed">
-                      لضمان احتساب الإعلان بشكل رسمي وعدم رفض الزيارة من شبكات الإعلانات، يُنصح بفتح التطبيق في متصفح الهاتف الرسمي (Chrome أو Safari).
-                    </p>
+                  </div>
+                </div>
+
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-2 border-t border-white/5">
+                  <div className="text-xs text-zinc-400">
+                    {!user
+                      ? 'سجل دخولك لحفظ الكوينز في حسابك.'
+                      : `المدة ${adDurationSeconds} ثانية مع زر إغلاق واضح في الأعلى.`}
                   </div>
                   <button
                     type="button"
-                    onClick={() => {
-                      if (typeof window !== 'undefined') {
-                        navigator.clipboard.writeText(window.location.href);
-                        setCopiedPageUrl(true);
-                        setTimeout(() => setCopiedPageUrl(false), 2500);
-                      }
-                    }}
-                    className="px-3.5 py-2 bg-amber-500 hover:bg-amber-400 text-black font-black text-[11px] rounded-xl transition shrink-0 cursor-pointer"
+                    onClick={handleOpenOptInAd}
+                    disabled={watchedToday >= DAILY_LIMIT || (cooldownError !== null && cooldownError > 0)}
+                    className="min-h-[46px] px-6 bg-amber-500 hover:bg-amber-400 disabled:opacity-45 text-black font-black text-xs rounded-xl transition flex items-center justify-center gap-2 cursor-pointer shrink-0"
                   >
-                    {copiedPageUrl ? '✓ تم نسخ الرابط' : 'نسخ الرابط لفتحه في المتصفح'}
+                    <Play size={15} className="fill-black" />
+                    <span>
+                      {cooldownError !== null && cooldownError > 0
+                        ? `انتظر ${cooldownError} ثانية`
+                        : `تشغيل إعلان الدعم (${adDurationSeconds}ث)`}
+                    </span>
                   </button>
                 </div>
-              )}
+              </div>
 
-              <div
-                className="bg-zinc-950 border border-zinc-800/80 rounded-2xl p-6 relative overflow-hidden flex flex-col items-center justify-center min-h-[220px] text-center"
-                id="ad_action_zone_portal"
-              >
-                <AnimatePresence mode="wait">
-                  {!isPlaying && !rewardGranted && (
-                    <motion.div
-                      key="portal_start_prompt"
-                      initial={{ opacity: 0, scale: 0.96 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      exit={{ opacity: 0, scale: 0.96 }}
-                      className="flex flex-col items-center gap-3.5 relative z-10"
+              {/* Promo Code Redemption Box */}
+              <div className={`${display.isBookPosture || display.isWideOrUnfolded ? 'lg:col-span-5' : ''} bg-[#111115] border border-white/5 rounded-2xl p-5 flex flex-col justify-between gap-4`}>
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2.5 border-b border-white/5 pb-3">
+                    <div className="w-9 h-9 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 flex items-center justify-center shrink-0">
+                      <KeyRound size={17} />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-black text-white">استرداد كود هدية</h3>
+                      <p className="text-[11px] text-zinc-400">
+                        أدخل الرمز الترويجي للحصول على كوينز وخبرة فورية
+                      </p>
+                    </div>
+                  </div>
+
+                  <form onSubmit={handleRedeemPromo} className="space-y-3">
+                    <input
+                      type="text"
+                      value={promoInput}
+                      onChange={e => setPromoInput(e.target.value.toUpperCase())}
+                      placeholder="مثال: OTAKU2026"
+                      className="w-full min-h-[46px] bg-zinc-950 border border-zinc-800 rounded-xl px-4 text-xs font-mono font-bold text-white placeholder-zinc-500 focus:outline-none focus:border-amber-400 uppercase tracking-wider"
+                    />
+                    <button
+                      type="submit"
+                      disabled={isRedeemingPromo || !promoInput.trim()}
+                      className="w-full min-h-[44px] bg-zinc-900 hover:bg-zinc-800 border border-amber-500/35 disabled:opacity-45 text-amber-300 font-black text-xs rounded-xl transition flex items-center justify-center gap-2 cursor-pointer"
                     >
-                      <div className="w-14 h-14 rounded-2xl bg-yellow-500/10 border border-yellow-500/25 text-yellow-400 flex items-center justify-center">
-                        <Play size={22} className="fill-yellow-400" />
-                      </div>
-                      <div className="space-y-1">
-                        <h4 className="text-white font-black text-sm">شاهد إعلاناً قصيراً واكسب مكافأتك</h4>
-                        <p className="text-xs text-zinc-400 max-w-sm leading-relaxed mx-auto">
-                          مساهمتك الاختيارية تساعدنا في تغطية تكاليف خوادم البث السريعة مع إبقاء الحلقات خالية من النوافذ المزعجة.
-                        </p>
-                      </div>
+                      <Sparkles size={14} />
+                      <span>{isRedeemingPromo ? 'جاري التحقق...' : 'تفعيل الكود'}</span>
+                    </button>
+                  </form>
+                </div>
 
-                      {limitError && (
-                        <div className="bg-rose-500/10 border border-rose-500/20 text-rose-400 px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5">
-                          <AlertTriangle size={14} />
-                          <span>وصلت للحد اليومي ({DAILY_LIMIT} إعلاناً). عد غداً للمزيد!</span>
-                        </div>
-                      )}
-
-                      {cooldownError !== null && cooldownError > 0 && (
-                        <div className="bg-amber-500/10 border border-amber-500/25 text-amber-300 px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5">
-                          <Clock size={14} />
-                          <span>فترة أمان بين الإعلانات لحماية الحساب: يرجى الانتظار {cooldownError} ثانية...</span>
-                        </div>
-                      )}
-
-                      {!user && (
-                        <div className="bg-amber-500/10 border border-amber-500/20 text-amber-400 px-3 py-1.5 rounded-xl text-[11px] font-bold flex items-center gap-1.5">
-                          <AlertTriangle size={13} />
-                          <span>يرجى تسجيل الدخول لحفظ الكوينز في حسابك.</span>
-                        </div>
-                      )}
-
-                      <button
-                        onClick={startAdPlay}
-                        disabled={watchedToday >= DAILY_LIMIT || (cooldownError !== null && cooldownError > 0)}
-                        className="bg-gradient-to-r from-yellow-400 to-amber-500 hover:from-yellow-300 hover:to-amber-400 disabled:opacity-40 py-2.5 px-7 text-black font-black text-xs rounded-xl shadow-lg transition cursor-pointer flex items-center gap-2"
-                      >
-                        <Tv size={14} />
-                        <span>
-                          {cooldownError !== null && cooldownError > 0
-                            ? `انتظر ${cooldownError} ثانية...`
-                            : `بدء مشاهدة الإعلان (+${monetization.rewardCoins} كوين)`}
-                        </span>
-                      </button>
-                    </motion.div>
-                  )}
-
-                  {isPlaying && (
-                    <motion.div
-                      key="portal_playing_ad_actual"
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      exit={{ opacity: 0 }}
-                      className="w-full flex flex-col justify-between gap-4 z-20 text-right"
-                    >
-                      <div className="flex items-center justify-between border-b border-zinc-800 pb-2.5">
-                        <div className="flex items-center gap-2">
-                          <span className="w-2 h-2 bg-rose-500 rounded-full animate-ping" />
-                          <span className="text-xs text-zinc-300 font-bold">
-                            {(monetization.mode === 'direct_link' || monetization.mode === 'hybrid') &&
-                            monetization.requireClickVerification !== false &&
-                            !hasClickedSponsorLink &&
-                            countdown <= 3
-                              ? 'بانتظار زيارة رابط الراعي لإتمام المكافأة...'
-                              : 'جاري احتساب مكافأة الدعم...'}
-                          </span>
-                        </div>
-                        <div className="bg-zinc-900 border border-zinc-700 px-3 py-1 rounded-full text-yellow-400 font-mono text-xs font-black flex items-center gap-1.5">
-                          <Clock size={12} />
-                          <span>0:{countdown < 10 ? `0${countdown}` : countdown}</span>
-                        </div>
-                      </div>
-
-                      <div className="py-2 text-center space-y-3">
-                        {/* Direct Smartlink CTA (shown in direct_link AND hybrid modes) */}
-                        {(monetization.mode === 'direct_link' || monetization.mode === 'hybrid') &&
-                          monetization.directLinkUrl && (
-                            <div className="bg-zinc-900/70 border border-zinc-800 rounded-xl p-3.5 space-y-2.5">
-                              <div className="flex items-center justify-center gap-1.5">
-                                <span className="text-[10px] font-black bg-[#FF1744]/15 text-[#FF1744] border border-[#FF1744]/30 px-2 py-0.5 rounded-full">
-                                  إعلان الراعي المباشر (Smartlink)
-                                </span>
-                                {hasClickedSponsorLink && (
-                                  <span className="text-[10px] font-black bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full">
-                                    ✓ تم التحقق من الزيارة
-                                  </span>
-                                )}
-                              </div>
-
-                              <p className="text-xs text-zinc-300 max-w-md mx-auto leading-relaxed">
-                                {hasClickedSponsorLink
-                                  ? 'شكراً لزيارة الراعي! انتظر انتهاء الثواني القليلة المتبقية لاستلام الكوينز والـ XP.'
-                                  : 'اضغط على زر فتح الإعلان أدناه لزيارة الراعي الرسمي وتأكيد المكافأة (إذا كان الرابط الأول محجوباً من شبكة هاتفك، استخدم الرابط البديل 2):'}
-                              </p>
-
-                              <div className="flex flex-wrap items-center justify-center gap-2">
-                                <a
-                                  href={getActiveSmartlinkUrl()}
-                                  target="_blank"
-                                  rel="noopener"
-                                  onClick={() => setHasClickedSponsorLink(true)}
-                                  className={`font-black py-2.5 px-5 rounded-xl text-xs transition inline-flex items-center gap-2 cursor-pointer shadow-lg ${
-                                    hasClickedSponsorLink
-                                      ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-600/20'
-                                      : 'bg-[#FF1744] hover:bg-red-600 text-white shadow-[#FF1744]/25 animate-pulse'
-                                  }`}
-                                >
-                                  <ExternalLink size={14} />
-                                  <span>
-                                    {hasClickedSponsorLink
-                                      ? 'إعادة فتح الإعلان الأساسي'
-                                      : 'فتح إعلان الراعي (سيرفر 1)'}
-                                  </span>
-                                </a>
-
-                                {monetization.backupDirectLinkUrl && (
-                                  <a
-                                    href={
-                                      getActiveSmartlinkUrl() === monetization.backupDirectLinkUrl
-                                        ? monetization.directLinkUrl
-                                        : monetization.backupDirectLinkUrl
-                                    }
-                                    target="_blank"
-                                    rel="noopener"
-                                    onClick={() => setHasClickedSponsorLink(true)}
-                                    className="font-black py-2.5 px-4 rounded-xl text-xs bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-amber-400 transition inline-flex items-center gap-1.5 cursor-pointer"
-                                  >
-                                    <ExternalLink size={13} />
-                                    <span>رابط بديل (سيرفر 2)</span>
-                                  </a>
-                                )}
-                              </div>
-                            </div>
-                          )}
-
-                        {/* Compact Embedded Banner / Script (shown in script AND hybrid modes) */}
-                        {(monetization.mode === 'script' || monetization.mode === 'hybrid') &&
-                          monetization.scriptCode && (
-                            <div className="bg-zinc-900/40 border border-zinc-800/80 rounded-xl p-2.5 overflow-hidden">
-                              <span className="text-[9px] text-zinc-500 block mb-1">مساحة إعلانية مصغرة</span>
-                              <AdScriptRunner scriptCode={monetization.scriptCode} compact />
-                            </div>
-                          )}
-
-                        {/* Internal Community / Sponsor Cards (shown in simulation mode or if hybrid has no script) */}
-                        {monetization.mode === 'simulation' && activeAd && (
-                          <div className="space-y-2.5">
-                            <span className="bg-yellow-500/10 text-yellow-400 text-[10px] font-bold px-2.5 py-0.5 rounded border border-yellow-500/20 inline-block">
-                              {activeAd.sponsor}
-                            </span>
-                            <h4 className="text-white text-xs font-black">{activeAd.title}</h4>
-                            {activeAd.bannerUrl && (
-                              <img
-                                src={activeAd.bannerUrl}
-                                alt=""
-                                className="w-full max-h-[110px] object-cover rounded-xl mt-1 opacity-90 border border-white/10"
-                                referrerPolicy="no-referrer"
-                              />
-                            )}
-                            {activeAd.targetUrl && (
-                              <div className="pt-1">
-                                <a
-                                  href={activeAd.targetUrl}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  onClick={() => setHasClickedSponsorLink(true)}
-                                  className="bg-yellow-500 hover:bg-yellow-400 text-black font-black py-1.5 px-4 rounded-xl text-[11px] transition inline-flex items-center gap-1.5 cursor-pointer"
-                                >
-                                  <ExternalLink size={12} />
-                                  <span>{activeAd.buttonText || 'زيارة الرابط الآن'}</span>
-                                </a>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="w-full bg-zinc-900 h-2 rounded-full overflow-hidden">
-                        <div
-                          className="h-full rounded-full bg-gradient-to-l from-yellow-400 to-amber-500 transition-all duration-1000"
-                          style={{ width: `${(countdown / monetization.stayTime) * 100}%` }}
-                        />
-                      </div>
-                    </motion.div>
-                  )}
-
-                  {rewardGranted && (
-                    <motion.div
-                      key="portal_reward_grant"
-                      initial={{ opacity: 0, scale: 0.95 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      exit={{ opacity: 0, scale: 0.95 }}
-                      className="flex flex-col items-center gap-3 relative z-10"
-                    >
-                      <div className="w-14 h-14 rounded-2xl bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 flex items-center justify-center">
-                        <CheckCircle2 size={28} />
-                      </div>
-                      <div className="space-y-1">
-                        <h4 className="text-emerald-400 text-sm font-black">شكراً لدعمك! تمت إضافة المكافأة</h4>
-                        <p className="text-xs text-zinc-300">
-                          حصلت على <strong className="text-yellow-400">+{rewardGranted.coins} كوينز</strong> و{' '}
-                          <strong className="text-sky-400">+{rewardGranted.xp} XP</strong>
-                        </p>
-                        {rewardGranted.bonusCoins && rewardGranted.bonusCoins > 0 ? (
-                          <div className="mt-1.5 inline-flex items-center gap-1.5 bg-amber-500/15 border border-amber-500/30 text-amber-300 px-3 py-1 rounded-full text-[11px] font-black">
-                            <Sparkles size={12} />
-                            <span>شمل مكافأة إكمال السلسلة (+{rewardGranted.bonusCoins} كوينز إضافية)!</span>
-                          </div>
-                        ) : null}
-                      </div>
-                      {isSyncing && (
-                        <span className="text-[10px] text-zinc-400">جاري تحديث الرصيد...</span>
-                      )}
-                      <button
-                        onClick={() => setRewardGranted(null)}
-                        className="mt-1 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-white text-xs font-bold px-5 py-2 rounded-xl transition cursor-pointer"
-                      >
-                        مشاهدة إعلان آخر
-                      </button>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
+                {promoFeedback && (
+                  <div
+                    className={`p-3 rounded-xl text-xs font-bold flex items-center gap-2 border ${
+                      promoFeedback.type === 'success'
+                        ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-400'
+                        : 'bg-rose-500/10 border-rose-500/25 text-rose-400'
+                    }`}
+                  >
+                    {promoFeedback.type === 'success' ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}
+                    <span>{promoFeedback.message}</span>
+                  </div>
+                )}
               </div>
             </div>
           </motion.div>
         )}
 
         {/* ============================================================
-            TAB 3: OFFICIAL CHANNELS & INTERACTIVE FAQ (التواصل والأسئلة)
+            TAB 3: OFFICIAL CHANNELS & INTERACTIVE FAQ
            ============================================================ */}
         {activeTab === 'channels' && (
           <motion.div
@@ -1309,79 +1075,74 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
             {/* Official Telegram Channels Grid */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
               {/* Tech Support */}
-              <div className="bg-[#111115] border border-white/5 hover:border-sky-500/30 p-4 rounded-2xl flex flex-col justify-between gap-4 transition">
+              <div className="bg-[#111115] border border-white/5 hover:border-sky-500/30 p-4 sm:p-5 rounded-2xl flex flex-col justify-between gap-4 transition">
                 <div className="space-y-2">
                   <div className="w-10 h-10 rounded-xl bg-sky-500/10 border border-sky-500/20 text-sky-400 flex items-center justify-center">
                     <MessageCircle size={20} />
                   </div>
-                  <h3 className="text-white text-xs font-black">الدعم الفني المباشر</h3>
-                  <p className="text-[11px] text-zinc-400 leading-relaxed">
+                  <h3 className="text-white text-sm font-black">الدعم الفني المباشر</h3>
+                  <p className="text-xs text-zinc-400 leading-relaxed">
                     تواصل مع فريق الدعم على تليجرام لحل مشاكل الحسابات والمساعدة الفورية.
                   </p>
                 </div>
-                <a
-                  href={helpTelegramUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="w-full bg-sky-600 hover:bg-sky-500 text-white font-black text-xs py-2.5 rounded-xl transition flex items-center justify-center gap-1.5"
+                <button
+                  type="button"
+                  onClick={() => openExternalUrl(helpTelegramUrl)}
+                  className="w-full min-h-[44px] bg-sky-600 hover:bg-sky-500 text-white font-black text-xs rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer"
                 >
-                  <ExternalLink size={12} />
+                  <ExternalLink size={13} />
                   <span>مراسلة الدعم الفني</span>
-                </a>
+                </button>
               </div>
 
               {/* Community Group */}
-              <div className="bg-[#111115] border border-white/5 hover:border-emerald-500/30 p-4 rounded-2xl flex flex-col justify-between gap-4 transition">
+              <div className="bg-[#111115] border border-white/5 hover:border-emerald-500/30 p-4 sm:p-5 rounded-2xl flex flex-col justify-between gap-4 transition">
                 <div className="space-y-2">
                   <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center">
                     <Users size={20} />
                   </div>
-                  <h3 className="text-white text-xs font-black">مجتمع الأوتاكو وجوائز الأكواد</h3>
-                  <p className="text-[11px] text-zinc-400 leading-relaxed">
+                  <h3 className="text-white text-sm font-black">مجتمع الأوتاكو والأكواد</h3>
+                  <p className="text-xs text-zinc-400 leading-relaxed">
                     انضم لمجموعتنا الرسمية للنقاشات اليومية والحصول على أكواد الكوينز المجانية.
                   </p>
                 </div>
-                <a
-                  href={groupTelegramUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs py-2.5 rounded-xl transition flex items-center justify-center gap-1.5"
+                <button
+                  type="button"
+                  onClick={() => openExternalUrl(groupTelegramUrl)}
+                  className="w-full min-h-[44px] bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer"
                 >
-                  <ExternalLink size={12} />
+                  <ExternalLink size={13} />
                   <span>الانضمام للمجموعة</span>
-                </a>
+                </button>
               </div>
 
               {/* Owner / Financial Support */}
-              <div className="bg-[#111115] border border-yellow-500/20 hover:border-yellow-500/40 p-4 rounded-2xl flex flex-col justify-between gap-4 transition">
+              <div className="bg-[#111115] border border-yellow-500/20 hover:border-yellow-500/40 p-4 sm:p-5 rounded-2xl flex flex-col justify-between gap-4 transition">
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
                     <div className="w-10 h-10 rounded-xl bg-yellow-500/10 border border-yellow-500/20 text-yellow-400 flex items-center justify-center">
                       <HeartHandshake size={20} />
                     </div>
-                    <span className="text-[9px] font-black bg-yellow-500/15 text-yellow-400 border border-yellow-500/25 px-2 py-0.5 rounded-full">
-                      إدارة المنصة
-                    </span>
+                    <span className="text-[11px] font-black text-yellow-400">إدارة المنصة</span>
                   </div>
-                  <h3 className="text-yellow-400 text-xs font-black">الدعم المادي والرعاية</h3>
-                  <p className="text-[11px] text-zinc-400 leading-relaxed">
+                  <h3 className="text-yellow-400 text-sm font-black">الدعم المادي والرعاية</h3>
+                  <p className="text-xs text-zinc-400 leading-relaxed">
                     تواصل مباشر مع مالك المنصة للمساهمة في دعم خوادم البث أو الرعاية الإعلانية.
                   </p>
                 </div>
-                <a
-                  href={donateTelegramUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="w-full bg-yellow-500 hover:bg-yellow-400 text-black font-black text-xs py-2.5 rounded-xl transition flex items-center justify-center gap-1.5"
+                <button
+                  type="button"
+                  onClick={() => openExternalUrl(donateTelegramUrl)}
+                  className="w-full min-h-[44px] bg-yellow-500 hover:bg-yellow-400 text-black font-black text-xs rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer"
                 >
-                  <CreditCard size={12} />
+                  <CreditCard size={13} />
                   <span>التواصل مع المالك</span>
-                </a>
+                </button>
               </div>
             </div>
 
             {/* Interactive Accordion FAQ */}
-            <div className="bg-[#111115] border border-white/5 rounded-2xl p-5 space-y-3">
+            <div className="bg-[#111115] border border-white/5 rounded-2xl p-4 sm:p-5 space-y-3">
               <div className="flex items-center gap-2 border-b border-white/5 pb-3">
                 <HelpCircle size={16} className="text-[#FF1744]" />
                 <h3 className="text-sm font-black text-white">الأسئلة الشائعة</h3>
@@ -1398,11 +1159,11 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
                       <button
                         type="button"
                         onClick={() => setOpenFaqIndex(isOpen ? null : idx)}
-                        className="w-full p-3.5 flex items-center justify-between gap-3 text-right hover:bg-zinc-900/50 transition cursor-pointer"
+                        className="w-full min-h-[48px] p-3.5 flex items-center justify-between gap-3 text-right hover:bg-zinc-900/50 transition cursor-pointer"
                       >
-                        <span className="text-xs font-bold text-white">{item.q}</span>
+                        <span className="text-xs font-bold text-white leading-relaxed">{item.q}</span>
                         <ChevronDown
-                          size={15}
+                          size={16}
                           className={`text-zinc-400 shrink-0 transition-transform duration-200 ${
                             isOpen ? 'rotate-180 text-[#FF1744]' : ''
                           }`}
@@ -1417,7 +1178,7 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
                             transition={{ duration: 0.2 }}
                             className="overflow-hidden"
                           >
-                            <p className="px-3.5 pb-3.5 pt-1 text-xs text-zinc-400 leading-relaxed border-t border-zinc-900">
+                            <p className="px-3.5 pb-3.5 pt-2 text-xs text-zinc-300 leading-relaxed border-t border-zinc-900">
                               {item.a}
                             </p>
                           </motion.div>
@@ -1431,6 +1192,17 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Dedicated Full-Viewport Opt-In 30s Rewarded Video Ad Player Modal */}
+      <RewardedVideoAdModal
+        isOpen={isVideoAdOpen}
+        onClose={() => setIsVideoAdOpen(false)}
+        onRewardEarned={handleAdRewardEarned}
+        monetization={monetization}
+        watchedToday={watchedToday}
+        streakStep={STREAK_STEP}
+        streakBonusCoins={STREAK_BONUS_COINS}
+      />
     </div>
   );
 }

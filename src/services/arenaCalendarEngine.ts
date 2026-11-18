@@ -632,9 +632,10 @@ export function setRewardClaimedLock(lockId: string): void {
 /**
  * 3. محرك عدم التكرار الشخصي (Seen-History Ring Buffer)
  */
-export function getNonRepeatingQuestions(count = 6): ArenaQuestionItem[] {
+export function getNonRepeatingQuestions(count = 6, userId = 'guest'): ArenaQuestionItem[] {
   try {
-    const raw = localStorage.getItem('arena_seen_q_buffer');
+    const storageKey = `arena_seen_q_buffer_${userId || 'guest'}`;
+    const raw = localStorage.getItem(storageKey);
     let seenIds: string[] = raw ? JSON.parse(raw) : [];
     let unseen = ARENA_QUESTION_POOL.filter((q) => !seenIds.includes(q.id));
     if (unseen.length < count) {
@@ -643,7 +644,7 @@ export function getNonRepeatingQuestions(count = 6): ArenaQuestionItem[] {
     }
     const picked = [...unseen].sort(() => Math.random() - 0.5).slice(0, count);
     const nextSeen = [...seenIds, ...picked.map((p) => p.id)].slice(-14);
-    localStorage.setItem('arena_seen_q_buffer', JSON.stringify(nextSeen));
+    localStorage.setItem(storageKey, JSON.stringify(nextSeen));
     return picked;
   } catch {
     return [...ARENA_QUESTION_POOL].sort(() => Math.random() - 0.5).slice(0, count);

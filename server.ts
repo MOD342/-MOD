@@ -1,20 +1,33 @@
+import 'dotenv/config';
 import express from 'express';
+import http from 'http';
 import path from 'path';
 import fs from 'fs';
-import { createServer as createViteServer } from 'vite';
 import { createApiExpressApp } from './src/serverApp';
 import { schedulerService } from './src/services/schedulerService';
 
 async function startServer() {
   const app = createApiExpressApp();
 
-  // Extract port from CLI args (--port 3000) or PORT env var
+  // Extract port from CLI args (--port 3000) or safe env var (never collide with NGINX_PORT)
   const portArgIndex = process.argv.indexOf('--port');
   const portFromArg =
     portArgIndex !== -1 && process.argv[portArgIndex + 1]
       ? parseInt(process.argv[portArgIndex + 1], 10)
       : null;
-  const PORT = portFromArg || (process.env.PORT ? parseInt(process.env.PORT, 10) : 3000);
+
+  const envPort = process.env.PORT ? parseInt(process.env.PORT, 10) : null;
+  const nginxPort = process.env.NGINX_PORT ? parseInt(process.env.NGINX_PORT, 10) : null;
+  const defaultAppPort = process.env.DEFAULT_APP_PORT
+    ? parseInt(process.env.DEFAULT_APP_PORT, 10)
+    : 3000;
+
+  const safeEnvPort = envPort && (!nginxPort || envPort !== nginxPort) ? envPort : null;
+  const PORT = portFromArg || safeEnvPort || defaultAppPort;
+
+  const httpServer = http.createServer(app);
+  httpServer.keepAliveTimeout = 65_000;
+  httpServer.headersTimeout = 66_000;
 
   // Initialize background cron scheduler only on persistent server runtime
   if (!process.env.VERCEL) {
@@ -30,8 +43,13 @@ async function startServer() {
   const hasDist = fs.existsSync(path.join(distPath, 'index.html'));
 
   if (process.env.NODE_ENV !== 'production' || !hasDist) {
+    const { createServer: createViteServer } = await import('vite');
+    const disableHmr = process.env.DISABLE_HMR === 'true';
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: disableHmr ? false : { server: httpServer },
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -43,7 +61,14 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  httpServer.on('error', (err: NodeJS.ErrnoException) => {
+    console.error(`[Server] Listen error on port ${PORT}:`, err.message);
+    if (err.code === 'EADDRINUSE') {
+      process.exit(1);
+    }
+  });
+
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`\n  VITE v6.2.3  ready in 150 ms\n`);
     console.log(`  ➜  Local:   http://localhost:${PORT}/`);
     console.log(`  ➜  Network: http://0.0.0.0:${PORT}/\n`);
