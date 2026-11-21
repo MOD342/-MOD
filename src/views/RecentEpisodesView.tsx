@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { ChevronRight, ChevronLeft, RefreshCw, Play, Star, Calendar, Tv, AlertCircle } from 'lucide-react';
 import { clientCache } from '../utils/clientCache';
+import { recentEpisodesLocal } from '../services/cloudCatalogService';
 import { cleanAnimeTitle } from '../utils/animeTitleCleaner';
 import PullToRefresh from '../components/PullToRefresh';
 import {
@@ -14,9 +15,10 @@ import {
 
 export default function RecentEpisodesView({ onBack, onAnimeClick }: { onBack: () => void, onAnimeClick: (id: string, epNum?: string) => void }) {
   const [page, setPage] = useState<number>(1);
-  const [hasNext, setHasNext] = useState<boolean>(true);
-  const [episodes, setEpisodes] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [hasNext, setHasNext] = useState<boolean>(() => recentEpisodesLocal.getCached(1)?.hasNext ?? true);
+  const [episodes, setEpisodes] = useState<any[]>(() => recentEpisodesLocal.getCached(1)?.items || []);
+  const [lastFetchedAt, setLastFetchedAt] = useState<number>(() => recentEpisodesLocal.getCached(1)?.fetchedAt || 0);
+  const [loading, setLoading] = useState(() => !recentEpisodesLocal.getCached(1));
   const [refreshing, setRefreshing] = useState(false);
   const [fetchError, setFetchError] = useState(false);
   const [layoutMode, cycleLayoutMode] = useGlobalLayoutMode();
@@ -24,6 +26,20 @@ export default function RecentEpisodesView({ onBack, onAnimeClick }: { onBack: (
   const loadEpisodes = async (targetPage = 1, forceBypass = false) => {
     const safePage = Math.max(1, targetPage);
     setFetchError(false);
+
+    // On normal mount/page-switch without explicit manual refresh, serve strictly from device cache first
+    if (!forceBypass) {
+      const deviceCached = recentEpisodesLocal.getCached(safePage);
+      if (deviceCached && deviceCached.items.length > 0) {
+        setEpisodes(deviceCached.items);
+        setHasNext(deviceCached.hasNext);
+        setLastFetchedAt(deviceCached.fetchedAt);
+        setLoading(false);
+        setRefreshing(false);
+        return;
+      }
+    }
+
     if (forceBypass) {
       setRefreshing(true);
     } else {
@@ -31,79 +47,19 @@ export default function RecentEpisodesView({ onBack, onAnimeClick }: { onBack: (
     }
 
     try {
-      const ts = Date.now();
-      const fetchOpts: RequestInit = {
-        cache: 'no-store',
-        headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' }
-      };
-
-      const queryParams = new URLSearchParams({ page: String(safePage) });
-      if (forceBypass) {
-        queryParams.set('bypass', 'true');
-        queryParams.set('_t', String(ts));
+      const liveState = await recentEpisodesLocal.refreshFromLive(safePage, forceBypass);
+      if (liveState && liveState.items.length > 0) {
+        setEpisodes(liveState.items);
+        setHasNext(liveState.hasNext);
+        setLastFetchedAt(liveState.fetchedAt);
+        return;
       }
 
-      const r = await fetch(`/api/anime/recent?${queryParams.toString()}`, fetchOpts);
-      if (r.ok) {
-        const json = await r.json();
-        if (json.success && Array.isArray(json.data) && json.data.length > 0) {
-          const formatted = json.data.map((ep: any, idx: number) => {
-            const rawTitle = ep.title || '';
-            const cleanedTitle = rawTitle.includes(' S') ? rawTitle : cleanAnimeTitle(rawTitle);
-            const extractedEp = ep.episodeNumber || ep.episode || (rawTitle.match(/الحلقة\s*(\d+)/)?.[1]) || '1';
-            const posterImg = ep.posterUrl || ep.imageUrl || ep.thumbnailUrl;
-            return {
-              _id: ep.id || `scraped-p${safePage}-${ts}-${idx}`,
-              episodeNumber: extractedEp,
-              title: cleanedTitle,
-              type: ep.type || ep.animeId?.type || 'TV',
-              status: ep.status || ep.animeId?.status || 'يعرض حالياً',
-              rating: ep.rating || ep.score || ep.animeId?.rating || ep.animeId?.score || null,
-              season: ep.season || ep.animeId?.season || null,
-              year: ep.year || ep.releaseYear || ep.animeId?.releaseYear || null,
-              animeId: {
-                _id: typeof ep.animeId === 'string' ? ep.animeId : (ep.animeId?._id || `search-${cleanedTitle}`),
-                title: cleanedTitle,
-                titleAr: cleanedTitle,
-                posterUrl: posterImg,
-                thumbnailUrl: posterImg,
-              }
-            };
-          });
-          setEpisodes(formatted);
-          setHasNext(typeof json.hasNext === 'boolean' ? json.hasNext : formatted.length >= 10);
-          setRefreshing(false);
-          setLoading(false);
-          return;
-        }
-      }
-
-      if (safePage === 1) {
-        const rDash = await fetch(`/api/dashboard?bypass=true&_t=${ts}`, fetchOpts);
-        if (rDash.ok) {
-          const jsonDash = await rDash.json();
-          if (jsonDash.success && Array.isArray(jsonDash.data?.recentEpisodes) && jsonDash.data.recentEpisodes.length > 0) {
-            const cleanedDash = jsonDash.data.recentEpisodes.map((ep: any) => ({
-              ...ep,
-              animeId: {
-                ...ep.animeId,
-                title: cleanAnimeTitle(ep.animeId?.title || ep.title),
-                titleAr: cleanAnimeTitle(ep.animeId?.titleAr || ep.title),
-              }
-            }));
-            setEpisodes(cleanedDash);
-            setHasNext(true);
-            setRefreshing(false);
-            setLoading(false);
-            return;
-          }
-        }
-      }
       if (episodes.length === 0) {
         setFetchError(true);
       }
     } catch (e) {
-      console.warn("Failed to load recent episodes:", e);
+      console.warn('Failed to load recent episodes:', e);
       if (episodes.length === 0) {
         setFetchError(true);
       }
@@ -114,7 +70,7 @@ export default function RecentEpisodesView({ onBack, onAnimeClick }: { onBack: (
   };
 
   useEffect(() => {
-    loadEpisodes(page, false);
+    void loadEpisodes(page, false);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, [page]);
 
@@ -136,21 +92,38 @@ export default function RecentEpisodesView({ onBack, onAnimeClick }: { onBack: (
     <PullToRefresh onRefresh={() => loadEpisodes(page, true)}>
     <div className="min-h-screen bg-black text-white pb-24" dir="rtl">
       {/* شريط العنوان العلوي - مدمج وغير ثابت */}
-      <div className="bg-black border-b border-white/5 px-4 py-3 flex items-center justify-between max-w-7xl mx-auto">
-        <div className="flex items-center gap-2.5">
+      <div className="bg-black border-b border-white/5 px-4 py-3 flex items-center justify-between gap-2 max-w-7xl mx-auto">
+        <div className="flex items-center gap-2.5 min-w-0">
           <button 
             onClick={onBack} 
-            className="p-2 bg-neutral-900 rounded-xl hover:bg-neutral-800 transition text-neutral-300 hover:text-white cursor-pointer"
+            className="min-w-[44px] min-h-[44px] flex items-center justify-center bg-neutral-900 rounded-xl hover:bg-neutral-800 transition text-neutral-300 hover:text-white cursor-pointer shrink-0"
             aria-label="الرجوع"
           >
             <ChevronRight size={18} />
           </button>
-          <h1 className="font-black text-base md:text-lg text-white">
-            أحدث الحلقات
-          </h1>
+          <div className="min-w-0">
+            <h1 className="font-black text-base md:text-lg text-white truncate">
+              أحدث الحلقات
+            </h1>
+            {lastFetchedAt > 0 && (
+              <p className="text-[11px] font-bold text-neutral-400 truncate">
+                آخر تحديث: {recentEpisodesLocal.formatRelativeTimeAr(lastFetchedAt)}
+              </p>
+            )}
+          </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => void loadEpisodes(page, true)}
+            disabled={refreshing || loading}
+            aria-label="تحديث الحلقات"
+            className="min-h-[44px] px-3.5 py-2 rounded-xl bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-xs font-black text-white flex items-center gap-1.5 transition active:scale-95 disabled:opacity-50 cursor-pointer"
+          >
+            <RefreshCw size={14} className={refreshing ? 'animate-spin text-red-400' : 'text-red-400'} />
+            <span>{refreshing ? 'جاري التحديث' : 'تحديث'}</span>
+          </button>
           <LayoutModeToggleButton mode={layoutMode} onToggle={cycleLayoutMode} />
         </div>
       </div>

@@ -371,3 +371,65 @@ export const awardAiGamePoints = async (userId: string, score: number) => {
     console.error("Error awarding ai points", error);
   }
 }
+
+export const recordChapterRead = async (
+  userId: string,
+  manga?: {
+    _id: string;
+    title: string;
+    posterUrl: string;
+    mediaFormat?: string;
+    countryOfOrigin?: string;
+    releaseYear?: string | number;
+    chaptersCount?: number | null;
+  },
+  chapterNum?: number,
+  lastReadPage = 1,
+) => {
+  if (!manga || chapterNum === undefined || isNaN(chapterNum)) return;
+
+  try {
+    const { mangaListService } = await import('./mangaListService');
+    const entries = await mangaListService.getMangaEntries(userId);
+    const existing = entries.find((e) => e.id === manga._id);
+    const readList = Array.isArray(existing?.readChapters) ? [...existing.readChapters] : [];
+    const isNewChapter = !readList.some((c) => Number(c) === Number(chapterNum));
+
+    if (isNewChapter) {
+      readList.push(Number(chapterNum));
+    }
+
+    const sortedRead = Array.from(
+      new Set(readList.map((n) => Number(n)).filter((n) => !isNaN(n) && n >= 0)),
+    ).sort((a, b) => a - b);
+
+    const nextStatus =
+      !existing?.status || existing.status === 'none' || existing.status === 'plan_to_watch'
+        ? 'watching'
+        : existing.status;
+
+    await mangaListService.saveMangaEntry(userId, manga._id, {
+      title: manga.title,
+      posterUrl: manga.posterUrl || existing?.posterUrl || '',
+      mediaFormat: manga.mediaFormat || existing?.mediaFormat || 'manga',
+      countryOfOrigin: manga.countryOfOrigin || existing?.countryOfOrigin || 'JP',
+      releaseYear: manga.releaseYear ? String(manga.releaseYear) : existing?.releaseYear || '',
+      chaptersCount: manga.chaptersCount || existing?.chaptersCount || undefined,
+      status: nextStatus,
+      readChapters: sortedRead,
+      lastReadChapter: Number(chapterNum),
+      lastReadPage: Math.max(1, Number(lastReadPage) || 1),
+      progress: sortedRead.length,
+    });
+
+    if (isNewChapter && isAuthenticatedOwner(userId)) {
+      const userRef = doc(db, 'users', userId);
+      await updateDoc(userRef, {
+        totalChaptersRead: increment(1),
+      }).catch(() => {});
+      await awardXP(userId, 8, 2);
+    }
+  } catch (error) {
+    console.warn('recordChapterRead error:', error);
+  }
+};

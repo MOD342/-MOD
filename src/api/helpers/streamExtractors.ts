@@ -313,26 +313,163 @@ export async function extractVideaDirectSources(
 // دالة متطورة لتتبع السيرفرات واستخراج الروابط المباشرة (M3U8 / MP4) مع نظام حماية فوري للخادم
 export async function extractDirectStream(
   targetUrl: string,
+  depth = 0,
 ): Promise<{
   directUrl: string;
   type: "direct" | "hls" | "iframe";
   sources?: { file: string; label: string; type: string }[];
 }> {
   try {
+    const buildProxyUrl = (mediaUrl: string, refererUrl: string) =>
+      `/api/anime/stream-proxy?url=${encodeURIComponent(mediaUrl)}&referer=${encodeURIComponent(refererUrl)}`;
+
+    // MegaMax / Share4Max multi-resolution direct mirror extraction (تخطي الإعلانات المنبثقة وتشغيل الجودة المتعددة مباشرة)
+    if (
+      depth === 0 &&
+      (targetUrl.toLowerCase().includes("megamax.") || targetUrl.toLowerCase().includes("share4max."))
+    ) {
+      try {
+        const u = new URL(targetUrl);
+        const idMatch = u.pathname.match(/\/(?:iframe|e|d)\/([A-Za-z0-9_-]+)/i);
+        if (idMatch) {
+          const hashId = idMatch[1];
+          const origin = `${u.protocol}//${u.host}`;
+          const iframeUrl = `${origin}/iframe/${hashId}`;
+          const cleanNtUrl = `${iframeUrl}?nt=1`;
+
+          const pageResp = await fetchWithTimeout(
+            iframeUrl,
+            { headers: { "User-Agent": STREAM_UA, Referer: `${origin}/` } },
+            4500,
+          );
+          if (pageResp.ok) {
+            const pageHtml = await pageResp.text();
+            const versionMatch = pageHtml.match(/"version"\s*:\s*"([a-f0-9]+)"/i);
+            const inertiaVersion = versionMatch?.[1] || "";
+
+            const partialResp = await fetchWithTimeout(
+              iframeUrl,
+              {
+                headers: {
+                  "User-Agent": STREAM_UA,
+                  "X-Inertia": "true",
+                  ...(inertiaVersion ? { "X-Inertia-Version": inertiaVersion } : {}),
+                  "X-Inertia-Partial-Component": "files/mirror/video",
+                  "X-Inertia-Partial-Data": "streams",
+                  "X-Requested-With": "XMLHttpRequest",
+                  Referer: iframeUrl,
+                },
+              },
+              5000,
+            );
+
+            if (partialResp.ok) {
+              const json: any = await partialResp.json();
+              const streamGroups: any[] = Array.isArray(json?.props?.streams?.data)
+                ? json.props.streams.data
+                : [];
+
+              const preferredDrivers = [
+                "mixdrop",
+                "videa",
+                "sendvid",
+                "mp4upload",
+                "lulustream",
+                "earnvids",
+                "streamwish",
+                "uqload",
+                "filemoon",
+                "dood",
+              ];
+
+              const extractedSources: { file: string; label: string; type: string; rank: number }[] = [];
+
+              // Resolve up to 3 resolution tiers in parallel (e.g. 1080p, 720p, 480p)
+              await Promise.all(
+                streamGroups.slice(0, 4).map(async (grp) => {
+                  const rawLabel = String(grp?.label || "HD");
+                  const resMatch = rawLabel.match(/(1080p|720p|480p|360p)/i);
+                  const cleanLabel = resMatch ? resMatch[1].toLowerCase() : rawLabel.replace(/\s*\(source\)/i, "").trim() || "HD";
+                  const resNum = parseInt(cleanLabel.replace(/\D+/g, "") || "720", 10);
+
+                  const mirrors: any[] = Array.isArray(grp?.mirrors) ? grp.mirrors : [];
+                  const sortedMirrors = [...mirrors].sort((a, b) => {
+                    const da = String(a?.driver || "").toLowerCase();
+                    const db = String(b?.driver || "").toLowerCase();
+                    const ia = preferredDrivers.findIndex((p) => da.includes(p));
+                    const ib = preferredDrivers.findIndex((p) => db.includes(p));
+                    return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+                  });
+
+                  for (const m of sortedMirrors.slice(0, 3)) {
+                    let link = String(m?.link || "").trim();
+                    if (!link) continue;
+                    if (link.startsWith("//")) link = `https:${link}`;
+                    if (!link.startsWith("http")) continue;
+                    const dLower = String(m?.driver || link).toLowerCase();
+                    if (!preferredDrivers.some((p) => dLower.includes(p) || link.toLowerCase().includes(p))) {
+                      continue;
+                    }
+                    const sub = await extractDirectStream(link, 1).catch(() => null);
+                    if (sub && (sub.type === "direct" || sub.type === "hls") && sub.directUrl) {
+                      extractedSources.push({
+                        file: sub.directUrl,
+                        label: cleanLabel,
+                        type: sub.type === "hls" ? "hls" : "mp4",
+                        rank: resNum + (sub.type === "direct" ? 5 : 0),
+                      });
+                      break;
+                    }
+                  }
+                }),
+              );
+
+              if (extractedSources.length > 0) {
+                extractedSources.sort((a, b) => b.rank - a.rank);
+                const cleanSources = extractedSources.map(({ file, label, type }) => ({ file, label, type }));
+                const primary = cleanSources[0];
+                return {
+                  directUrl: primary.file,
+                  type: primary.type === "hls" ? "hls" : "direct",
+                  sources: cleanSources,
+                };
+              }
+            }
+          }
+
+          return {
+            directUrl: cleanNtUrl,
+            type: "iframe",
+            sources: [{ file: cleanNtUrl, label: "multi", type: "iframe" }],
+          };
+        }
+      } catch (_) {}
+    }
+
     const headers: Record<string, string> = {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "User-Agent": STREAM_UA,
       Accept:
         "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
       "Accept-Language": "ar,en-US;q=0.9,en;q=0.8",
     };
 
-    // ضبط الـ Referer والـ Origin ديناميكياً لتجاوز حماية الروابط الساخنة والـ Hotlinking
+    // ضبط الـ Referer ديناميكياً لتجاوز حماية الروابط الساخنة بدون إرسال Origin غير قياسي في طلبات GET
     const setDynamicHeaders = (urlStr: string) => {
       try {
         const parsed = new URL(urlStr);
-        headers["Referer"] = `${parsed.protocol}//${parsed.hostname}/`;
-        headers["Origin"] = `${parsed.protocol}//${parsed.hostname}`;
+        const hostLower = parsed.hostname.toLowerCase();
+        delete headers["Origin"];
+        if (
+          hostLower.includes("lulustream") ||
+          hostLower.includes("morencius") ||
+          hostLower.includes("earnvids") ||
+          hostLower.includes("vidhide") ||
+          hostLower.includes("filelions")
+        ) {
+          headers["Referer"] = "https://megamax.me/";
+        } else {
+          headers["Referer"] = `${parsed.protocol}//${parsed.hostname}/`;
+        }
       } catch (_) {}
     };
 
@@ -884,23 +1021,81 @@ export async function extractDirectStream(
       }
     }
 
-    // Mixdrop Direct Extraction
+    // LuluStream / EarnVids / Morencius Direct HLS Extraction via Referer Proxy
+    if (
+      currentUrl.includes("lulustream") ||
+      currentUrl.includes("morencius") ||
+      currentUrl.includes("earnvids") ||
+      currentUrl.includes("vidhide") ||
+      currentUrl.includes("filelions")
+    ) {
+      const refOrigin = (() => {
+        try {
+          const u = new URL(currentUrl);
+          return `${u.protocol}//${u.host}/`;
+        } catch {
+          return "https://lulustream.com/";
+        }
+      })();
+      const hlsMatch =
+        combinedCodeToScan.match(/["']hls[234]?["']\s*:\s*["']((?:https?:)?\/\/[^"']+\.m3u8[^"']*)["']/i) ||
+        combinedCodeToScan.match(/file\s*:\s*["']((?:https?:)?\/\/[^"']+\.m3u8[^"']*)["']/i) ||
+        combinedCodeToScan.match(/((?:https?:)?\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*)/i);
+      if (hlsMatch && hlsMatch[1]) {
+        let hlsUrl = hlsMatch[1];
+        if (hlsUrl.startsWith("//")) hlsUrl = `https:${hlsUrl}`;
+        const proxiedHls = buildProxyUrl(hlsUrl, refOrigin);
+        return {
+          directUrl: proxiedHls,
+          type: "hls",
+          sources: [
+            {
+              file: proxiedHls,
+              label: "FHD",
+              type: "hls",
+            },
+          ],
+        };
+      }
+    }
+
+    // Mixdrop Direct Extraction via Referer Stream Proxy
     if (currentUrl.includes("mixdrop")) {
+      const refOrigin = (() => {
+        try {
+          const u = new URL(currentUrl);
+          return `${u.protocol}//${u.host}/`;
+        } catch {
+          return "https://mixdrop.ag/";
+        }
+      })();
       const mixMatch =
         combinedCodeToScan.match(
-          /(?:wurl|remp|delivery)\s*=\s*["']([^"']+)["']/i,
+          /(?:MDCore\.wurl|wurl|remp|delivery)\s*=\s*["']([^"']+)["']/i,
         ) ||
         combinedCodeToScan.match(
-          /[^A-Za-z0-9](?:https?:)?\/\/[^\s'"]+?mixdrop[^\s'"]+?\.mp4[^\s'"]*/i,
+          /((?:https?:)?\/\/[^\s"'<>]*mxcontent\.net[^\s"'<>]*\.mp4[^\s"'<>]*)/i,
+        ) ||
+        combinedCodeToScan.match(
+          /((?:https?:)?\/\/[^\s"'<>]+?mixdrop[^\s"'<>]+?\.mp4[^\s"'<>]*)/i,
         );
-      if (mixMatch) {
-        let fileUrl = mixMatch[1] || mixMatch[0];
+      if (mixMatch && mixMatch[1]) {
+        let fileUrl = mixMatch[1].trim();
         if (fileUrl.startsWith("//")) fileUrl = "https:" + fileUrl;
-        sources.push({
-          file: fileUrl,
-          label: "HD",
-          type: "mp4",
-        });
+        if (fileUrl.startsWith("http")) {
+          const proxiedMp4 = buildProxyUrl(fileUrl, refOrigin);
+          return {
+            directUrl: proxiedMp4,
+            type: "direct",
+            sources: [
+              {
+                file: proxiedMp4,
+                label: "HD",
+                type: "mp4",
+              },
+            ],
+          };
+        }
       }
     }
 

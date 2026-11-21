@@ -49,7 +49,7 @@ export function cleanAnimeTitle(rawTitle: string | null | undefined): string {
   // مثل: "ون بيس One Piece" => "One Piece"
   // "المحقق كونان Detective Conan" => "Detective Conan"
   // "Mushoku Tensei: Isekai Ittara Honki Dasu" => "Mushoku Tensei: Isekai Ittara Honki Dasu"
-  const englishMatch = text.match(/[A-Za-z0-9][A-Za-z0-9\s\:\'\-\,\.\!\?\&]*[A-Za-z0-9]/);
+  const englishMatch = text.match(/[A-Za-z\u00C0-\u024F0-9][A-Za-z\u00C0-\u024F0-9\s\:\'\-\,\.\!\?\&]*[A-Za-z\u00C0-\u024F0-9]/);
   if (englishMatch && englishMatch[0]) {
     const cleanEng = englishMatch[0].trim();
     // إذا كان المقطع الإنجليزي مكون من حرفين أو أكثر وله معنى

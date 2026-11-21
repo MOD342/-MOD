@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { ChevronRight, Loader2, Clock, Search, AlertCircle, Star, Tv, Calendar, Layers, RefreshCw } from 'lucide-react';
 import { cleanAnimeTitle } from '../utils/animeTitleCleaner';
+import { cloudCatalogService } from '../services/cloudCatalogService';
 import PullToRefresh from '../components/PullToRefresh';
 import {
   useGlobalLayoutMode,
@@ -116,14 +117,29 @@ export default function ScheduleView({ onBack, onAnimeClick, initialDay }: Sched
     if (forceBypass) setRefreshing(true);
     else setLoading(true);
     try {
-      const ts = forceBypass ? `&_t=${Date.now()}` : '';
-      const res = await fetch(`/api/anime/jikan-schedule?day=${selectedDay}${ts}`, {
-        cache: 'no-store'
+      const list = await cloudCatalogService.getBundleWithCloud<any[]>({
+        bundleId: `sched_${selectedDay}`,
+        kind: 'schedule',
+        freshTtlMs: 24 * 60 * 60 * 1000,
+        staleTtlMs: 7 * 24 * 60 * 60 * 1000,
+        forceRefresh: forceBypass,
+        countItems: (arr) => (Array.isArray(arr) ? arr.length : 0),
+        fetchLive: async () => {
+          const ts = forceBypass ? `&_t=${Date.now()}` : '';
+          const res = await fetch(`/api/anime/jikan-schedule?day=${selectedDay}${ts}`, {
+            cache: forceBypass ? 'no-store' : 'default',
+          });
+          const json = await res.json();
+          return json.success && Array.isArray(json.data) ? json.data : null;
+        },
+        onData: (arr) => {
+          if (Array.isArray(arr)) {
+            setSchedule(arr);
+            setLoading(false);
+          }
+        },
       });
-      const json = await res.json();
-      if (json.success && Array.isArray(json.data)) {
-        setSchedule(json.data);
-      } else if (schedule.length === 0) {
+      if (!list && schedule.length === 0) {
         setFetchError(true);
       }
     } catch (e) {
@@ -145,11 +161,22 @@ export default function ScheduleView({ onBack, onAnimeClick, initialDay }: Sched
       await Promise.all(
         DAYS.map(async (day) => {
           try {
-            const res = await fetch(`/api/anime/jikan-schedule?day=${day.id}${ts}`, {
-              cache: 'no-store'
+            const list = await cloudCatalogService.getBundleWithCloud<any[]>({
+              bundleId: `sched_${day.id}`,
+              kind: 'schedule',
+              freshTtlMs: 24 * 60 * 60 * 1000,
+              staleTtlMs: 7 * 24 * 60 * 60 * 1000,
+              forceRefresh: forceBypass,
+              countItems: (arr) => (Array.isArray(arr) ? arr.length : 0),
+              fetchLive: async () => {
+                const res = await fetch(`/api/anime/jikan-schedule?day=${day.id}${ts}`, {
+                  cache: forceBypass ? 'no-store' : 'default',
+                });
+                const json = await res.json();
+                return json.success && Array.isArray(json.data) ? json.data : null;
+              },
             });
-            const json = await res.json();
-            dataMap[day.id] = json.success && json.data ? json.data : [];
+            dataMap[day.id] = Array.isArray(list) ? list : [];
           } catch {
             dataMap[day.id] = [];
           }

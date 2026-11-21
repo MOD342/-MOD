@@ -15,8 +15,22 @@ import {
   getCuratedSeasonAnime,
   getCuratedAnimeById
 } from '../data/curatedAnimeDatabase';
+import { cleanAnimeTitle } from './animeTitleCleaner';
 
 const nativeFetch = typeof window !== 'undefined' ? window.fetch.bind(window) : fetch;
+
+async function safeResponseJson(res: Response | null | undefined): Promise<any | null> {
+  if (!res) return null;
+  try {
+    const text = await res.text();
+    if (!text) return null;
+    const trimmed = text.trim();
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return null;
+    return JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+}
 
 const GENRE_MAP_AR: Record<string, string> = {
   Action: 'أكشن',
@@ -67,7 +81,7 @@ async function translateTextToArabicClient(text: string): Promise<string> {
     const res = await nativeFetch(url, { signal: controller.signal });
     clearTimeout(timer);
     if (res.ok) {
-      const json = await res.json();
+      const json = await safeResponseJson(res);
       if (Array.isArray(json) && Array.isArray(json[0])) {
         const translated = json[0].map((part: any) => part[0]).join('').trim();
         if (translated && /[\u0600-\u06FF]/.test(translated)) {
@@ -95,7 +109,7 @@ async function queryAniListDirect(query: string, variables: Record<string, any> 
     });
     clearTimeout(timer);
     if (!res.ok) throw new Error(`AniList HTTP ${res.status}`);
-    const json = await res.json();
+    const json = await safeResponseJson(res);
     return json?.data || null;
   } catch (err) {
     clearTimeout(timer);
@@ -326,7 +340,7 @@ function extractPrimarySlugClient(href: string): string {
   }
 }
 
-async function fetchHtmlDirectInClient(targetUrl: string): Promise<string> {
+async function fetchTextDirectInClient(targetUrl: string, minLen = 50, extraHeaders?: Record<string, string>): Promise<string> {
   // 1. Native CapacitorHttp plugin (bypasses CORS natively in Android APK)
   try {
     const nativeHttp = Capacitor.isNativePlatform()
@@ -337,14 +351,16 @@ async function fetchHtmlDirectInClient(targetUrl: string): Promise<string> {
         url: targetUrl,
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'ar-EG,ar;q=0.9,en-US;q=0.8,en;q=0.7'
+          'Accept': 'application/json,text/html,application/xhtml+xml,*/*;q=0.8',
+          'Accept-Language': 'ar-EG,ar;q=0.9,en-US;q=0.8,en;q=0.7',
+          ...(extraHeaders || {}),
         },
         connectTimeout: 8000,
         readTimeout: 8000
       });
-      if (capRes && typeof capRes.data === 'string' && capRes.data.length > 3000) {
-        return capRes.data;
+      if (capRes && capRes.data !== undefined && capRes.data !== null) {
+        const asText = typeof capRes.data === 'string' ? capRes.data : JSON.stringify(capRes.data);
+        if (asText.length >= minLen) return asText;
       }
     }
   } catch {}
@@ -357,25 +373,29 @@ async function fetchHtmlDirectInClient(targetUrl: string): Promise<string> {
   ];
 
   try {
-    const html = await Promise.any(
+    const body = await Promise.any(
       proxyUrls.map(async (pUrl) => {
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 4500);
+        const timer = setTimeout(() => controller.abort(), 5000);
         try {
           const res = await nativeFetch(pUrl, { signal: controller.signal });
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const text = await res.text();
-          if (!text || text.length <= 3000) throw new Error('Empty HTML');
+          if (!text || text.length < minLen) throw new Error('Empty payload');
           return text;
         } finally {
           clearTimeout(timer);
         }
       })
     );
-    return html || '';
+    return body || '';
   } catch {
     return '';
   }
+}
+
+async function fetchHtmlDirectInClient(targetUrl: string): Promise<string> {
+  return fetchTextDirectInClient(targetUrl, 3000);
 }
 
 // جلب أحدث الحلقات الحية مباشرة من ww3.okanime.xyz (الأساسي #1) ثم animedar.net (المساعد #2)
@@ -695,7 +715,7 @@ async function fetchJikanRecentFallback(page = 1): Promise<any[]> {
     });
     clearTimeout(timer);
     if (res.ok) {
-      const json = await res.json();
+      const json = await safeResponseJson(res);
       const rows = Array.isArray(json?.data) ? json.data : [];
       if (rows.length > 0) {
         return rows.map((m: any) => {
@@ -1493,7 +1513,7 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
         try {
           const jikanRes = await nativeFetch(`https://api.jikan.moe/v4/anime/${numId}/pictures`);
           if (jikanRes.ok) {
-            const jikanJson = await jikanRes.json();
+            const jikanJson = await safeResponseJson(jikanRes);
             const pics = (jikanJson?.data || [])
               .map((p: any) => p.jpg?.large_image_url || p.jpg?.image_url || p.large_image_url)
               .filter(Boolean);
@@ -1757,8 +1777,11 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
           if (!embedUrl.startsWith('http')) return;
           const lower = embedUrl.toLowerCase();
           let serverName = rawServer || 'سيرفر';
-          if (lower.includes('share4max')) serverName = 'MegaMax';
+          if (/\bvk\b/i.test(rawServer) || lower.includes('vk.com') || lower.includes('vkvideo')) serverName = 'VK Video';
+          else if (lower.includes('share4max') || lower.includes('megamax')) serverName = 'MegaMax';
           else if (lower.includes('mega.nz')) serverName = 'Mega';
+          else if (lower.includes('dailymotion')) serverName = 'Dailymotion';
+          else if (lower.includes('videa')) serverName = 'Videa';
           else if (lower.includes('uqload')) serverName = 'Uqload';
           else if (lower.includes('sendvid')) serverName = 'Sendvid';
           else if (lower.includes('mp4upload')) serverName = 'MP4Upload';
@@ -1770,8 +1793,15 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
           else if (lower.includes('filemoon')) serverName = 'Filemoon';
           else if (lower.includes('dood') || lower.includes('d000d')) serverName = 'DoodStream';
 
+          const isMulti = ['VK Video', 'Ok.ru', 'Dailymotion', 'Videa', 'MegaMax'].includes(serverName);
           const qText = (el.textContent || '').toUpperCase();
-          const quality = qText.includes('FHD') || qText.includes('1080') ? '1080p' : qText.includes('SD') ? '480p' : '720p';
+          const quality = isMulti
+            ? 'multi'
+            : qText.includes('FHD') || qText.includes('1080')
+              ? '1080p'
+              : qText.includes('SD')
+                ? '480p'
+                : '720p';
           if (!scrapedServers.some(s => s.url === embedUrl && s.category === 'watch')) {
             scrapedServers.push({
               serverName,
@@ -1848,8 +1878,11 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
                 let watchUrl = sId.startsWith('http') ? sId : '';
                 let serverName = sType.toUpperCase() || 'سيرفر';
                 if (!watchUrl) {
-                  if (sType.includes('mega')) { serverName = 'Mega'; watchUrl = `https://mega.nz/embed/${sId}`; }
+                  if (sType.includes('vk')) { serverName = 'VK Video'; watchUrl = `https://vk.com/video_ext.php?oid=${sId}`; }
+                  else if (sType.includes('mega')) { serverName = 'Mega'; watchUrl = `https://mega.nz/embed/${sId}`; }
                   else if (sType.includes('ok')) { serverName = 'Ok.ru'; watchUrl = `https://www.ok.ru/videoembed/${sId}`; }
+                  else if (sType.includes('dailymotion')) { serverName = 'Dailymotion'; watchUrl = `https://www.dailymotion.com/embed/video/${sId}`; }
+                  else if (sType.includes('videa')) { serverName = 'Videa'; watchUrl = `https://videa.hu/player?v=${sId}`; }
                   else if (sType.includes('mp4upload')) { serverName = 'MP4Upload'; watchUrl = `https://www.mp4upload.com/embed-${sId.replace(/^embed-/i, '')}.html`; }
                   else if (sType.includes('vidmoly')) { serverName = 'Vidmoly'; watchUrl = `https://vidmoly.org/embed-${sId.replace(/^embed-/i, '')}.html`; }
                   else if (sType.includes('uqload')) { serverName = 'Uqload'; watchUrl = `https://uqload.vc/embed-${sId.replace(/^embed-/i, '')}.html`; }
@@ -1857,12 +1890,13 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
                   else if (sType.includes('drive') || sType.includes('gdrive')) { serverName = 'Google Drive'; watchUrl = `https://drive.google.com/file/d/${sId.split('/')[0]}/preview`; }
                 }
                 if (watchUrl) {
+                  const isMulti = ['VK Video', 'Ok.ru', 'Dailymotion', 'Videa', 'MegaMax'].includes(serverName);
                   if (!scrapedServers.some(s => s.url === watchUrl && s.category === 'watch')) {
                     scrapedServers.push({
                       serverName,
                       url: watchUrl,
                       type: 'iframe',
-                      quality: '1080p',
+                      quality: isMulti ? 'multi' : '1080p',
                       category: 'watch'
                     });
                   }
@@ -1886,13 +1920,16 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
         const scoreSrv = (srv: any) => {
           const n = (srv.serverName || '').toLowerCase();
           const u = (srv.url || '').toLowerCase();
+          if (n.includes('vk') || u.includes('vk.com') || u.includes('vkvideo')) return 130;
+          if (n.includes('ok.ru') || u.includes('ok.ru')) return 122;
+          if (n.includes('dailymotion') || u.includes('dailymotion')) return 118;
+          if (n.includes('videa') || u.includes('videa')) return 115;
+          if (n.includes('megamax') || u.includes('megamax') || u.includes('share4max')) return 112;
           if (n.includes('mega') && !n.includes('megamax') && !u.includes('share4max')) return 100;
           if (n.includes('sendvid') || u.includes('sendvid')) return 95;
           if (n.includes('mp4upload') || u.includes('mp4upload')) return 90;
           if (n.includes('drive') || u.includes('drive.google')) return 85;
-          if (n.includes('ok.ru') || u.includes('ok.ru')) return 80;
           if (n.includes('uqload') || u.includes('uqload')) return 75;
-          if (n.includes('megamax') || u.includes('share4max')) return 40;
           return 55;
         };
         const watches = scrapedServers.filter(s => s.category !== 'download').sort((a, b) => scoreSrv(b) - scoreSrv(a));
@@ -2111,6 +2148,393 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
     }
 
     // ========================================================================
+    // 11.5. MANGA / MANHWA CLIENT FALLBACKS (AniList + MangaDex Direct)
+    // ========================================================================
+    if (cleanPath.startsWith('/api/manga/')) {
+      const origin = (urlObj.searchParams.get('origin') || 'ALL').toUpperCase();
+      const countryVar = origin !== 'ALL' ? origin : undefined;
+
+      const mapOrigin = (cOrigin?: string, fmt?: string) => {
+        const c = String(cOrigin || 'JP').toUpperCase();
+        if (c === 'KR') return { countryOfOrigin: 'KR', mediaFormat: 'manhwa', originLabel: 'مانهوا', defaultReadingMode: 'webtoon' };
+        if (c === 'CN' || c === 'TW') return { countryOfOrigin: 'CN', mediaFormat: 'manhua', originLabel: 'مانها', defaultReadingMode: 'webtoon' };
+        return { countryOfOrigin: 'JP', mediaFormat: fmt === 'ONE_SHOT' ? 'oneshot' : 'manga', originLabel: fmt === 'ONE_SHOT' ? 'ون شوت' : 'مانجا', defaultReadingMode: 'paged' };
+      };
+
+      const mapMangaNode = (m: any) => {
+        const meta = mapOrigin(m?.countryOfOrigin, m?.format);
+        return {
+          _id: String(m.id),
+          anilistId: Number(m.id),
+          malId: m.idMal || null,
+          mediaType: 'manga',
+          title: m.title?.english || m.title?.romaji || m.title?.native || 'Manga',
+          englishTitle: m.title?.english || m.title?.romaji || '',
+          romajiTitle: m.title?.romaji || '',
+          posterUrl: m.coverImage?.extraLarge || m.coverImage?.large || '',
+          bannerUrl: m.bannerImage || '',
+          rating: m.averageScore ? Number((m.averageScore / 10).toFixed(1)) : 8.0,
+          status: m.status === 'FINISHED' ? 'مكتمل' : m.status === 'RELEASING' ? 'مستمر' : 'متوقف مؤقتاً',
+          ...meta,
+          genres: (m.genres || []).map((g: string) => GENRE_MAP_AR[g] || g).slice(0, 6),
+          chaptersCount: m.chapters || null,
+          releaseYear: m.startDate?.year || null,
+        };
+      };
+
+      const gqlFragments = `
+        id idMal countryOfOrigin format status chapters averageScore genres
+        startDate { year }
+        title { romaji english native }
+        coverImage { extraLarge large }
+        bannerImage
+      `;
+
+      if (cleanPath === '/api/manga/genres') {
+        return createSimulatedResponse({
+          success: true,
+          data: Object.entries(GENRE_MAP_AR).map(([name, nameAr]) => ({ id: name, name, nameAr })),
+        });
+      }
+
+      if (cleanPath === '/api/manga/hub' || cleanPath === '/api/manga/trending' || cleanPath === '/api/manga/latest') {
+        const page = Number(urlObj.searchParams.get('page') || 1);
+        const gql = `query ($page: Int, $country: CountryCode) {
+          trending: Page(page: 1, perPage: 16) { media(type: MANGA, format_in: [MANGA, ONE_SHOT], countryOfOrigin: $country, sort: [TRENDING_DESC, POPULARITY_DESC], isAdult: false) { ${gqlFragments} } }
+          latest: Page(page: $page, perPage: 24) { pageInfo { hasNextPage currentPage } media(type: MANGA, format_in: [MANGA, ONE_SHOT], countryOfOrigin: $country, status_in: [RELEASING, FINISHED], popularity_greater: 5000, sort: [UPDATED_AT_DESC, POPULARITY_DESC], isAdult: false) { ${gqlFragments} } }
+        }`;
+        const res = await nativeFetch('https://graphql.anilist.co', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: gql, variables: { page, country: countryVar } }),
+        });
+        const j = res.ok ? await safeResponseJson(res) : null;
+        const trending = (j?.data?.trending?.media || []).map(mapMangaNode);
+        const latest = (j?.data?.latest?.media || []).map(mapMangaNode);
+        if (cleanPath === '/api/manga/trending') return createSimulatedResponse({ success: true, data: trending });
+        if (cleanPath === '/api/manga/latest') {
+          return createSimulatedResponse({
+            success: true,
+            data: latest,
+            pagination: {
+              has_next_page: Boolean(j?.data?.latest?.pageInfo?.hasNextPage),
+              current_page: page,
+            },
+          });
+        }
+        return createSimulatedResponse({
+          success: true,
+          data: {
+            trending,
+            latest,
+            topRated: trending,
+            hasNextPage: Boolean(j?.data?.latest?.pageInfo?.hasNextPage),
+            currentPage: page,
+          },
+        });
+      }
+
+      if (cleanPath === '/api/manga/search') {
+        const q = (urlObj.searchParams.get('q') || '').trim();
+        const page = Number(urlObj.searchParams.get('page') || 1);
+        const genresRaw = (urlObj.searchParams.get('genres') || '').trim();
+        const genre_in = genresRaw ? genresRaw.split(',').filter(Boolean) : undefined;
+        const status = urlObj.searchParams.get('status') || '';
+        const statusVal = status === 'complete' || status === 'finished' ? 'FINISHED' : status === 'airing' || status === 'releasing' ? 'RELEASING' : undefined;
+        const gql = `query ($page: Int, $search: String, $country: CountryCode, $genre_in: [String], $status: MediaStatus) {
+          Page(page: $page, perPage: 24) {
+            pageInfo { hasNextPage currentPage }
+            media(type: MANGA, format_in: [MANGA, ONE_SHOT], search: $search, countryOfOrigin: $country, genre_in: $genre_in, status: $status, sort: [POPULARITY_DESC], isAdult: false) { ${gqlFragments} }
+          }
+        }`;
+        const vars: any = { page };
+        if (q) vars.search = q;
+        if (countryVar) vars.country = countryVar;
+        if (genre_in) vars.genre_in = genre_in;
+        if (statusVal) vars.status = statusVal;
+        const res = await nativeFetch('https://graphql.anilist.co', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: gql, variables: vars }),
+        });
+        const j = res.ok ? await safeResponseJson(res) : null;
+        return createSimulatedResponse({
+          success: true,
+          data: (j?.data?.Page?.media || []).map(mapMangaNode),
+          pagination: {
+            has_next_page: Boolean(j?.data?.Page?.pageInfo?.hasNextPage),
+            current_page: page,
+          },
+        });
+      }
+
+      if (cleanPath.startsWith('/api/manga/details/')) {
+        const rawId = decodeURIComponent(cleanPath.replace('/api/manga/details/', ''));
+        const isNum = /^\d+$/.test(rawId);
+        const gql = isNum
+          ? `query ($id: Int) { Media(id: $id, type: MANGA) { ${gqlFragments} description(asHtml: false) relations { edges { relationType(version: 2) node { id idMal type format countryOfOrigin title { english romaji } coverImage { large extraLarge } } } } } }`
+          : `query ($search: String) { Media(search: $search, type: MANGA) { ${gqlFragments} description(asHtml: false) } }`;
+        const res = await nativeFetch('https://graphql.anilist.co', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: gql, variables: isNum ? { id: Number(rawId) } : { search: rawId } }),
+        });
+        const j = res.ok ? await safeResponseJson(res) : null;
+        const m = j?.data?.Media;
+        if (!m) return createSimulatedResponse({ success: false, message: 'غير موجود' }, 404);
+        const mapped = mapMangaNode(m);
+        const desc = await translateTextToArabicClient(m.description || '');
+        return createSimulatedResponse({
+          success: true,
+          data: { ...mapped, description: desc, authors: [], characters: [], related: [], recommendations: [], adaptedAnime: null },
+        });
+      }
+
+      if (cleanPath === '/api/manga/chapters') {
+        const title = urlObj.searchParams.get('title') || '';
+        const altTitle = urlObj.searchParams.get('altTitle') || '';
+        const synsRaw = urlObj.searchParams.get('synonyms') || '';
+        let mdId = urlObj.searchParams.get('mangadexId') || '';
+
+        const normKey = (s: string) =>
+          s.toLowerCase().replace(/[^a-z0-9\u0600-\u06ff]+/g, ' ').replace(/\s+/g, ' ').trim();
+        const candidatePool = Array.from(
+          new Set(
+            [title, altTitle, ...synsRaw.split('||')]
+              .map((t) => cleanAnimeTitle(String(t || '')).trim())
+              .filter((t) => t.length >= 3 && /[a-zA-Z0-9\u0600-\u06FF]/.test(t)),
+          ),
+        ).slice(0, 6);
+        const normTargets = Array.from(new Set(candidatePool.map(normKey).filter((k) => k.length >= 3)));
+        const scoreMatch = (cand: string) => {
+          const cNorm = normKey(cand);
+          if (!cNorm || cNorm.length < 3) return 0;
+          let best = 0;
+          for (const tNorm of normTargets) {
+            if (cNorm === tNorm) best = Math.max(best, 120);
+            else {
+              const minL = Math.min(cNorm.length, tNorm.length);
+              const ratio = minL / Math.max(cNorm.length, tNorm.length, 1);
+              if (minL >= 5 && ratio >= 0.45 && (cNorm.startsWith(tNorm) || tNorm.startsWith(cNorm))) {
+                best = Math.max(best, 85);
+              }
+            }
+          }
+          return best;
+        };
+
+        const arabicChapters: any[] = [];
+        const qPrimary = candidatePool[0] || title || altTitle;
+
+        // Try Olympus & Azora directly in APK/CapacitorHttp/CORS fallback when available
+        if (qPrimary) {
+          await Promise.all([
+            (async () => {
+              try {
+                const olHtml = await fetchTextDirectInClient(
+                  `https://olympustaff.com/ajax/search?keyword=${encodeURIComponent(qPrimary)}`,
+                  40,
+                );
+                if (!olHtml || typeof DOMParser === 'undefined') return;
+                const doc = new DOMParser().parseFromString(olHtml, 'text/html');
+                let bestSlug = '';
+                let bestScore = 0;
+                doc.querySelectorAll("a[href*='/series/']").forEach((a) => {
+                  const href = a.getAttribute('href') || '';
+                  const m = href.match(/\/series\/([^/?#]+)\/?$/);
+                  if (!m) return;
+                  const txt = (a.textContent || '').replace(/\s+/g, ' ').trim();
+                  if (/رواية/.test(txt)) return;
+                  const name = (a.querySelector('h4, h3, .font-bold, span')?.textContent || txt).trim();
+                  const sc = scoreMatch(name);
+                  if (sc >= 58 && sc > bestScore) {
+                    bestScore = sc;
+                    bestSlug = m[1];
+                  }
+                });
+                if (!bestSlug) return;
+                const sHtml = await fetchTextDirectInClient(`https://olympustaff.com/series/${bestSlug}`, 500);
+                if (!sHtml) return;
+                const sDoc = new DOMParser().parseFromString(sHtml, 'text/html');
+                sDoc.querySelectorAll('.chapter-card').forEach((card) => {
+                  const link = card.querySelector('a.chapter-link, a');
+                  const href = (link?.getAttribute('href') || '').trim();
+                  const cm = href.match(/\/series\/[^/]+\/(\d+(?:\.\d+)?)\/?$/);
+                  if (!cm || href === '#') return;
+                  const numStr = cm[1];
+                  if (!arabicChapters.some((c) => c.num === numStr)) {
+                    arabicChapters.push({
+                      id: `olympus::${bestSlug}::${numStr}`,
+                      num: numStr,
+                      chapterNumber: parseFloat(numStr) || 0,
+                      title: `الفصل ${numStr}`,
+                      language: 'ar',
+                      languageLabel: 'عربي',
+                      pagesCount: 20,
+                      publishAt: new Date().toISOString(),
+                    });
+                  }
+                });
+              } catch {}
+            })(),
+            (async () => {
+              try {
+                const azText = await fetchTextDirectInClient(
+                  `https://azoramoon.com/api/query?searchTerm=${encodeURIComponent(qPrimary)}&perPage=10`,
+                  20,
+                );
+                if (!azText || !azText.trim().startsWith('{')) return;
+                const azJson = JSON.parse(azText);
+                const posts: any[] = Array.isArray(azJson?.posts) ? azJson.posts : [];
+                const hit = posts
+                  .filter((p) => String(p?.seriesType || '').toUpperCase() !== 'NOVEL')
+                  .map((p) => {
+                    const alts = [p.postTitle, ...(Array.isArray(p.alternativeTitles) ? p.alternativeTitles : [])].filter(Boolean);
+                    return { p, s: Math.max(0, ...alts.map((a) => scoreMatch(String(a)))) };
+                  })
+                  .filter((x) => x.s >= 58)
+                  .sort((a, b) => b.s - a.s)[0];
+                if (!hit?.p?.id || !hit?.p?.slug) return;
+                const chText = await fetchTextDirectInClient(
+                  `https://azoramoon.com/api/chapters?postId=${hit.p.id}&take=400`,
+                  20,
+                );
+                if (!chText || !chText.trim().startsWith('{')) return;
+                const chJson = JSON.parse(chText);
+                const list: any[] = Array.isArray(chJson?.post?.chapters) ? chJson.post.chapters : [];
+                for (const ch of list) {
+                  if (ch.isLocked || ch.isAccessible === false || Number(ch.price || 0) > 0) continue;
+                  const numStr = String(ch.number);
+                  if (!arabicChapters.some((c) => c.num === numStr)) {
+                    arabicChapters.push({
+                      id: `azora::${hit.p.slug}::${ch.slug}`,
+                      num: numStr,
+                      chapterNumber: Number(ch.number) || 0,
+                      title: ch.title ? String(ch.title).trim() : `الفصل ${numStr}`,
+                      language: 'ar',
+                      languageLabel: 'عربي',
+                      pagesCount: 20,
+                      publishAt: ch.createdAt || new Date().toISOString(),
+                    });
+                  }
+                }
+              } catch {}
+            })(),
+          ]);
+        }
+
+        if (!mdId && (title || altTitle)) {
+          try {
+            const sUrl = `https://api.mangadex.org/manga?title=${encodeURIComponent(title || altTitle)}&limit=5`;
+            const sRes = await nativeFetch(sUrl);
+            const sJson = sRes.ok ? await safeResponseJson(sRes) : null;
+            mdId = sJson?.data?.[0]?.id || '';
+          } catch {}
+        }
+
+        const byNum = new Map<string, any>();
+        arabicChapters.forEach((c) => byNum.set(c.num, c));
+
+        if (mdId) {
+          try {
+            const fUrl = `https://api.mangadex.org/manga/${mdId}/feed?limit=200&translatedLanguage[]=ar&translatedLanguage[]=en&order[chapter]=desc&contentRating[]=safe&contentRating[]=suggestive`;
+            const fRes = await nativeFetch(fUrl);
+            const fJson = fRes.ok ? await safeResponseJson(fRes) : null;
+            if (fJson && Array.isArray(fJson.data)) {
+              for (const ch of fJson.data) {
+                if (Number(ch?.attributes?.pages || 0) <= 0 || ch?.attributes?.externalUrl) continue;
+                const chNumStr = String(ch.attributes.chapter || '0');
+                const lang = ch.attributes.translatedLanguage === 'ar' ? 'ar' : 'en';
+                const existing = byNum.get(chNumStr);
+                if (existing && (existing.language === 'ar' || existing.language === lang)) continue;
+                byNum.set(chNumStr, {
+                  id: ch.id,
+                  num: chNumStr,
+                  chapterNumber: parseFloat(chNumStr) || 0,
+                  title: ch.attributes.title || `الفصل ${chNumStr}`,
+                  language: lang,
+                  languageLabel: lang === 'ar' ? 'عربي' : 'إنجليزي',
+                  pagesCount: Number(ch.attributes.pages || 0),
+                  publishAt: ch.attributes.publishAt || new Date().toISOString(),
+                });
+              }
+            }
+          } catch {}
+        }
+
+        const chapters = Array.from(byNum.values()).sort((a, b) => b.chapterNumber - a.chapterNumber);
+        return createSimulatedResponse({ success: true, mangadexId: mdId || null, chapters });
+      }
+
+      if (cleanPath === '/api/manga/pages') {
+        const chapterId = urlObj.searchParams.get('chapterId') || '';
+        const qMode = urlObj.searchParams.get('quality') === 'saver' ? 'dataSaver' : 'data';
+        try {
+          if (chapterId.startsWith('olympus::')) {
+            const [, slug, chNum] = chapterId.split('::');
+            const html = slug && chNum ? await fetchTextDirectInClient(`https://olympustaff.com/series/${slug}/${chNum}`, 500, { Referer: 'https://olympustaff.com/' }) : '';
+            if (html && typeof DOMParser !== 'undefined') {
+              const doc = new DOMParser().parseFromString(html, 'text/html');
+              const imgs: string[] = [];
+              doc.querySelectorAll('.image_list img, .reading-content img').forEach((el) => {
+                const s = (el.getAttribute('src') || el.getAttribute('data-src') || '').trim();
+                if (s && /^https?:\/\//i.test(s) && !/TeamX\.|\/images\/logo/i.test(s) && !imgs.includes(s)) imgs.push(s);
+              });
+              if (imgs.length > 0) {
+                return createSimulatedResponse({
+                  success: true,
+                  data: {
+                    chapterId,
+                    totalPages: imgs.length,
+                    pages: imgs.map((direct, idx) => ({ index: idx + 1, url: direct, fallbackUrl: direct })),
+                  },
+                });
+              }
+            }
+          } else if (chapterId.startsWith('azora::')) {
+            const [, slug, chSlug] = chapterId.split('::');
+            const html = slug && chSlug ? await fetchTextDirectInClient(`https://azoramoon.com/series/${slug}/${chSlug}`, 500, { Referer: 'https://azoramoon.com/' }) : '';
+            if (html && typeof DOMParser !== 'undefined') {
+              const doc = new DOMParser().parseFromString(html, 'text/html');
+              const imgs: string[] = [];
+              doc.querySelectorAll('.image-container img, figure.image-container img, .reading-content img').forEach((el) => {
+                const s = (el.getAttribute('src') || el.getAttribute('data-src') || '').trim();
+                if (s && /^https?:\/\//i.test(s) && !/\/upload\/(?:chapter|series)\/featured\//i.test(s) && !imgs.includes(s)) imgs.push(s);
+              });
+              if (imgs.length > 0) {
+                return createSimulatedResponse({
+                  success: true,
+                  data: {
+                    chapterId,
+                    totalPages: imgs.length,
+                    pages: imgs.map((direct, idx) => ({ index: idx + 1, url: direct, fallbackUrl: direct })),
+                  },
+                });
+              }
+            }
+          }
+
+          const pRes = await nativeFetch(`https://api.mangadex.org/at-home/server/${chapterId}`);
+          const pJson = pRes.ok ? await safeResponseJson(pRes) : null;
+          const base = String(pJson?.baseUrl || '').replace(/\/$/, '');
+          const hash = pJson?.chapter?.hash;
+          const files: string[] = pJson?.chapter?.[qMode] || pJson?.chapter?.data || [];
+          if (!base || !hash || !Array.isArray(files) || files.length === 0) {
+            return createSimulatedResponse({ success: false, message: 'تعذر تحميل صفحات الفصل حالياً.', data: { chapterId, totalPages: 0, pages: [] } });
+          }
+          const folder = qMode === 'dataSaver' ? 'data-saver' : 'data';
+          const pages = files.map((f, idx) => {
+            const direct = `${base}/${folder}/${hash}/${f}`;
+            return { index: idx + 1, url: direct, fallbackUrl: direct };
+          });
+          return createSimulatedResponse({ success: true, data: { chapterId, totalPages: pages.length, pages } });
+        } catch {
+          return createSimulatedResponse({ success: false, message: 'تعذر تحميل صفحات الفصل حالياً.', data: { chapterId, totalPages: 0, pages: [] } });
+        }
+      }
+    }
+
+    // ========================================================================
     // 12. DIAGNOSTICS & ADMIN AUTH FALLBACKS
     // ========================================================================
     if (cleanPath === '/api/diagnostics') {
@@ -2135,7 +2559,7 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
       });
     }
   } catch (err) {
-    console.error(`[FrontendFallback] Error handling ${cleanPath}:`, err);
+    console.warn(`[FrontendFallback] Gracefully bypassed ${cleanPath}:`, err);
   }
 
   return null;

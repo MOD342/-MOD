@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Capacitor } from '@capacitor/core';
 import { resolveApiUrl, resolveAbsoluteApiUrlForExternalIntent } from '../utils/apiUrl';
 import { openDownloadManager } from '../utils/externalNavigation';
+import { cloudCatalogService } from './cloudCatalogService';
 
 export type DownloadQualityPref = 'auto' | 'FHD' | 'HD' | 'SD';
 export type DownloadTargetMode = 'internal' | 'external';
@@ -15,6 +16,7 @@ export type DownloadItemStatus =
 
 export interface DownloadQueueItem {
   id: string;
+  itemType?: 'episode' | 'chapter';
   animeId: string;
   animeTitle: string;
   posterUrl?: string;
@@ -22,6 +24,14 @@ export interface DownloadQueueItem {
   episodeNum: string;
   episodeTitle: string;
   episodeUrl: string;
+  mangaId?: string;
+  mangadexId?: string | null;
+  chapterId?: string;
+  chapterNum?: string;
+  chapterTitle?: string;
+  mediaFormat?: string;
+  totalPages?: number;
+  downloadedPages?: number;
   requestedQuality: DownloadQualityPref;
   resolvedQuality?: string;
   usedFallbackQuality?: boolean;
@@ -40,6 +50,22 @@ export interface DownloadQueueItem {
   errorMessage?: string;
   createdAt: number;
   updatedAt: number;
+}
+
+export interface BatchChapterInput {
+  id: string;
+  num: string;
+  title?: string;
+  pagesCount?: number;
+  language?: string;
+}
+
+export interface BatchMangaInput {
+  _id: string;
+  mangadexId?: string | null;
+  title: string;
+  posterUrl?: string;
+  mediaFormat?: string;
 }
 
 export interface BatchEpisodeInput {
@@ -62,6 +88,8 @@ export interface BatchAnimeInput {
 const STORAGE_KEY = 'anime_mod_dl_queue_v1';
 const IDB_NAME = 'anime_mod_offline_videos_db';
 const IDB_STORE = 'videos';
+const CHAPTER_IDB_NAME = 'anime_mod_offline_chapters_db';
+const CHAPTER_IDB_STORE = 'chapters';
 const MAX_CONCURRENT_JOBS = 2;
 
 export function formatQualityLabel(q?: string | null): string {
@@ -124,14 +152,20 @@ async function saveBlobOffline(id: string, blob: Blob): Promise<boolean> {
   const db = await openOfflineDb();
   if (!db) return false;
   return new Promise((resolve) => {
+    const finish = (ok: boolean) => {
+      try {
+        db.close();
+      } catch {}
+      resolve(ok);
+    };
     try {
       const tx = db.transaction(IDB_STORE, 'readwrite');
       tx.objectStore(IDB_STORE).put(blob, id);
-      tx.oncomplete = () => resolve(true);
-      tx.onerror = () => resolve(false);
-      tx.onabort = () => resolve(false);
+      tx.oncomplete = () => finish(true);
+      tx.onerror = () => finish(false);
+      tx.onabort = () => finish(false);
     } catch {
-      resolve(false);
+      finish(false);
     }
   });
 }
@@ -140,13 +174,20 @@ async function getBlobOffline(id: string): Promise<Blob | null> {
   const db = await openOfflineDb();
   if (!db) return null;
   return new Promise((resolve) => {
+    const finish = (val: Blob | null) => {
+      try {
+        db.close();
+      } catch {}
+      resolve(val);
+    };
     try {
       const tx = db.transaction(IDB_STORE, 'readonly');
       const req = tx.objectStore(IDB_STORE).get(id);
-      req.onsuccess = () => resolve(req.result instanceof Blob ? req.result : null);
-      req.onerror = () => resolve(null);
+      req.onsuccess = () => finish(req.result instanceof Blob ? req.result : null);
+      req.onerror = () => finish(null);
+      tx.onabort = () => finish(null);
     } catch {
-      resolve(null);
+      finish(null);
     }
   });
 }
@@ -157,7 +198,114 @@ async function deleteBlobOffline(id: string): Promise<void> {
   try {
     const tx = db.transaction(IDB_STORE, 'readwrite');
     tx.objectStore(IDB_STORE).delete(id);
-  } catch {}
+    tx.oncomplete = () => {
+      try {
+        db.close();
+      } catch {}
+    };
+    tx.onerror = () => {
+      try {
+        db.close();
+      } catch {}
+    };
+  } catch {
+    try {
+      db.close();
+    } catch {}
+  }
+}
+
+function openOfflineChapterDb(): Promise<IDBDatabase | null> {
+  if (typeof indexedDB === 'undefined') return Promise.resolve(null);
+  return new Promise((resolve) => {
+    try {
+      const req = indexedDB.open(CHAPTER_IDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(CHAPTER_IDB_STORE)) {
+          db.createObjectStore(CHAPTER_IDB_STORE);
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+async function saveChapterPackOffline(id: string, pages: Blob[]): Promise<boolean> {
+  const db = await openOfflineChapterDb();
+  if (!db) return false;
+  return new Promise((resolve) => {
+    const finish = (ok: boolean) => {
+      try {
+        db.close();
+      } catch {}
+      resolve(ok);
+    };
+    try {
+      const tx = db.transaction(CHAPTER_IDB_STORE, 'readwrite');
+      tx.objectStore(CHAPTER_IDB_STORE).put({ pages, pageCount: pages.length, savedAt: Date.now() }, id);
+      tx.oncomplete = () => finish(true);
+      tx.onerror = () => finish(false);
+      tx.onabort = () => finish(false);
+    } catch {
+      finish(false);
+    }
+  });
+}
+
+async function getChapterPackOffline(id: string): Promise<Blob[] | null> {
+  const db = await openOfflineChapterDb();
+  if (!db) return null;
+  return new Promise((resolve) => {
+    const finish = (val: Blob[] | null) => {
+      try {
+        db.close();
+      } catch {}
+      resolve(val);
+    };
+    try {
+      const tx = db.transaction(CHAPTER_IDB_STORE, 'readonly');
+      const req = tx.objectStore(CHAPTER_IDB_STORE).get(id);
+      req.onsuccess = () => {
+        const val = req.result;
+        if (val && Array.isArray(val.pages) && val.pages.length > 0) {
+          finish(val.pages);
+        } else {
+          finish(null);
+        }
+      };
+      req.onerror = () => finish(null);
+      tx.onabort = () => finish(null);
+    } catch {
+      finish(null);
+    }
+  });
+}
+
+async function deleteChapterPackOffline(id: string): Promise<void> {
+  const db = await openOfflineChapterDb();
+  if (!db) return;
+  try {
+    const tx = db.transaction(CHAPTER_IDB_STORE, 'readwrite');
+    tx.objectStore(CHAPTER_IDB_STORE).delete(id);
+    tx.oncomplete = () => {
+      try {
+        db.close();
+      } catch {}
+    };
+    tx.onerror = () => {
+      try {
+        db.close();
+      } catch {}
+    };
+  } catch {
+    try {
+      db.close();
+    } catch {}
+  }
 }
 
 function triggerBrowserBlobSave(blobUrl: string, filename: string) {
@@ -173,10 +321,108 @@ function triggerBrowserBlobSave(blobUrl: string, filename: string) {
   } catch {}
 }
 
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  parentSignal: AbortSignal,
+  timeoutMs: number,
+  timeoutMessage = 'انتهت مهلة الاتصال بالخادم، أعد المحاولة.',
+): Promise<Response> {
+  const stageCtrl = new AbortController();
+  let timedOut = false;
+
+  const onParentAbort = () => {
+    stageCtrl.abort(parentSignal.reason);
+  };
+  if (parentSignal.aborted) {
+    stageCtrl.abort(parentSignal.reason);
+  } else {
+    parentSignal.addEventListener('abort', onParentAbort, { once: true });
+  }
+
+  const timer = setTimeout(() => {
+    timedOut = true;
+    stageCtrl.abort(new Error('TIMEOUT'));
+  }, timeoutMs);
+
+  try {
+    return await fetch(input, { ...init, signal: stageCtrl.signal });
+  } catch (err: any) {
+    if (timedOut) {
+      throw new Error(timeoutMessage);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+    parentSignal.removeEventListener('abort', onParentAbort);
+  }
+}
+
+async function readChunkWithTimeout(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal,
+  idleTimeoutMs = 30_000,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  if (signal.aborted) {
+    try {
+      await reader.cancel();
+    } catch {}
+    throw new Error('ABORTED');
+  }
+
+  return new Promise<ReadableStreamReadResult<Uint8Array>>((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reader.cancel().catch(() => {});
+      reject(new Error('ABORTED'));
+    };
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reader.cancel().catch(() => {});
+      reject(new Error('انقطع تدفق البيانات لفترة طويلة، أعد المحاولة.'));
+    }, idleTimeoutMs);
+
+    signal.addEventListener('abort', onAbort, { once: true });
+
+    reader.read().then(
+      (res) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(res);
+      },
+      (err) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(err);
+      },
+    );
+  });
+}
+
+async function safeReadJson(resp: Response): Promise<any> {
+  try {
+    return await resp.json();
+  } catch {
+    return null;
+  }
+}
+
 class DownloadManagerService {
   private items: DownloadQueueItem[] = [];
   private listeners = new Set<() => void>();
   private activeControllers = new Map<string, AbortController>();
+  private manualAbortReasons = new Map<string, 'paused' | 'removed'>();
   private activeJobIds = new Set<string>();
   private pumping = false;
 
@@ -313,7 +559,81 @@ class DownloadManagerService {
     return added;
   }
 
+  public enqueueMangaBatch(
+    manga: BatchMangaInput,
+    chapters: BatchChapterInput[],
+  ): DownloadQueueItem[] {
+    const mangaId = String(manga._id);
+    const title = manga.title || 'مانجا';
+    const posterUrl = manga.posterUrl || '';
+    const now = Date.now();
+    const added: DownloadQueueItem[] = [];
+    const nextItems = [...this.items];
+
+    for (let i = 0; i < chapters.length; i++) {
+      const ch = chapters[i];
+      const chNum = String(ch.num || i + 1);
+      const itemId = `manga__${mangaId}__ch_${ch.id}`;
+      const existingIdx = nextItems.findIndex((x) => x.id === itemId);
+      const existing = existingIdx >= 0 ? nextItems[existingIdx] : null;
+
+      if (
+        existing &&
+        (existing.status === 'downloading' ||
+          existing.status === 'resolving' ||
+          existing.status === 'queued')
+      ) {
+        added.push(existing);
+        continue;
+      }
+
+      const newItem: DownloadQueueItem = {
+        id: itemId,
+        itemType: 'chapter',
+        animeId: mangaId,
+        animeTitle: title,
+        posterUrl,
+        seasonNumber: 1,
+        episodeNum: chNum,
+        episodeTitle: ch.title || `الفصل ${chNum}`,
+        episodeUrl: ch.id,
+        mangaId,
+        mangadexId: manga.mangadexId || null,
+        chapterId: ch.id,
+        chapterNum: chNum,
+        chapterTitle: ch.title || `الفصل ${chNum}`,
+        mediaFormat: manga.mediaFormat || 'manga',
+        totalPages: Number(ch.pagesCount || 0),
+        downloadedPages: 0,
+        requestedQuality: 'HD',
+        resolvedQuality: ch.language === 'en' ? 'إنجليزي' : 'عربي',
+        targetMode: 'internal',
+        status: 'queued',
+        progress: 0,
+        downloadedBytes: 0,
+        totalBytes: 0,
+        speedBps: 0,
+        filename: `${title}-Ch-${chNum}`,
+        createdAt: now + i,
+        updatedAt: now + i,
+      };
+
+      if (existingIdx >= 0) {
+        nextItems[existingIdx] = newItem;
+      } else {
+        nextItems.unshift(newItem);
+      }
+      added.push(newItem);
+    }
+
+    this.items = nextItems;
+    this.emit();
+    void this.pumpQueue();
+    return added;
+  }
+
   public pauseItem(id: string) {
+    this.manualAbortReasons.set(id, 'paused');
     const ctrl = this.activeControllers.get(id);
     if (ctrl) {
       try {
@@ -323,13 +643,17 @@ class DownloadManagerService {
     }
     this.activeJobIds.delete(id);
     const current = this.items.find((x) => x.id === id);
-    if (!current || current.status === 'completed') return;
+    if (!current || current.status === 'completed') {
+      this.manualAbortReasons.delete(id);
+      return;
+    }
     this.updateItem(id, { status: 'paused', speedBps: 0 });
   }
 
   public resumeItem(id: string) {
     const current = this.items.find((x) => x.id === id);
     if (!current || current.status === 'completed') return;
+    this.manualAbortReasons.delete(id);
     this.updateItem(id, {
       status: 'queued',
       errorMessage: undefined,
@@ -341,17 +665,46 @@ class DownloadManagerService {
   public retryItem(id: string) {
     const current = this.items.find((x) => x.id === id);
     if (!current) return;
+    this.manualAbortReasons.delete(id);
     this.updateItem(id, {
       status: 'queued',
       progress: 0,
       downloadedBytes: 0,
+      downloadedPages: 0,
       speedBps: 0,
       errorMessage: undefined,
     });
     void this.pumpQueue();
   }
 
+  public retryAllFailed() {
+    let changed = false;
+    this.items = this.items.map((item) => {
+      if (item.status === 'failed') {
+        changed = true;
+        this.manualAbortReasons.delete(item.id);
+        return {
+          ...item,
+          status: 'queued' as const,
+          progress: 0,
+          downloadedBytes: 0,
+          downloadedPages: 0,
+          speedBps: 0,
+          errorMessage: undefined,
+          updatedAt: Date.now(),
+        };
+      }
+      return item;
+    });
+    if (changed) {
+      this.emit();
+      void this.pumpQueue();
+    }
+  }
+
   public removeItem(id: string) {
+    const target = this.items.find((x) => x.id === id);
+    this.manualAbortReasons.set(id, 'removed');
     const ctrl = this.activeControllers.get(id);
     if (ctrl) {
       try {
@@ -362,13 +715,18 @@ class DownloadManagerService {
     this.activeJobIds.delete(id);
     this.items = this.items.filter((x) => x.id !== id);
     this.emit();
-    void deleteBlobOffline(id);
+    if (target?.itemType === 'chapter') {
+      void deleteChapterPackOffline(id);
+    } else {
+      void deleteBlobOffline(id);
+    }
     void this.pumpQueue();
   }
 
   public pauseAll() {
     for (const item of this.items) {
       if (item.status === 'downloading' || item.status === 'resolving' || item.status === 'queued') {
+        this.manualAbortReasons.set(item.id, 'paused');
         const ctrl = this.activeControllers.get(item.id);
         if (ctrl) {
           try {
@@ -388,11 +746,19 @@ class DownloadManagerService {
   }
 
   public resumeAll() {
-    this.items = this.items.map((item) =>
-      item.status === 'paused' || item.status === 'failed'
-        ? { ...item, status: 'queued', errorMessage: undefined, speedBps: 0, updatedAt: Date.now() }
-        : item,
-    );
+    this.items = this.items.map((item) => {
+      if (item.status === 'paused' || item.status === 'failed') {
+        this.manualAbortReasons.delete(item.id);
+        return {
+          ...item,
+          status: 'queued' as const,
+          errorMessage: undefined,
+          speedBps: 0,
+          updatedAt: Date.now(),
+        };
+      }
+      return item;
+    });
     this.emit();
     void this.pumpQueue();
   }
@@ -401,13 +767,22 @@ class DownloadManagerService {
     const toDelete = this.items.filter((x) => x.status === 'completed');
     this.items = this.items.filter((x) => x.status !== 'completed');
     this.emit();
-    toDelete.forEach((x) => void deleteBlobOffline(x.id));
+    toDelete.forEach((x) => {
+      if (x.itemType === 'chapter') void deleteChapterPackOffline(x.id);
+      else void deleteBlobOffline(x.id);
+    });
   }
 
   public async getOfflineVideoUrl(id: string): Promise<string | null> {
     const blob = await getBlobOffline(id);
     if (!blob) return null;
     return URL.createObjectURL(blob);
+  }
+
+  public async getOfflineChapterPages(id: string): Promise<string[] | null> {
+    const pages = await getChapterPackOffline(id);
+    if (!pages || pages.length === 0) return null;
+    return pages.map((b) => URL.createObjectURL(b));
   }
 
   public async saveItemToDevice(id: string): Promise<boolean> {
@@ -479,23 +854,42 @@ class DownloadManagerService {
     usedFallbackQuality: boolean;
     serverName?: string | null;
   }> {
-    // 1. Fetch episode servers
-    const srvResp = await fetch(resolveApiUrl('/api/anime/servers'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        url: item.episodeUrl,
-        animeId: item.animeId,
-        animeTitle: item.animeTitle,
-        seasonNumber: item.seasonNumber,
-        episodeNum: item.episodeNum,
-      }),
-      signal,
-    });
-    const srvJson = await srvResp.json();
-    const rawServers: any[] = Array.isArray(srvJson?.data) ? srvJson.data : [];
-    if (!srvJson?.success || rawServers.length === 0) {
-      throw new Error('لم يتم العثور على سيرفرات متاحة لهذه الحلقة حالياً.');
+    // 1. Check Tier 1/2 cache & shared cloud first, then fall back to live endpoint with strict AbortSignal timeout
+    const serverLookup = {
+      url: item.episodeUrl,
+      animeId: item.animeId,
+      animeTitle: item.animeTitle,
+      seasonNumber: item.seasonNumber,
+      episodeNum: item.episodeNum,
+    };
+
+    let rawServers: any[] =
+      (await cloudCatalogService.tryReadEpisodeServersCacheOrCloud(serverLookup)) || [];
+
+    if (rawServers.length === 0) {
+      const srvResp = await fetchWithTimeout(
+        resolveApiUrl('/api/anime/servers'),
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url: item.episodeUrl,
+            animeId: item.animeId,
+            animeTitle: item.animeTitle,
+            seasonNumber: item.seasonNumber,
+            episodeNum: item.episodeNum,
+          }),
+        },
+        signal,
+        22_000,
+        'استغرق البحث عن سيرفرات الحلقة وقتاً طويلاً، أعد المحاولة.',
+      );
+      const srvJson = await safeReadJson(srvResp);
+      rawServers = Array.isArray(srvJson?.data) ? srvJson.data : [];
+      if (!srvResp.ok || !srvJson?.success || rawServers.length === 0) {
+        throw new Error(srvJson?.message || 'لم يتم العثور على سيرفرات متاحة لهذه الحلقة حالياً.');
+      }
+      void cloudCatalogService.cacheResolvedEpisodeServers(serverLookup, rawServers);
     }
 
     const dlServers = rawServers.filter((s) => s.category === 'download');
@@ -512,30 +906,46 @@ class DownloadManagerService {
 
     // 2. Try requested quality first (server already tries fallback, and we also retry 'auto' if needed)
     const callResolve = async (qual: DownloadQualityPref) => {
-      const r = await fetch(resolveApiUrl('/api/anime/resolve-download'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          url: orderedServers[0]?.url || '',
-          fallbackUrls: orderedServers.slice(1).map((s) => s.url),
-          serverCandidates,
-          preferredQuality: qual,
-          title: item.animeTitle,
-          ep: item.episodeNum,
-          preferExternal: wantExternal,
-        }),
+      const r = await fetchWithTimeout(
+        resolveApiUrl('/api/anime/resolve-download'),
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url: orderedServers[0]?.url || '',
+            fallbackUrls: orderedServers.slice(1).map((s) => s.url),
+            serverCandidates,
+            preferredQuality: qual,
+            title: item.animeTitle,
+            ep: item.episodeNum,
+            preferExternal: wantExternal,
+          }),
+        },
         signal,
-      });
-      return r.json();
+        40_000,
+        'استغرق تجهيز رابط الحلقة وقتاً طويلاً، أعد المحاولة.',
+      );
+      const json = await safeReadJson(r);
+      return json || { success: false, message: 'تعذر قراءة استجابة السيرفر.' };
     };
 
     let resolvedJson = await callResolve(item.requestedQuality);
-    if (!resolvedJson?.success && item.requestedQuality !== 'auto') {
+    if (!resolvedJson?.success && item.requestedQuality !== 'auto' && !signal.aborted) {
       resolvedJson = await callResolve('auto');
     }
 
     if (!resolvedJson?.success || !resolvedJson?.downloadUrl) {
+      if (orderedServers[0]?.url) {
+        void cloudCatalogService.recordServerOutcome(serverLookup, orderedServers[0].url, false);
+      }
       throw new Error(resolvedJson?.message || 'تعذر تجهيز رابط تحميل مباشر لهذه الحلقة.');
+    }
+
+    const matchedServer =
+      orderedServers.find((s) => s?.serverName && resolvedJson.serverName && s.serverName === resolvedJson.serverName) ||
+      orderedServers[0];
+    if (matchedServer?.url) {
+      void cloudCatalogService.recordServerOutcome(serverLookup, matchedServer.url, true);
     }
 
     const reqTier = normalizeQualityCode(item.requestedQuality);
@@ -559,18 +969,166 @@ class DownloadManagerService {
     };
   }
 
+  private async processChapterItem(item: DownloadQueueItem, controller: AbortController) {
+    const id = item.id;
+    const chapterId = item.chapterId || item.episodeUrl;
+    let pageEntries: Array<{ index?: number; url: string; fallbackUrl?: string }> =
+      (await cloudCatalogService.tryReadChapterPagesCacheOrCloud(chapterId, 'high')) || [];
+
+    if (pageEntries.length === 0) {
+      const pagesResp = await fetchWithTimeout(
+        resolveApiUrl(`/api/manga/pages?chapterId=${encodeURIComponent(chapterId)}&quality=high`),
+        {},
+        controller.signal,
+        20_000,
+        'استغرق جلب صفحات الفصل وقتاً طويلاً، أعد المحاولة.',
+      );
+      const pagesJson = await safeReadJson(pagesResp);
+      pageEntries = Array.isArray(pagesJson?.data?.pages) ? pagesJson.data.pages : [];
+      if (!pagesResp.ok || pageEntries.length === 0) {
+        throw new Error(pagesJson?.message || 'تعذر تجهيز صفحات هذا الفصل للتنزيل.');
+      }
+      void cloudCatalogService.cacheResolvedChapterPages(
+        chapterId,
+        item.mangaId,
+        'high',
+        pageEntries.map((p, idx) => ({
+          index: Number(p.index || idx + 1),
+          url: p.url,
+          fallbackUrl: p.fallbackUrl,
+        })),
+        pagesJson?.data?.source,
+      );
+    }
+
+    const totalPages = pageEntries.length;
+    this.updateItem(id, {
+      status: 'downloading',
+      totalPages,
+      downloadedPages: 0,
+      progress: 0,
+      downloadedBytes: 0,
+    });
+
+    const blobs: (Blob | null)[] = new Array(totalPages).fill(null);
+    let completedCount = 0;
+    let totalBytes = 0;
+    let nextIndex = 0;
+    const concurrency = Math.min(3, totalPages);
+
+    const downloadOnePage = async (index: number) => {
+      const entry = pageEntries[index];
+      const startedAt = Date.now();
+      const candidates = [resolveApiUrl(entry.url), entry.fallbackUrl].filter(Boolean) as string[];
+      let blob: Blob | null = null;
+
+      for (let attempt = 0; attempt < 2 && !blob; attempt++) {
+        for (const candidateUrl of candidates) {
+          if (controller.signal.aborted) return;
+          try {
+            const r = await fetchWithTimeout(
+              candidateUrl,
+              {},
+              controller.signal,
+              18_000,
+              `انتهت مهلة تحميل الصفحة ${index + 1}`,
+            );
+            if (r.ok) {
+              const ct = (r.headers.get('content-type') || '').toLowerCase();
+              if (!ct.includes('text/html')) {
+                const b = await r.blob();
+                if (b.size > 200) {
+                  blob = b;
+                  break;
+                }
+              }
+            }
+          } catch {}
+        }
+      }
+
+      if (controller.signal.aborted) return;
+      if (!blob) {
+        void cloudCatalogService.reportBrokenChapterPages(chapterId, 'high');
+        throw new Error(`تعذر تحميل الصفحة ${index + 1} من ${totalPages}، أعد المحاولة.`);
+      }
+
+      blobs[index] = blob;
+      completedCount++;
+      totalBytes += blob.size;
+      const elapsedSec = Math.max(0.15, (Date.now() - startedAt) / 1000);
+      const speedBps = Math.round(blob.size / elapsedSec);
+      const progress = Math.min(99, Math.round((completedCount / totalPages) * 100));
+
+      this.updateItem(
+        id,
+        {
+          downloadedPages: completedCount,
+          totalPages,
+          downloadedBytes: totalBytes,
+          totalBytes,
+          progress,
+          speedBps,
+        },
+        false,
+      );
+    };
+
+    const workers = Array.from({ length: concurrency }, async () => {
+      while (true) {
+        if (controller.signal.aborted) return;
+        const currentIndex = nextIndex++;
+        if (currentIndex >= totalPages) return;
+        await downloadOnePage(currentIndex);
+      }
+    });
+
+    await Promise.all(workers);
+
+    if (controller.signal.aborted) return;
+    const validBlobs = blobs.filter((b): b is Blob => b instanceof Blob && b.size > 0);
+    if (validBlobs.length !== totalPages) {
+      throw new Error('لم تكتمل جميع صفحات الفصل، أعد المحاولة.');
+    }
+
+    const saved = await saveChapterPackOffline(id, validBlobs);
+    if (!saved) {
+      throw new Error('تعذر حفظ صور الفصل في مساحة التخزين المحلية.');
+    }
+
+    this.updateItem(id, {
+      status: 'completed',
+      progress: 100,
+      downloadedPages: totalPages,
+      totalPages,
+      downloadedBytes: totalBytes,
+      totalBytes,
+      speedBps: 0,
+      hasOfflineFile: true,
+    });
+  }
+
   private async processItem(id: string) {
     const item = this.items.find((x) => x.id === id);
     if (!item || item.status !== 'queued') return;
 
+    this.manualAbortReasons.delete(id);
     const controller = new AbortController();
     this.activeControllers.set(id, controller);
 
     try {
       this.updateItem(id, { status: 'resolving', speedBps: 0, errorMessage: undefined });
 
+      if (item.itemType === 'chapter') {
+        await this.processChapterItem(item, controller);
+        return;
+      }
+
       const resolved = await this.resolveEpisodeWithFallback(item, controller.signal);
-      if (controller.signal.aborted) return;
+      if (this.manualAbortReasons.has(id)) return;
+      if (controller.signal.aborted) {
+        throw new Error('تعذر إكمال تجهيز الحلقة، أعد المحاولة.');
+      }
 
       this.updateItem(id, {
         downloadUrl: resolved.downloadUrl,
@@ -604,16 +1162,27 @@ class DownloadManagerService {
       // Internal Download Manager streaming download
       this.updateItem(id, { status: 'downloading', progress: 0, downloadedBytes: 0 });
 
-      const resp = await fetch(resolveApiUrl(resolved.downloadUrl), {
-        credentials: 'include',
-        signal: controller.signal,
-      });
+      const resp = await fetchWithTimeout(
+        resolveApiUrl(resolved.downloadUrl),
+        { credentials: 'include' },
+        controller.signal,
+        32_000,
+        'تأخر سيرفر التحميل في الاستجابة، أعد المحاولة.',
+      );
       const ct = (resp.headers.get('content-type') || '').toLowerCase();
       if (!resp.ok || ct.includes('text/html') || !resp.body) {
-        throw new Error('تعذر بدء تنزيل الملف من المصدر، يرجى المحاولة مجدداً.');
+        let serverMsg = '';
+        try {
+          if (ct.includes('application/json')) {
+            const errJson = await resp.json();
+            serverMsg = errJson?.message || '';
+          }
+        } catch {}
+        throw new Error(serverMsg || 'تعذر بدء تنزيل الملف من المصدر، يرجى المحاولة مجدداً.');
       }
 
-      const totalBytes = Number(resp.headers.get('content-length') || resolved.sizeBytes || 0);
+      const headerLen = Number(resp.headers.get('content-length') || 0);
+      const totalBytes = headerLen > 0 ? headerLen : Number(resolved.sizeBytes || 0);
       const reader = resp.body.getReader();
       const chunks: BlobPart[] = [];
       let downloaded = 0;
@@ -621,13 +1190,14 @@ class DownloadManagerService {
       let lastBytes = 0;
 
       while (true) {
-        const { done, value } = await reader.read();
+        const { done, value } = await readChunkWithTimeout(reader, controller.signal, 30_000);
         if (done) break;
-        if (controller.signal.aborted) {
+        if (this.manualAbortReasons.has(id) || controller.signal.aborted) {
           try {
             await reader.cancel();
           } catch {}
-          return;
+          if (this.manualAbortReasons.has(id)) return;
+          throw new Error('توقف تنزيل الحلقة، أعد المحاولة.');
         }
         chunks.push(value);
         downloaded += value.byteLength;
@@ -637,14 +1207,16 @@ class DownloadManagerService {
         if (dt >= 350) {
           const speedBps = Math.max(0, Math.round(((downloaded - lastBytes) * 1000) / dt));
           const progress =
-            totalBytes > 0 ? Math.min(99, Math.round((downloaded / totalBytes) * 100)) : 0;
+            totalBytes > 0
+              ? Math.min(99, Math.max(1, Math.round((downloaded / totalBytes) * 100)))
+              : Math.min(92, Math.max(5, Math.round((downloaded / (downloaded + 90 * 1024 * 1024)) * 92)));
           lastUpdate = now;
           lastBytes = downloaded;
           this.updateItem(
             id,
             {
               downloadedBytes: downloaded,
-              totalBytes: totalBytes || downloaded,
+              totalBytes,
               progress,
               speedBps,
             },
@@ -653,7 +1225,14 @@ class DownloadManagerService {
         }
       }
 
+      if (downloaded <= 0) {
+        throw new Error('استُلم ملف فارغ من السيرفر، أعد المحاولة.');
+      }
+
       const blob = new Blob(chunks, { type: ct.startsWith('video/') ? ct : 'video/mp4' });
+      if (blob.size <= 0) {
+        throw new Error('استُلم ملف فارغ من السيرفر، أعد المحاولة.');
+      }
       const storedOffline = await saveBlobOffline(id, blob);
 
       // Trigger automatic save to user's Downloads folder
@@ -674,14 +1253,19 @@ class DownloadManagerService {
         hasOfflineFile: storedOffline,
       });
     } catch (err: any) {
-      if (controller.signal.aborted) {
+      if (this.manualAbortReasons.has(id)) {
         return;
       }
       this.updateItem(id, {
         status: 'failed',
         speedBps: 0,
-        errorMessage: err?.message || 'تعذر إكمال تنزيل الحلقة، يمكنك إعادة المحاولة.',
+        errorMessage:
+          err?.name === 'AbortError'
+            ? 'انتهت مهلة الاتصال أو انقطع التنزيل، أعد المحاولة.'
+            : err?.message || 'تعذر إكمال تنزيل الحلقة، يمكنك إعادة المحاولة.',
       });
+    } finally {
+      this.manualAbortReasons.delete(id);
     }
   }
 }

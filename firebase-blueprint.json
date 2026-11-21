@@ -32,7 +32,9 @@
         "doubleCoinsUntil": { "type": "number" },
         "streakShieldCount": { "type": "number" },
         "antiCheatHintCount": { "type": "number" },
-        "lastSyncedAt": { "type": "number" }
+        "lastSyncedAt": { "type": "number" },
+        "totalChaptersRead": { "type": "number" },
+        "completedMangaCount": { "type": "number" }
       },
       "required": ["role", "createdAt", "xp", "level", "modPoints", "streakDays", "likesReceived", "commentsCount", "recommendationsAccepted", "aiGamesPoints", "ratingsCount", "chatMessagesCount", "lastActiveDate"]
     },
@@ -59,6 +61,31 @@
         "updatedAt": { "type": "string", "format": "date-time" },
         "episodesCount": { "type": "number" },
         "progress": { "type": "number" }
+      },
+      "required": ["title", "posterUrl", "status", "addedAt", "updatedAt"]
+    },
+    "MangaEntry": {
+      "title": "MangaEntry",
+      "description": "A user's manga/manhwa/manhua reading library entry",
+      "type": "object",
+      "properties": {
+        "mangaId": { "type": "string" },
+        "title": { "type": "string" },
+        "posterUrl": { "type": "string" },
+        "mediaFormat": { "type": "string" },
+        "countryOfOrigin": { "type": "string" },
+        "status": { "type": "string", "enum": ["watching", "completed", "plan_to_watch", "on_hold", "dropped", "none"] },
+        "releaseYear": { "type": "string" },
+        "addedAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "chaptersCount": { "type": "number" },
+        "progress": { "type": "number" },
+        "lastReadChapter": { "type": "number" },
+        "lastReadPage": { "type": "number" },
+        "readChapters": { "type": "array" },
+        "customLists": { "type": "object" },
+        "score": { "type": "number" },
+        "isFavorite": { "type": "boolean" }
       },
       "required": ["title", "posterUrl", "status", "addedAt", "updatedAt"]
     },
@@ -314,9 +341,138 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["senderId", "recipientId", "itemId", "itemName", "price", "createdAt"]
+    },
+    "CatalogBundle": {
+      "title": "CatalogBundle",
+      "description": "Bundled shared catalog lists (dashboard without recentEpisodes, schedule, movies, top anime, season, manga hub)",
+      "type": "object",
+      "properties": {
+        "bundleId": { "type": "string", "maxLength": 128 },
+        "kind": { "type": "string", "enum": ["dashboard", "manga_hub", "movies", "top", "season", "schedule"] },
+        "payload": { "type": "object" },
+        "itemCount": { "type": "number" },
+        "contentHash": { "type": "string", "maxLength": 128 },
+        "freshUntil": { "type": "number" },
+        "staleUntil": { "type": "number" },
+        "failReports": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "updatedBy": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["bundleId", "kind", "payload", "itemCount", "contentHash", "freshUntil", "staleUntil", "failReports", "updatedAt", "updatedBy"]
+    },
+    "CatalogAnime": {
+      "title": "CatalogAnime",
+      "description": "Shared canonical anime catalog entry with metadata, episodes, and SWR lifecycle",
+      "type": "object",
+      "properties": {
+        "canonicalId": { "type": "string", "maxLength": 128 },
+        "data": { "type": "object" },
+        "episodesCount": { "type": "number" },
+        "segmentsCount": { "type": "number" },
+        "isOngoing": { "type": "boolean" },
+        "contentHash": { "type": "string", "maxLength": 128 },
+        "freshUntil": { "type": "number" },
+        "staleUntil": { "type": "number" },
+        "failReports": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "updatedBy": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["canonicalId", "data", "episodesCount", "segmentsCount", "isOngoing", "contentHash", "freshUntil", "staleUntil", "failReports", "updatedAt", "updatedBy"]
+    },
+    "CatalogAnimeSegment": {
+      "title": "CatalogAnimeSegment",
+      "description": "Segmented episode batch for long-running anime exceeding inline threshold",
+      "type": "object",
+      "properties": {
+        "parentKey": { "type": "string", "maxLength": 128 },
+        "segmentIndex": { "type": "number" },
+        "episodes": { "type": "array" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "updatedBy": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["parentKey", "segmentIndex", "episodes", "updatedAt", "updatedBy"]
+    },
+    "CatalogManga": {
+      "title": "CatalogManga",
+      "description": "Shared canonical manga/manhwa/manhua catalog entry with metadata and chapters",
+      "type": "object",
+      "properties": {
+        "canonicalId": { "type": "string", "maxLength": 128 },
+        "data": { "type": "object" },
+        "chaptersCount": { "type": "number" },
+        "isOngoing": { "type": "boolean" },
+        "contentHash": { "type": "string", "maxLength": 128 },
+        "freshUntil": { "type": "number" },
+        "staleUntil": { "type": "number" },
+        "failReports": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "updatedBy": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["canonicalId", "data", "chaptersCount", "isOngoing", "contentHash", "freshUntil", "staleUntil", "failReports", "updatedAt", "updatedBy"]
+    },
+    "CatalogChapterPages": {
+      "title": "CatalogChapterPages",
+      "description": "Shared manga/manhwa chapter page manifests with self-healing failure tracking",
+      "type": "object",
+      "properties": {
+        "chapterKey": { "type": "string", "maxLength": 128 },
+        "mangaKey": { "type": "string", "maxLength": 128 },
+        "pages": { "type": "array" },
+        "pagesCount": { "type": "number" },
+        "source": { "type": "string", "maxLength": 64 },
+        "contentHash": { "type": "string", "maxLength": 128 },
+        "freshUntil": { "type": "number" },
+        "staleUntil": { "type": "number" },
+        "failReports": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "updatedBy": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["chapterKey", "mangaKey", "pages", "pagesCount", "source", "contentHash", "freshUntil", "staleUntil", "failReports", "updatedAt", "updatedBy"]
+    },
+    "ServerIntelligence": {
+      "title": "ServerIntelligence",
+      "description": "Shared episode server lists and crowd-scored server reliability rankings",
+      "type": "object",
+      "properties": {
+        "epKey": { "type": "string", "maxLength": 128 },
+        "servers": { "type": "array" },
+        "serversCount": { "type": "number" },
+        "scores": { "type": "object" },
+        "contentHash": { "type": "string", "maxLength": 128 },
+        "freshUntil": { "type": "number" },
+        "staleUntil": { "type": "number" },
+        "failReports": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "updatedBy": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["epKey", "servers", "serversCount", "scores", "contentHash", "freshUntil", "staleUntil", "failReports", "updatedAt", "updatedBy"]
     }
   },
   "firestore": {
+    "/catalog_bundles/{bundleId}": {
+      "schema": "CatalogBundle",
+      "description": "Bundled shared catalog lists excluding user-local recentEpisodes"
+    },
+    "/catalog_anime/{animeKey}": {
+      "schema": "CatalogAnime",
+      "description": "Shared canonical anime metadata and episodes"
+    },
+    "/catalog_anime/{animeKey}/segments/{segId}": {
+      "schema": "CatalogAnimeSegment",
+      "description": "Segmented episode lists for large anime series"
+    },
+    "/catalog_manga/{mangaKey}": {
+      "schema": "CatalogManga",
+      "description": "Shared canonical manga/manhwa/manhua metadata and chapters"
+    },
+    "/catalog_chapter_pages/{chapterKey}": {
+      "schema": "CatalogChapterPages",
+      "description": "Shared chapter page URL manifests with self-healing tracking"
+    },
+    "/server_intelligence/{epKey}": {
+      "schema": "ServerIntelligence",
+      "description": "Shared episode server lists and reliability scores"
+    },
     "/auditLogs/{logId}": {
       "schema": "AuditLog",
       "description": "Stores real-time staff and moderator audit logs"
@@ -352,6 +508,10 @@
     "/users/{userId}/animeEntries/{animeId}": {
       "schema": "AnimeEntry",
       "description": "User's anime collection entries with status and metadata"
+    },
+    "/users/{userId}/mangaEntries/{mangaId}": {
+      "schema": "MangaEntry",
+      "description": "User's manga, manhwa, and manhua reading library entries"
     },
     "/users/{userId}/tierList/{listId}": {
       "schema": "UserTierList",

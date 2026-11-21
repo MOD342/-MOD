@@ -5,6 +5,7 @@ import systemRoutes from "./routes/systemRoutes";
 import streamingRoutes from "./routes/streamingRoutes";
 import dashboardRoutes from "./routes/dashboardRoutes";
 import animeCatalogRoutes from "./routes/animeCatalogRoutes";
+import mangaRoutes from "./routes/mangaRoutes";
 
 export { IS_EXTERNAL_FETCH_DISABLED } from "./helpers/shared";
 
@@ -16,5 +17,6 @@ router.use(systemRoutes);
 router.use(streamingRoutes);
 router.use(dashboardRoutes);
 router.use(animeCatalogRoutes);
+router.use(mangaRoutes);
 
 export default router;

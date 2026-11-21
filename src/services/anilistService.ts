@@ -585,6 +585,7 @@ export const anilistService = {
     related: any[];
     recommendations: any[];
     pictures: string[];
+    sourceManga?: any;
   } | null> {
     const str = String(idOrQuery).trim();
     const isNumeric = /^\d+$/.test(str);
@@ -638,8 +639,10 @@ export const anilistService = {
             idMal
             type
             format
+            countryOfOrigin
             status
             episodes
+            chapters
             title {
               english
               romaji
@@ -909,12 +912,43 @@ export const anilistService = {
       });
     }
 
+    // Extract original source Manga/Manhwa/Manhua adaptation link when available
+    let sourceManga: any = null;
+    const mangaCandidates = (firstHopEdges || []).filter((edge: any) => {
+      const node = edge?.node;
+      const rel = String(edge?.relationType || "").toUpperCase();
+      return (
+        node &&
+        node.type === "MANGA" &&
+        (rel === "SOURCE" || rel === "ADAPTATION")
+      );
+    });
+    if (mangaCandidates.length > 0) {
+      const preferred =
+        mangaCandidates.find((e: any) => e.node.format === "MANGA" || e.node.format === "ONE_SHOT") ||
+        mangaCandidates[0];
+      const mNode = preferred.node;
+      const cOrigin = String(mNode.countryOfOrigin || "JP").toUpperCase();
+      sourceManga = {
+        id: String(mNode.id),
+        malId: mNode.idMal ? String(mNode.idMal) : null,
+        title: mNode.title?.english || mNode.title?.romaji || "Manga",
+        posterUrl: mNode.coverImage?.extraLarge || mNode.coverImage?.large || "",
+        format: mNode.format || "MANGA",
+        countryOfOrigin: cOrigin,
+        originLabel: cOrigin === "KR" ? "مانهوا" : cOrigin === "CN" ? "مانها" : mNode.format === "NOVEL" ? "رواية خفيفة" : "مانجا",
+        chapters: mNode.chapters || null,
+        year: mNode.seasonYear || null,
+      };
+    }
+
     return {
       anime: mappedAnime,
       characters,
       related,
       recommendations,
       pictures,
+      sourceManga,
     };
   },
 };

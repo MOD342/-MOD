@@ -3,7 +3,7 @@ import crypto from "crypto";
 import { serverCache } from "../../services/cacheService";
 import { cleanAnimeTitle } from "../../utils/animeTitleCleaner";
 import { scraper, handleAsync } from "../helpers/shared";
-import { extractDirectStream } from "../helpers/streamExtractors";
+import { extractDirectStream, STREAM_UA } from "../helpers/streamExtractors";
 import {
   resolveBestDownloadTarget,
   streamResolvedDownloadTarget,
@@ -166,17 +166,12 @@ router.get(
     }
 
     const proxyHeaders: Record<string, string> = {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+      "User-Agent": STREAM_UA,
       Accept: "*/*",
     };
 
     if (referer) {
       proxyHeaders["Referer"] = referer;
-      try {
-        const refObj = new URL(referer);
-        proxyHeaders["Origin"] = `${refObj.protocol}//${refObj.host}`;
-      } catch (_) {}
     }
 
     if (req.headers.range) {
@@ -184,10 +179,11 @@ router.get(
     }
 
     try {
-      // في حال كان السيرفر (مثل vidcache.net الخاص بـ YourUpload) يوجه 302 إلى سيرفر فرعي يتطلب عدم إرسال Referer في الخطوة الثانية
+      let finalUpstreamUrl = rawUrl;
       let upstream = await fetch(rawUrl, {
         headers: proxyHeaders,
         redirect: "manual",
+        signal: AbortSignal.timeout(25_000),
       });
 
       if (
@@ -202,7 +198,7 @@ router.get(
           upstream.headers.get("location")!,
           rawUrl
         ).href;
-        // إذا كان رابط التوجيه على vidcache.net يعمل مباشرة مع Range، يمكننا توجيه المتصفح إليه أو جلبه مباشرة
+        finalUpstreamUrl = nextUrl;
         const nextHeaders: Record<string, string> = {
           "User-Agent": proxyHeaders["User-Agent"],
           Accept: "*/*",
@@ -216,7 +212,49 @@ router.get(
         upstream = await fetch(nextUrl, {
           headers: nextHeaders,
           redirect: "follow",
+          signal: AbortSignal.timeout(25_000),
         });
+        if (upstream.url) finalUpstreamUrl = upstream.url;
+      }
+
+      const upstreamCt = (upstream.headers.get("content-type") || "").toLowerCase();
+      const isM3u8 =
+        upstream.ok &&
+        (upstreamCt.includes("mpegurl") ||
+          /\.m3u8(?:$|[?#])/i.test(finalUpstreamUrl));
+
+      if (isM3u8) {
+        const playlistText = await upstream.text();
+        if (playlistText.includes("#EXTM3U")) {
+          const toProxied = (refTarget: string) => {
+            try {
+              const abs = new URL(refTarget.trim(), finalUpstreamUrl).href;
+              return `/api/anime/stream-proxy?url=${encodeURIComponent(abs)}${
+                referer ? `&referer=${encodeURIComponent(referer)}` : ""
+              }`;
+            } catch {
+              return refTarget;
+            }
+          };
+
+          const rewritten = playlistText
+            .split(/\r?\n/)
+            .map((line) => {
+              const trimmed = line.trim();
+              if (!trimmed) return line;
+              if (trimmed.startsWith("#")) {
+                return line.replace(/URI="([^"]+)"/gi, (_m, uriVal) => `URI="${toProxied(uriVal)}"`);
+              }
+              return toProxied(trimmed);
+            })
+            .join("\n");
+
+          res.status(200);
+          res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+          res.setHeader("Access-Control-Allow-Origin", "*");
+          res.setHeader("Cache-Control", "no-store");
+          return res.send(rewritten);
+        }
       }
 
       res.status(upstream.status);
@@ -237,13 +275,26 @@ router.get(
       }
 
       const reader = upstream.body.getReader();
-      req.on("close", () => {
-        reader.cancel().catch(() => {});
+      let clientClosed = false;
+      res.on("close", () => {
+        if (!res.writableFinished) {
+          clientClosed = true;
+          reader.cancel().catch(() => {});
+        }
       });
 
       while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const readRes = await Promise.race([
+          reader.read().finally(() => {
+            if (timer) clearTimeout(timer);
+          }),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error("Upstream stream read timeout")), 25_000);
+          }),
+        ]);
+        const { done, value } = readRes;
+        if (done || clientClosed) break;
         if (!res.writableEnded) {
           res.write(Buffer.from(value));
         } else {
@@ -352,21 +403,46 @@ router.post(
 router.post(
   "/anime/resolve-play",
   handleAsync(async (req: Request, res: Response) => {
-    const { url, fallbackUrls, title, ep } = req.body || {};
+    const { url, fallbackUrls, serverCandidates, preferredQuality, title, ep } = req.body || {};
+    const serverMetaMap: Record<string, { quality?: string; serverName?: string }> = {};
+    const candidateFromObjects: string[] = [];
+
+    if (Array.isArray(serverCandidates)) {
+      for (const item of serverCandidates) {
+        if (item && typeof item.url === "string" && item.url.trim()) {
+          const cleanUrl = item.url.trim();
+          candidateFromObjects.push(cleanUrl);
+          serverMetaMap[cleanUrl] = {
+            quality: typeof item.quality === "string" ? item.quality : undefined,
+            serverName: typeof item.serverName === "string" ? item.serverName : undefined,
+          };
+        }
+      }
+    }
+
     const candidates: string[] = [
       ...(typeof url === "string" ? [url] : []),
       ...(Array.isArray(fallbackUrls) ? fallbackUrls.filter((u: any) => typeof u === "string") : []),
+      ...candidateFromObjects,
     ];
 
     if (candidates.length === 0) {
       return res.status(400).json({ success: false, message: "لا توجد روابط للتشغيل الخارجي." });
     }
 
+    const normalizedPref: PreferredQuality =
+      preferredQuality === "auto" || !preferredQuality
+        ? "auto"
+        : normalizeQualityTier(String(preferredQuality)) || "auto";
+
     const { primary: resolved, publicExternal } = await resolveBestDownloadTarget(
       candidates,
       String(title || "Anime"),
       String(ep || "1"),
       true,
+      false,
+      normalizedPref,
+      serverMetaMap,
     );
 
     if (!resolved) {
@@ -375,6 +451,8 @@ router.post(
         message: "تعذر تجهيز رابط التشغيل المباشر، يرجى تجربة خيار آخر.",
       });
     }
+
+    const resolvedQuality = resolved.resolvedQuality || "HD";
 
     // الأولوية القصوى للروابط المباشرة من الـ CDN التي لا تتطلب Referer ولا تمر عبر بوابة مصادقة التطبيق
     const directPublic = publicExternal || (resolved.publicNoReferer ? resolved : null);
@@ -391,6 +469,8 @@ router.post(
           directPublic.mode === "hls-remux"
             ? directPublic.filename.replace(/\.mp4$/i, ".m3u8")
             : directPublic.filename,
+        resolvedQuality: directPublic.resolvedQuality || resolvedQuality,
+        requestedQuality: normalizedPref,
       });
     }
 
@@ -405,6 +485,8 @@ router.post(
       streamUrl: `/api/anime/play-stream/${token}/${safeFile}`,
       mimeType: resolved.mimeType || "video/mp4",
       filename: resolved.filename,
+      resolvedQuality,
+      requestedQuality: normalizedPref,
     });
   }),
 );
@@ -474,7 +556,7 @@ router.post(
       return res.status(400).json({ success: false, message: "الرابط مطلوب" });
     }
 
-    const extractKey = `extract_stream_v4:${url}`;
+    const extractKey = `extract_stream_v6:${url}`;
     const extracted = await serverCache.getOrFetch(
       extractKey,
       () => extractDirectStream(url),

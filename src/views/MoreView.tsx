@@ -33,7 +33,8 @@ import {
   HeartHandshake,
   Bot,
   Film,
-  FolderDown
+  FolderDown,
+  BookOpen
 } from 'lucide-react';
 import ViewportPortal from '../components/ViewportPortal';
 import { motion, AnimatePresence } from 'motion/react';
@@ -187,6 +188,7 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
     {
       title: 'الترفيه والمتجر',
       items: [
+        { id: 'manga_hub', label: 'المانجا والمانهوا', icon: BookOpen, color: 'text-amber-400', bg: 'bg-amber-500/10' },
         { id: 'ai_chat', label: 'صديقك الأوتاكو', icon: Bot, color: 'text-rose-400', bg: 'bg-rose-500/10' },
         { id: 'games', label: 'حلبة الأوتاكو', icon: Swords, color: 'text-purple-400', bg: 'bg-purple-500/10' },
         { id: 'store', label: 'المتجر', icon: ShoppingCart, color: 'text-orange-400', bg: 'bg-orange-500/10' },

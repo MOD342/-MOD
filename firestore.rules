@@ -2,18 +2,115 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
     // Phase 4: Primitive Definition
     function isValidId(id) { 
       return id is string && id.size() > 0 && id.size() <= 512; 
     }
+    function isValidCatalogId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
     function incoming() { return request.resource.data; }
     function existing() { return resource.data; }
     function isSignedIn() { return request.auth != null; }
+    function isVerifiedUser() {
+      return isSignedIn()
+        && request.auth.token != null
+        && request.auth.token.email_verified == true;
+    }
+    function isNotBanned() {
+      return !exists(/databases/$(database)/documents/bannedUsers/$(request.auth.uid));
+    }
     function isOwner(userId) { return isSignedIn() && request.auth.uid == userId; }
+
+    function isValidCatalogBundle(data, docId) {
+      return data.keys().hasAll(['bundleId', 'kind', 'payload', 'itemCount', 'contentHash', 'freshUntil', 'staleUntil', 'failReports', 'updatedAt', 'updatedBy'])
+        && data.keys().hasOnly(['bundleId', 'kind', 'payload', 'itemCount', 'contentHash', 'freshUntil', 'staleUntil', 'failReports', 'updatedAt', 'updatedBy'])
+        && data.bundleId is string && data.bundleId == docId && data.bundleId.size() > 0 && data.bundleId.size() <= 128
+        && data.kind is string && data.kind in ['dashboard', 'manga_hub', 'movies', 'top', 'season', 'schedule']
+        && data.payload is map
+        && data.itemCount is number && data.itemCount >= 1 && data.itemCount <= 2000
+        && data.contentHash is string && data.contentHash.size() > 0 && data.contentHash.size() <= 128
+        && data.freshUntil is number && data.staleUntil is number && data.staleUntil >= data.freshUntil
+        && data.failReports is number && data.failReports >= 0 && data.failReports <= 50
+        && data.updatedAt == request.time
+        && data.updatedBy is string && data.updatedBy == request.auth.uid && data.updatedBy.size() <= 128;
+    }
+
+    function isValidCatalogAnime(data, docId) {
+      return data.keys().hasAll(['canonicalId', 'data', 'episodesCount', 'segmentsCount', 'isOngoing', 'contentHash', 'freshUntil', 'staleUntil', 'failReports', 'updatedAt', 'updatedBy'])
+        && data.keys().hasOnly(['canonicalId', 'data', 'episodesCount', 'segmentsCount', 'isOngoing', 'contentHash', 'freshUntil', 'staleUntil', 'failReports', 'updatedAt', 'updatedBy'])
+        && data.canonicalId is string && data.canonicalId == docId && data.canonicalId.size() > 0 && data.canonicalId.size() <= 128
+        && data.data is map
+        && data.episodesCount is number && data.episodesCount >= 0 && data.episodesCount <= 10000
+        && data.segmentsCount is number && data.segmentsCount >= 0 && data.segmentsCount <= 50
+        && data.isOngoing is bool
+        && data.contentHash is string && data.contentHash.size() > 0 && data.contentHash.size() <= 128
+        && data.freshUntil is number && data.staleUntil is number && data.staleUntil >= data.freshUntil
+        && data.failReports is number && data.failReports >= 0 && data.failReports <= 50
+        && data.updatedAt == request.time
+        && data.updatedBy is string && data.updatedBy == request.auth.uid && data.updatedBy.size() <= 128;
+    }
+
+    function isValidCatalogAnimeSegment(data, parentId) {
+      return data.keys().hasAll(['parentKey', 'segmentIndex', 'episodes', 'updatedAt', 'updatedBy'])
+        && data.keys().hasOnly(['parentKey', 'segmentIndex', 'episodes', 'updatedAt', 'updatedBy'])
+        && data.parentKey is string && data.parentKey == parentId && data.parentKey.size() > 0 && data.parentKey.size() <= 128
+        && data.segmentIndex is number && data.segmentIndex >= 0 && data.segmentIndex <= 50
+        && data.episodes is list && data.episodes.size() > 0 && data.episodes.size() <= 400 && data.episodes[0] is map
+        && data.updatedAt == request.time
+        && data.updatedBy is string && data.updatedBy == request.auth.uid && data.updatedBy.size() <= 128;
+    }
+
+    function isValidCatalogManga(data, docId) {
+      return data.keys().hasAll(['canonicalId', 'data', 'chaptersCount', 'isOngoing', 'contentHash', 'freshUntil', 'staleUntil', 'failReports', 'updatedAt', 'updatedBy'])
+        && data.keys().hasOnly(['canonicalId', 'data', 'chaptersCount', 'isOngoing', 'contentHash', 'freshUntil', 'staleUntil', 'failReports', 'updatedAt', 'updatedBy'])
+        && data.canonicalId is string && data.canonicalId == docId && data.canonicalId.size() > 0 && data.canonicalId.size() <= 128
+        && data.data is map
+        && data.chaptersCount is number && data.chaptersCount >= 0 && data.chaptersCount <= 10000
+        && data.isOngoing is bool
+        && data.contentHash is string && data.contentHash.size() > 0 && data.contentHash.size() <= 128
+        && data.freshUntil is number && data.staleUntil is number && data.staleUntil >= data.freshUntil
+        && data.failReports is number && data.failReports >= 0 && data.failReports <= 50
+        && data.updatedAt == request.time
+        && data.updatedBy is string && data.updatedBy == request.auth.uid && data.updatedBy.size() <= 128;
+    }
+
+    function isValidCatalogChapterPages(data, docId) {
+      return data.keys().hasAll(['chapterKey', 'mangaKey', 'pages', 'pagesCount', 'source', 'contentHash', 'freshUntil', 'staleUntil', 'failReports', 'updatedAt', 'updatedBy'])
+        && data.keys().hasOnly(['chapterKey', 'mangaKey', 'pages', 'pagesCount', 'source', 'contentHash', 'freshUntil', 'staleUntil', 'failReports', 'updatedAt', 'updatedBy'])
+        && data.chapterKey is string && data.chapterKey == docId && data.chapterKey.size() > 0 && data.chapterKey.size() <= 128
+        && data.mangaKey is string && data.mangaKey.size() > 0 && data.mangaKey.size() <= 128
+        && data.pages is list && data.pages.size() > 0 && data.pages.size() <= 500 && data.pages[0] is map
+        && data.pagesCount is number && data.pagesCount >= 1 && data.pagesCount <= 500
+        && data.source is string && data.source.size() > 0 && data.source.size() <= 64
+        && data.contentHash is string && data.contentHash.size() > 0 && data.contentHash.size() <= 128
+        && data.freshUntil is number && data.staleUntil is number && data.staleUntil >= data.freshUntil
+        && data.failReports is number && data.failReports >= 0 && data.failReports <= 50
+        && data.updatedAt == request.time
+        && data.updatedBy is string && data.updatedBy == request.auth.uid && data.updatedBy.size() <= 128;
+    }
+
+    function isValidServerIntelligence(data, docId) {
+      return data.keys().hasAll(['epKey', 'servers', 'serversCount', 'scores', 'contentHash', 'freshUntil', 'staleUntil', 'failReports', 'updatedAt', 'updatedBy'])
+        && data.keys().hasOnly(['epKey', 'servers', 'serversCount', 'scores', 'contentHash', 'freshUntil', 'staleUntil', 'failReports', 'updatedAt', 'updatedBy'])
+        && data.epKey is string && data.epKey == docId && data.epKey.size() > 0 && data.epKey.size() <= 128
+        && data.servers is list && data.servers.size() > 0 && data.servers.size() <= 40 && data.servers[0] is map
+        && data.serversCount is number && data.serversCount >= 1 && data.serversCount <= 40
+        && data.scores is map
+        && data.contentHash is string && data.contentHash.size() > 0 && data.contentHash.size() <= 128
+        && data.freshUntil is number && data.staleUntil is number && data.staleUntil >= data.freshUntil
+        && data.failReports is number && data.failReports >= 0 && data.failReports <= 50
+        && data.updatedAt == request.time
+        && data.updatedBy is string && data.updatedBy == request.auth.uid && data.updatedBy.size() <= 128;
+    }
 
     function isValidUser(data) {
       return data.keys().hasAll(['role', 'createdAt', 'xp', 'level', 'modPoints', 'streakDays', 'likesReceived', 'commentsCount', 'recommendationsAccepted', 'aiGamesPoints', 'ratingsCount', 'chatMessagesCount', 'lastActiveDate']) 
-        && (data.keys().size() >= 13 && data.keys().size() <= 60)
+        && (data.keys().size() >= 13 && data.keys().size() <= 65)
         && data.role == 'user'
         && data.modPoints == 0
         && data.xp is number && data.level is number
@@ -58,6 +155,8 @@ service cloud.firestore {
         && (!data.keys().hasAny(['streakShieldCount']) || data.streakShieldCount is number)
         && (!data.keys().hasAny(['antiCheatHintCount']) || data.antiCheatHintCount is number)
         && (!data.keys().hasAny(['lastSyncedAt']) || data.lastSyncedAt is number)
+        && (!data.keys().hasAny(['totalChaptersRead']) || data.totalChaptersRead is number)
+        && (!data.keys().hasAny(['completedMangaCount']) || data.completedMangaCount is number)
         && data.lastActiveDate is string
         && data.createdAt == request.time;
     }
@@ -83,6 +182,27 @@ service cloud.firestore {
         && (!data.keys().hasAny(['completedXpClaimed']) || data.completedXpClaimed is bool || data.completedXpClaimed == null)
         && (!data.keys().hasAny(['watchedEpisodes']) || data.watchedEpisodes is list || data.watchedEpisodes == null)
         && (!data.keys().hasAny(['episodesCount']) || data.episodesCount is number || data.episodesCount == null)
+        && (!data.keys().hasAny(['progress']) || data.progress is number || data.progress == null)
+        && (!data.keys().hasAny(['addedAt']) || data.addedAt == null || data.addedAt is string || data.addedAt is timestamp);
+    }
+
+    function isValidMangaEntry(data) {
+      return data.keys().hasAll(['title', 'posterUrl', 'updatedAt'])
+        && data.keys().size() <= 30
+        && (data.title is string || data.title == null)
+        && (data.posterUrl is string || data.posterUrl == null)
+        && (!data.keys().hasAny(['mediaFormat']) || data.mediaFormat == null || data.mediaFormat is string)
+        && (!data.keys().hasAny(['countryOfOrigin']) || data.countryOfOrigin == null || data.countryOfOrigin is string)
+        && (!data.keys().hasAny(['status']) || data.status == null || data.status is string)
+        && (!data.keys().hasAny(['releaseYear']) || data.releaseYear == null || data.releaseYear is string || data.releaseYear is number)
+        && (!data.keys().hasAny(['customLists']) || data.customLists == null || data.customLists is map)
+        && (!data.keys().hasAny(['score']) || data.score == null || data.score is number)
+        && (!data.keys().hasAny(['isFavorite']) || data.isFavorite is bool || data.isFavorite == null)
+        && (!data.keys().hasAny(['mangaId']) || data.mangaId is string || data.mangaId == null)
+        && (!data.keys().hasAny(['readChapters']) || data.readChapters is list || data.readChapters == null)
+        && (!data.keys().hasAny(['lastReadChapter']) || data.lastReadChapter is number || data.lastReadChapter == null)
+        && (!data.keys().hasAny(['lastReadPage']) || data.lastReadPage is number || data.lastReadPage == null)
+        && (!data.keys().hasAny(['chaptersCount']) || data.chaptersCount is number || data.chaptersCount == null)
         && (!data.keys().hasAny(['progress']) || data.progress is number || data.progress == null)
         && (!data.keys().hasAny(['addedAt']) || data.addedAt == null || data.addedAt is string || data.addedAt is timestamp);
     }
@@ -168,17 +288,11 @@ service cloud.firestore {
         && data.createdAt == request.time;
     }
 
-    function isValidServerCache(data) {
-      return data.keys().hasAll(['data', 'expireAt'])
-        && data.keys().size() <= 3
-        && data.expireAt is number;
-    }
-
     function isOwnerAuth() {
       return isSignedIn() && (
         request.auth.uid == 'IYLv7bRb89W4rifLQFDAfYlf2fN2'
         || request.auth.uid == 'IoHKK83ujDVJrsVFFloWzNbtVKp2'
-        || (request.auth.token != null && request.auth.token.email != null && (request.auth.token.email == '342.mod@gmail.com' || request.auth.token.email == 'mod.mg.342@gmail.com'))
+        || (request.auth.token != null && request.auth.token.email != null && request.auth.token.email_verified == true && (request.auth.token.email == '342.mod@gmail.com' || request.auth.token.email == 'mod.mg.342@gmail.com'))
         || (exists(/databases/$(database)/documents/globalRoles/$(request.auth.uid)) && get(/databases/$(database)/documents/globalRoles/$(request.auth.uid)).data.role == 'owner')
       );
     }
@@ -195,6 +309,171 @@ service cloud.firestore {
         isOwnerAuth()
         || (exists(/databases/$(database)/documents/globalRoles/$(request.auth.uid)) && get(/databases/$(database)/documents/globalRoles/$(request.auth.uid)).data.role in ['owner', 'admin', 'moderator'])
       );
+    }
+
+    // Shared 3-Tier Cloud Catalog Collections
+    match /catalog_bundles/{bundleId} {
+      allow get: if isValidCatalogId(bundleId);
+      allow list: if isAdminAuth();
+      allow create: if isVerifiedUser()
+        && isValidCatalogId(bundleId)
+        && isValidCatalogBundle(incoming(), bundleId)
+        && isNotBanned();
+      allow update: if isVerifiedUser()
+        && isValidCatalogId(bundleId)
+        && isValidCatalogBundle(incoming(), bundleId)
+        && (
+          isModeratorAuth()
+          || (
+            incoming().bundleId == existing().bundleId
+            && incoming().kind == existing().kind
+            && incoming().diff(existing()).affectedKeys().hasOnly(['payload', 'itemCount', 'contentHash', 'freshUntil', 'staleUntil', 'failReports', 'updatedAt', 'updatedBy'])
+            && (request.time.toMillis() >= existing().freshUntil || existing().failReports >= 1)
+            && isNotBanned()
+          )
+          || (
+            incoming().diff(existing()).affectedKeys().hasOnly(['failReports', 'updatedAt', 'updatedBy'])
+            && incoming().failReports == existing().failReports + 1
+            && incoming().failReports <= 50
+            && isNotBanned()
+          )
+        );
+      allow delete: if isAdminAuth();
+    }
+
+    match /catalog_anime/{animeKey} {
+      allow get: if isValidCatalogId(animeKey);
+      allow list: if isAdminAuth();
+      allow create: if isVerifiedUser()
+        && isValidCatalogId(animeKey)
+        && isValidCatalogAnime(incoming(), animeKey)
+        && isNotBanned();
+      allow update: if isVerifiedUser()
+        && isValidCatalogId(animeKey)
+        && isValidCatalogAnime(incoming(), animeKey)
+        && (
+          isModeratorAuth()
+          || (
+            incoming().canonicalId == existing().canonicalId
+            && incoming().diff(existing()).affectedKeys().hasOnly(['data', 'episodesCount', 'segmentsCount', 'isOngoing', 'contentHash', 'freshUntil', 'staleUntil', 'failReports', 'updatedAt', 'updatedBy'])
+            && (
+              existing().failReports >= 1
+              || request.time.toMillis() >= existing().freshUntil
+              || incoming().episodesCount >= existing().episodesCount
+            )
+            && isNotBanned()
+          )
+          || (
+            incoming().diff(existing()).affectedKeys().hasOnly(['failReports', 'updatedAt', 'updatedBy'])
+            && incoming().failReports == existing().failReports + 1
+            && incoming().failReports <= 50
+            && isNotBanned()
+          )
+        );
+      allow delete: if isAdminAuth();
+
+      match /segments/{segId} {
+        allow get: if isValidCatalogId(animeKey) && isValidCatalogId(segId);
+        allow list: if isAdminAuth();
+        allow create, update: if isVerifiedUser()
+          && isValidCatalogId(animeKey)
+          && isValidCatalogId(segId)
+          && isValidCatalogAnimeSegment(incoming(), animeKey)
+          && exists(/databases/$(database)/documents/catalog_anime/$(animeKey))
+          && isNotBanned();
+        allow delete: if isAdminAuth();
+      }
+    }
+
+    match /catalog_manga/{mangaKey} {
+      allow get: if isValidCatalogId(mangaKey);
+      allow list: if isAdminAuth();
+      allow create: if isVerifiedUser()
+        && isValidCatalogId(mangaKey)
+        && isValidCatalogManga(incoming(), mangaKey)
+        && isNotBanned();
+      allow update: if isVerifiedUser()
+        && isValidCatalogId(mangaKey)
+        && isValidCatalogManga(incoming(), mangaKey)
+        && (
+          isModeratorAuth()
+          || (
+            incoming().canonicalId == existing().canonicalId
+            && incoming().diff(existing()).affectedKeys().hasOnly(['data', 'chaptersCount', 'isOngoing', 'contentHash', 'freshUntil', 'staleUntil', 'failReports', 'updatedAt', 'updatedBy'])
+            && (
+              existing().failReports >= 1
+              || request.time.toMillis() >= existing().freshUntil
+              || incoming().chaptersCount >= existing().chaptersCount
+            )
+            && isNotBanned()
+          )
+          || (
+            incoming().diff(existing()).affectedKeys().hasOnly(['failReports', 'updatedAt', 'updatedBy'])
+            && incoming().failReports == existing().failReports + 1
+            && incoming().failReports <= 50
+            && isNotBanned()
+          )
+        );
+      allow delete: if isAdminAuth();
+    }
+
+    match /catalog_chapter_pages/{chapterKey} {
+      allow get: if isValidCatalogId(chapterKey);
+      allow list: if isAdminAuth();
+      allow create: if isVerifiedUser()
+        && isValidCatalogId(chapterKey)
+        && isValidCatalogChapterPages(incoming(), chapterKey)
+        && isNotBanned();
+      allow update: if isVerifiedUser()
+        && isValidCatalogId(chapterKey)
+        && isValidCatalogChapterPages(incoming(), chapterKey)
+        && (
+          isModeratorAuth()
+          || (
+            incoming().chapterKey == existing().chapterKey
+            && incoming().diff(existing()).affectedKeys().hasOnly(['mangaKey', 'pages', 'pagesCount', 'source', 'contentHash', 'freshUntil', 'staleUntil', 'failReports', 'updatedAt', 'updatedBy'])
+            && (existing().failReports >= 1 || request.time.toMillis() >= existing().freshUntil)
+            && isNotBanned()
+          )
+          || (
+            incoming().diff(existing()).affectedKeys().hasOnly(['failReports', 'updatedAt', 'updatedBy'])
+            && incoming().failReports == existing().failReports + 1
+            && incoming().failReports <= 50
+            && isNotBanned()
+          )
+        );
+      allow delete: if isAdminAuth();
+    }
+
+    match /server_intelligence/{epKey} {
+      allow get: if isValidCatalogId(epKey);
+      allow list: if isAdminAuth();
+      allow create: if isVerifiedUser()
+        && isValidCatalogId(epKey)
+        && isValidServerIntelligence(incoming(), epKey)
+        && isNotBanned();
+      allow update: if isVerifiedUser()
+        && isValidCatalogId(epKey)
+        && isValidServerIntelligence(incoming(), epKey)
+        && (
+          isModeratorAuth()
+          || (
+            incoming().epKey == existing().epKey
+            && incoming().diff(existing()).affectedKeys().hasOnly(['servers', 'serversCount', 'scores', 'contentHash', 'freshUntil', 'staleUntil', 'failReports', 'updatedAt', 'updatedBy'])
+            && isNotBanned()
+          )
+          || (
+            incoming().diff(existing()).affectedKeys().hasOnly(['scores', 'updatedAt', 'updatedBy'])
+            && isNotBanned()
+          )
+          || (
+            incoming().diff(existing()).affectedKeys().hasOnly(['failReports', 'updatedAt', 'updatedBy'])
+            && incoming().failReports == existing().failReports + 1
+            && incoming().failReports <= 50
+            && isNotBanned()
+          )
+        );
+      allow delete: if isAdminAuth();
     }
 
     match /globalRoles/{userId} {
@@ -313,13 +592,17 @@ service cloud.firestore {
       allow read: if true;
     }
 
+    match /{path=**}/mangaEntries/{docId} {
+      allow read: if true;
+    }
+
     match /users/{userId} {
       allow read: if true;
       allow create: if isOwner(userId) && isValidId(userId) && isValidUser(incoming());
       allow update: if isSignedIn() && isValidId(userId) && (
         isModeratorAuth() || (
           isOwner(userId) &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['xp', 'level', 'streakDays', 'likesReceived', 'commentsCount', 'recommendationsAccepted', 'aiGamesPoints', 'ratingsCount', 'chatMessagesCount', 'lastActiveDate', 'coins', 'purchasedItems', 'claimedAchievements', 'dailyStats', 'equippedBanner', 'equippedAvatar', 'equippedFrame', 'equippedTitle', 'equippedBadge', 'equippedAura', 'equippedCommentCard', 'lastSpinTimestamp', 'listCount', 'username', 'displayName', 'lastUsernameChange', 'lastDisplayNameChange', 'totalEpisodesWatched', 'completedAnimeCount', 'privacySettings', 'avatarAlignment', 'avatarShape', 'bannerSize', 'dislikesReceived', 'approvedRecommendationsCount', 'email', 'photoURL', 'id', 'modPoints', 'lastSpinDate', 'lastDailyClaim', 'dailyClaimStreak', 'claimedSeasonMilestones', 'boosters', 'lastBossDefeatDate', 'unlockedRewards', 'hasClaimedCorrectionBadge', 'redeemedPromoCodes', 'doubleXpUntil', 'doubleCoinsUntil', 'streakShieldCount', 'antiCheatHintCount', 'lastSyncedAt']) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['xp', 'level', 'streakDays', 'likesReceived', 'commentsCount', 'recommendationsAccepted', 'aiGamesPoints', 'ratingsCount', 'chatMessagesCount', 'lastActiveDate', 'coins', 'purchasedItems', 'claimedAchievements', 'dailyStats', 'equippedBanner', 'equippedAvatar', 'equippedFrame', 'equippedTitle', 'equippedBadge', 'equippedAura', 'equippedCommentCard', 'lastSpinTimestamp', 'listCount', 'username', 'displayName', 'lastUsernameChange', 'lastDisplayNameChange', 'totalEpisodesWatched', 'completedAnimeCount', 'totalChaptersRead', 'completedMangaCount', 'privacySettings', 'avatarAlignment', 'avatarShape', 'bannerSize', 'dislikesReceived', 'approvedRecommendationsCount', 'email', 'photoURL', 'id', 'modPoints', 'lastSpinDate', 'lastDailyClaim', 'dailyClaimStreak', 'claimedSeasonMilestones', 'boosters', 'lastBossDefeatDate', 'unlockedRewards', 'hasClaimedCorrectionBadge', 'redeemedPromoCodes', 'doubleXpUntil', 'doubleCoinsUntil', 'streakShieldCount', 'antiCheatHintCount', 'lastSyncedAt']) &&
           (!incoming().diff(existing()).affectedKeys().hasAny(['role'])) &&
           (!incoming().diff(existing()).affectedKeys().hasAny(['doubleXpUntil']) || incoming().doubleXpUntil is number) &&
           (!incoming().diff(existing()).affectedKeys().hasAny(['doubleCoinsUntil']) || incoming().doubleCoinsUntil is number) &&
@@ -360,6 +643,8 @@ service cloud.firestore {
           (!incoming().diff(existing()).affectedKeys().hasAny(['listCount']) || incoming().listCount is number) &&
           (!incoming().diff(existing()).affectedKeys().hasAny(['totalEpisodesWatched']) || incoming().totalEpisodesWatched is number) &&
           (!incoming().diff(existing()).affectedKeys().hasAny(['completedAnimeCount']) || incoming().completedAnimeCount is number) &&
+          (!incoming().diff(existing()).affectedKeys().hasAny(['totalChaptersRead']) || incoming().totalChaptersRead is number) &&
+          (!incoming().diff(existing()).affectedKeys().hasAny(['completedMangaCount']) || incoming().completedMangaCount is number) &&
           (!incoming().diff(existing()).affectedKeys().hasAny(['privacySettings']) || incoming().privacySettings is map) &&
           (!incoming().diff(existing()).affectedKeys().hasAny(['avatarAlignment']) || incoming().avatarAlignment is string) &&
           (!incoming().diff(existing()).affectedKeys().hasAny(['avatarShape']) || incoming().avatarShape is string) &&
@@ -395,6 +680,20 @@ service cloud.firestore {
           )
           && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'customLists', 'score', 'isFavorite', 'animeId', 'updatedAt', 'title', 'posterUrl', 'releaseYear', 'completedXpClaimed', 'watchedEpisodes', 'episodesCount', 'progress', 'addedAt']);
         allow delete: if isAdminAuth() || (isOwner(userId) && isValidId(animeId));
+      }
+
+      match /mangaEntries/{mangaId} {
+        allow read: if true;
+        allow create: if isOwner(userId) && isValidId(mangaId)
+          && isValidMangaEntry(incoming());
+        allow update: if isOwner(userId) && isValidId(mangaId)
+          && isValidMangaEntry(incoming())
+          && (
+            !incoming().diff(existing()).affectedKeys().hasAny(['addedAt']) ||
+            (incoming().addedAt is string || incoming().addedAt is timestamp)
+          )
+          && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'customLists', 'score', 'isFavorite', 'mangaId', 'updatedAt', 'title', 'posterUrl', 'mediaFormat', 'countryOfOrigin', 'releaseYear', 'readChapters', 'lastReadChapter', 'lastReadPage', 'chaptersCount', 'progress', 'addedAt']);
+        allow delete: if isAdminAuth() || (isOwner(userId) && isValidId(mangaId));
       }
 
       match /tierList/{listId} {
@@ -440,9 +739,7 @@ service cloud.firestore {
     }
 
     match /server_cache/{cacheId} {
-      allow read: if true;
-      allow create, update: if isValidId(cacheId) && isValidServerCache(incoming());
-      allow delete: if true;
+      allow read, write, delete: if isAdminAuth();
     }
 
     match /battleRooms/{roomId} {

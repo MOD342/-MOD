@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
 import { anilistService } from '../services/anilistService';
+import { mangaService } from '../services/mangaService';
 import { cleanAnimeTitle } from '../utils/animeTitleCleaner';
 import { translateGenresListToArabic } from './helpers/translation';
 
@@ -75,6 +76,7 @@ const GAMES_CACHE_TTL_MS = 20 * 60 * 1000; // 20 minutes shared pool per game ty
 
 export interface ChatAnimeCard {
   id: string;
+  mediaType?: 'anime' | 'manga';
   title: string;
   posterUrl: string;
   rating: number | null;
@@ -84,18 +86,29 @@ export interface ChatAnimeCard {
   genres: string[];
 }
 
-async function resolveSuggestedAnimeCards(titles: string[]): Promise<ChatAnimeCard[]> {
-  const cleaned = Array.from(
+async function resolveSuggestedAnimeCards(
+  animeTitles: string[],
+  mangaTitles: string[] = [],
+): Promise<ChatAnimeCard[]> {
+  const cleanedAnimes = Array.from(
     new Set(
-      (titles || [])
+      (animeTitles || [])
         .map((t) => String(t || '').trim())
         .filter((t) => t.length >= 2 && t.length <= 120)
     )
   ).slice(0, 4);
 
-  if (cleaned.length === 0) return [];
+  const cleanedMangas = Array.from(
+    new Set(
+      (mangaTitles || [])
+        .map((t) => String(t || '').trim())
+        .filter((t) => t.length >= 2 && t.length <= 120)
+    )
+  ).slice(0, 4);
 
-  const lookupOne = async (query: string): Promise<ChatAnimeCard | null> => {
+  if (cleanedAnimes.length === 0 && cleanedMangas.length === 0) return [];
+
+  const lookupAnime = async (query: string): Promise<ChatAnimeCard | null> => {
     try {
       const res = await anilistService.searchAnime({ q: query, page: 1 });
       const first = res?.data?.[0];
@@ -108,6 +121,7 @@ async function resolveSuggestedAnimeCards(titles: string[]): Promise<ChatAnimeCa
 
       return {
         id,
+        mediaType: 'anime',
         title: cleanAnimeTitle(rawTitle) || rawTitle,
         posterUrl,
         rating: typeof first.score === 'number' ? first.score : null,
@@ -121,18 +135,43 @@ async function resolveSuggestedAnimeCards(titles: string[]): Promise<ChatAnimeCa
     }
   };
 
+  const lookupManga = async (query: string): Promise<ChatAnimeCard | null> => {
+    try {
+      const res = await mangaService.searchManga({ q: query, page: 1 });
+      const first = res?.data?.[0];
+      if (!first) return null;
+      return {
+        id: String(first._id),
+        mediaType: 'manga',
+        title: first.title || query,
+        posterUrl: first.posterUrl || '',
+        rating: typeof first.rating === 'number' ? first.rating : null,
+        type: first.originLabel || 'مانجا',
+        episodes: typeof first.chaptersCount === 'number' ? first.chaptersCount : null,
+        year: typeof first.releaseYear === 'number' ? first.releaseYear : null,
+        genres: Array.isArray(first.genres) ? first.genres.slice(0, 2) : [],
+      };
+    } catch {
+      return null;
+    }
+  };
+
   try {
     const resolved = await Promise.race([
-      Promise.all(cleaned.map((t) => lookupOne(t))),
+      Promise.all([
+        ...cleanedAnimes.map((t) => lookupAnime(t)),
+        ...cleanedMangas.map((t) => lookupManga(t)),
+      ]),
       new Promise<Array<ChatAnimeCard | null>>((resolve) =>
-        setTimeout(() => resolve([]), 2600)
+        setTimeout(() => resolve([]), 3000)
       ),
     ]);
-    const seenIds = new Set<string>();
+    const seenKeys = new Set<string>();
     const cards: ChatAnimeCard[] = [];
     for (const item of resolved) {
-      if (item && !seenIds.has(item.id)) {
-        seenIds.add(item.id);
+      const key = item ? `${item.mediaType || 'anime'}:${item.id}` : '';
+      if (item && key && !seenKeys.has(key)) {
+        seenKeys.add(key);
         cards.push(item);
       }
     }
@@ -424,7 +463,8 @@ ${tasteContext}
 قواعد البطاقات التفاعلية (مهم جداً):
 - أخرج ردك دائماً بصيغة JSON مطابقة للـ schema:
   1. "reply": نص ردك الطبيعي الكامل لصديقك (يمكنك استخدام **الخط العريض** لتمييز أسماء الأعمال فقط عند الحاجة).
-  2. "suggestedAnimes": مصفوفة تحتوي فقط على الأسماء الإنجليزية أو الرومانجية الدقيقة للأنميات التي رشّحتها أو ركّزت الحديث عليها في ردك (بحد أقصى 4 أنميات، مثال: ["Steins;Gate", "Monster"]) ليتم عرض بطاقتها التفاعلية للانتقال السريع. إذا كانت الرسالة مجرد دردشة عادية دون ذكر أو ترشيح أنمي، اتركها مصفوفة فارغة [] تماماً.`;
+  2. "suggestedAnimes": مصفوفة تحتوي فقط على الأسماء الإنجليزية أو الرومانجية الدقيقة للأنميات التي رشّحتها أو ركّزت الحديث عليها في ردك (بحد أقصى 4 أنميات، مثال: ["Steins;Gate", "Monster"]) ليتم عرض بطاقتها التفاعلية للانتقال السريع. إذا لم تذكر أنمي اتركها [].
+  3. "suggestedMangas": مصفوفة تحتوي فقط على الأسماء الإنجليزية أو الرومانجية الدقيقة لأعمال المانجا أو المانهوا أو المانها التي رشّحتها أو طلبها صديقك (بحد أقصى 4 أعمال، مثال: ["Solo Leveling", "Berserk", "Omniscient Reader's Viewpoint"]). إذا لم تذكر مانجا أو مانهوا اتركها [].`;
 
     const historyMessages = recentMessages.slice(0, -1).map((m: any) => ({
       role: m.sender === 'user' ? 'user' : 'model',
@@ -443,8 +483,13 @@ ${tasteContext}
           items: { type: Type.STRING },
           description: 'Up to 4 exact English/Romaji titles of anime specifically recommended or discussed so interactive cards can be attached',
         },
+        suggestedMangas: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING },
+          description: 'Up to 4 exact English/Romaji titles of manga, manhwa, or manhua specifically recommended or discussed',
+        },
       },
-      required: ['reply', 'suggestedAnimes'],
+      required: ['reply', 'suggestedAnimes', 'suggestedMangas'],
     };
 
     const candidates: Array<{ model: string; thinkingLevel: ThinkingLevel; timeoutMs: number }> = [
@@ -452,7 +497,7 @@ ${tasteContext}
       { model: 'gemini-4-hydrogen', thinkingLevel: ThinkingLevel.LOW, timeoutMs: 10_000 },
     ];
 
-    let parsedPayload: { reply: string; suggestedAnimes: string[] } | null = null;
+    let parsedPayload: { reply: string; suggestedAnimes: string[]; suggestedMangas: string[] } | null = null;
     let usedModel = 'gemini-3.1-flash-lite';
     let lastErr: any = null;
 
@@ -481,13 +526,16 @@ ${tasteContext}
                 suggestedAnimes: Array.isArray(parsed.suggestedAnimes)
                   ? parsed.suggestedAnimes.map((x: any) => String(x || '').trim()).filter(Boolean)
                   : [],
+                suggestedMangas: Array.isArray(parsed.suggestedMangas)
+                  ? parsed.suggestedMangas.map((x: any) => String(x || '').trim()).filter(Boolean)
+                  : [],
               };
               usedModel = candidate.model;
               break;
             }
           } catch {
             // If model returned plain text despite json mime, preserve it cleanly
-            parsedPayload = { reply: raw, suggestedAnimes: [] };
+            parsedPayload = { reply: raw, suggestedAnimes: [], suggestedMangas: [] };
             usedModel = candidate.model;
             break;
           }
@@ -513,7 +561,10 @@ ${tasteContext}
       throw lastErr || new Error('Empty response from Gemini models');
     }
 
-    const animeCards = await resolveSuggestedAnimeCards(parsedPayload.suggestedAnimes);
+    const animeCards = await resolveSuggestedAnimeCards(
+      parsedPayload.suggestedAnimes,
+      parsedPayload.suggestedMangas,
+    );
 
     return res.json({
       success: true,

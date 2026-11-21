@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Download,
@@ -58,6 +58,9 @@ export default function BatchDownloadModal({
     });
   }, [episodes, seasonNumber]);
 
+  const contextKey = `${anime?._id || anime?.malId || 'anime'}__s${seasonNumber}`;
+  const lastContextRef = useRef<string>('');
+
   const [selectedNums, setSelectedNums] = useState<number[]>(() =>
     normalizedEpisodes.slice(0, Math.min(5, normalizedEpisodes.length)).map((e) => e.epNum),
   );
@@ -71,6 +74,32 @@ export default function BatchDownloadModal({
       ? String(normalizedEpisodes[normalizedEpisodes.length - 1].epNum)
       : '12',
   );
+
+  useEffect(() => {
+    if (!isOpen && lastContextRef.current === contextKey) return;
+    const validSet = new Set(normalizedEpisodes.map((e) => e.epNum));
+    const isNewContext = lastContextRef.current !== contextKey;
+    if (isNewContext) {
+      lastContextRef.current = contextKey;
+      setRangeStart(normalizedEpisodes[0] ? String(normalizedEpisodes[0].epNum) : '1');
+      setRangeEnd(
+        normalizedEpisodes[normalizedEpisodes.length - 1]
+          ? String(normalizedEpisodes[normalizedEpisodes.length - 1].epNum)
+          : '12',
+      );
+      setSelectedNums(
+        normalizedEpisodes.slice(0, Math.min(5, normalizedEpisodes.length)).map((e) => e.epNum),
+      );
+      return;
+    }
+    setSelectedNums((prev) => {
+      const filtered = prev.filter((n) => validSet.has(n));
+      if (filtered.length === 0 && normalizedEpisodes.length > 0 && isOpen) {
+        return normalizedEpisodes.slice(0, Math.min(5, normalizedEpisodes.length)).map((e) => e.epNum);
+      }
+      return filtered;
+    });
+  }, [isOpen, contextKey, normalizedEpisodes]);
 
   const selectedSet = useMemo(() => new Set(selectedNums), [selectedNums]);
 

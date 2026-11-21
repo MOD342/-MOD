@@ -570,9 +570,35 @@ export const moderationService = {
       'animeTrivia',
       'promoCodes',
       'server_cache',
+      'catalog_bundles',
+      'catalog_manga',
+      'catalog_chapter_pages',
+      'server_intelligence',
       'globalSettings',
       'auditLogs'
     ];
+
+    // Clean catalog_anime and any nested segments first
+    try {
+      const animeSnap = await getDocs(collection(db, 'catalog_anime'));
+      if (!animeSnap.empty) {
+        await Promise.all(
+          animeSnap.docs.map(async (d) => {
+            try {
+              const segSnap = await getDocs(collection(db, 'catalog_anime', d.id, 'segments'));
+              for (const segDoc of segSnap.docs) {
+                await deleteDoc(doc(db, 'catalog_anime', d.id, 'segments', segDoc.id)).catch(() => {});
+                deletedDocs++;
+              }
+            } catch {}
+            await deleteDoc(doc(db, 'catalog_anime', d.id)).catch(() => {});
+            deletedDocs++;
+          })
+        );
+      }
+    } catch (err) {
+      console.warn('[factoryWipeForLaunch] catalog_anime cleanup warning:', err);
+    }
 
     for (const colName of topCollections) {
       try {

@@ -15,11 +15,13 @@ import {
   Loader2,
   Shuffle,
   Film,
-  Crown
+  Crown,
+  BookOpen
 } from 'lucide-react';
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence, useMotionValue, animate } from 'motion/react';
 import { clientCache } from '../utils/clientCache';
+import { cloudCatalogService, recentEpisodesLocal } from '../services/cloudCatalogService';
 import { db } from '../firebase';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { handleFirestoreError, OperationType } from '../firebaseUtils';
@@ -27,10 +29,19 @@ import { cleanAnimeTitle } from '../utils/animeTitleCleaner';
 import PullToRefresh from '../components/PullToRefresh';
 import { useAuth } from '../contexts/AuthContext';
 import { listService } from '../services/listService';
+import { mangaListService, type ReadingHistoryItem } from '../services/mangaListService';
 import { useDeviceDisplay } from '../hooks/useDeviceDisplay';
 
 interface HomeViewProps {
   onAnimeClick?: (animeId: string, epNum?: string) => void;
+  onMangaClick?: (mangaId: string) => void;
+  onNavigateToMangaHub?: () => void;
+  onReadMangaChapter?: (params: {
+    manga: any;
+    chapter: any;
+    chapters: any[];
+    initialPage?: number;
+  }) => void;
   onSearchCategory?: (category: string) => void;
   onNavigateToSchedule?: (targetDay?: string) => void;
   onNavigateToRecent?: () => void;
@@ -111,6 +122,9 @@ const WEEK_DAYS = [
 
 export default function HomeView({
   onAnimeClick,
+  onMangaClick,
+  onNavigateToMangaHub,
+  onReadMangaChapter,
   onSearchCategory,
   onNavigateToSchedule,
   onNavigateToRecent,
@@ -120,8 +134,20 @@ export default function HomeView({
 }: HomeViewProps) {
   const { user } = useAuth();
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshingRecent, setRefreshingRecent] = useState(false);
+  const [recentDeviceState, setRecentDeviceState] = useState<{ items: any[]; fetchedAt: number }>(() => {
+    const cached = recentEpisodesLocal.getCached(1);
+    return cached ? { items: cached.items, fetchedAt: cached.fetchedAt } : { items: [], fetchedAt: 0 };
+  });
   const [dashboardError, setDashboardError] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
+  const [readingHistory, setReadingHistory] = useState<ReadingHistoryItem[]>(() =>
+    mangaListService.getReadingHistory(user?.id)
+  );
+  const [latestManga, setLatestManga] = useState<any[]>(() => {
+    const cached = clientCache.get<any>('client_home_manga_hub_v1');
+    return cached?.latest || cached?.trending || [];
+  });
 
   // Selected schedule day on Home View (defaults to today)
   const todayKey = WEEK_DAYS[new Date().getDay()].key;
@@ -230,20 +256,19 @@ export default function HomeView({
     return () => window.removeEventListener('resize', handleResize);
   }, [currentSlide, topVisibleLimit, sliderX]);
 
-  const fetchDashboard = async (customSeason?: string, customSliderMode?: string) => {
+  const fetchDashboard = async (customSeason?: string, customSliderMode?: string, forceBypass = false) => {
     setIsRefreshing(true);
     try {
       const daysMap = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
       const clientDay = daysMap[new Date().getDay()];
       const activeSeason = customSeason || sliderSettings.season || 'auto';
       const activeMode = customSliderMode || sliderSettings.sliderMode || 'best_season';
-      const cacheKey = `direct_dashboard_v5_${activeSeason}_${activeMode}_${clientDay}`;
+      const bundleId = `dash_${clientDay}_${activeSeason}_${activeMode}`;
 
-      const applyDashboardData = async (data: any) => {
+      const applyDashboardData = (data: any) => {
         if (!data) return;
         const hasAnyContent =
           data.top5?.length > 0 ||
-          data.recentEpisodes?.length > 0 ||
           data.popular?.length > 0 ||
           data.currentSeason?.length > 0 ||
           data.schedule?.length > 0 ||
@@ -253,62 +278,34 @@ export default function HomeView({
           setDashboard(data);
           setDashboardError(false);
         }
-
-        if (!Array.isArray(data.recentEpisodes) || data.recentEpisodes.length === 0) {
-          try {
-            const recentRes = await fetch(`/api/anime/recent?_t=${Date.now()}`, { cache: 'no-store' }).then((r) => r.json());
-            if (recentRes?.success && Array.isArray(recentRes.data) && recentRes.data.length > 0) {
-              const mappedRecent = recentRes.data.map((ep: any, idx: number) => {
-                const rawTitle = ep.title || '';
-                const cleanedTitle = rawTitle.includes(' S') ? rawTitle : cleanAnimeTitle(rawTitle);
-                const extractedEp = ep.episodeNumber || ep.episode || rawTitle.match(/الحلقة\s*(\d+)/)?.[1] || '1';
-                const posterImg = ep.posterUrl || ep.imageUrl || ep.thumbnailUrl;
-                return {
-                  _id: ep.id || `recent-${idx}`,
-                  episodeNumber: extractedEp,
-                  title: cleanedTitle,
-                  link: ep.link || '',
-                  animeId: {
-                    _id: typeof ep.animeId === 'string' ? ep.animeId : ep.animeId?._id || `search-${cleanedTitle}`,
-                    title: cleanedTitle,
-                    titleAr: cleanedTitle,
-                    posterUrl: posterImg,
-                    thumbnailUrl: posterImg,
-                    episodeLink: ep.link || ''
-                  }
-                };
-              });
-              const nextData = { ...data, recentEpisodes: mappedRecent };
-              clientCache.set(cacheKey, nextData, 10 * 60 * 1000);
-              setDashboard(nextData);
-              setDashboardError(false);
-            }
-          } catch {}
-        }
       };
 
-      let lastAppliedRef: any = null;
-      const safeApply = async (data: any) => {
-        if (!data || data === lastAppliedRef) return;
-        lastAppliedRef = data;
-        await applyDashboardData(data);
-      };
-
-      const freshData = await clientCache.fetchWithRevalidate<any>(
-        cacheKey,
-        `/api/dashboard?day=${clientDay}&season=${activeSeason}&sliderMode=${activeMode}`,
-        (data) => {
-          void safeApply(data);
+      const freshData = await cloudCatalogService.getBundleWithCloud<any>({
+        bundleId,
+        kind: 'dashboard',
+        freshTtlMs: 4 * 60 * 60 * 1000,
+        staleTtlMs: 24 * 60 * 60 * 1000,
+        forceRefresh: forceBypass,
+        countItems: (d) =>
+          (Array.isArray(d?.top5) ? d.top5.length : 0) +
+          (Array.isArray(d?.popular) ? d.popular.length : 0) +
+          (Array.isArray(d?.currentSeason) ? d.currentSeason.length : 0) +
+          (Array.isArray(d?.schedule) ? d.schedule.length : 0),
+        fetchLive: async () => {
+          const ts = forceBypass ? `&_t=${Date.now()}` : '';
+          const res = await fetch(
+            `/api/dashboard?day=${clientDay}&season=${activeSeason}&sliderMode=${activeMode}&excludeRecent=1${forceBypass ? '&bypass=true' : ''}${ts}`,
+            forceBypass ? { cache: 'no-store' } : undefined,
+          );
+          if (!res.ok) return null;
+          const json = await res.json();
+          return json?.success && json?.data ? json.data : null;
         },
-        60 * 60 * 1000,
-        {
-          onError: () => {
-            setDashboardError(true);
-          }
-        }
-      );
+        onData: (data) => applyDashboardData(data),
+      });
+
       if (freshData) {
-        await safeApply(freshData);
+        applyDashboardData(freshData);
       } else {
         setDashboardError(true);
       }
@@ -321,83 +318,27 @@ export default function HomeView({
     }
   };
 
+  const handleRefreshRecentOnly = async () => {
+    if (refreshingRecent) return;
+    setRefreshingRecent(true);
+    try {
+      const updated = await recentEpisodesLocal.refreshFromLive(1, true);
+      if (updated && updated.items.length > 0) {
+        setRecentDeviceState({ items: updated.items, fetchedAt: updated.fetchedAt });
+      }
+    } catch {
+      // Keep previously stored device episodes silently
+    } finally {
+      setRefreshingRecent(false);
+    }
+  };
+
   const handleOnDemandRefresh = async () => {
     if (isRefreshing) return;
-    setIsRefreshing(true);
-    try {
-      const daysMap = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-      const clientDay = daysMap[new Date().getDay()];
-      const activeSeason = sliderSettings.season || 'auto';
-      const activeMode = sliderSettings.sliderMode || 'best_season';
-      const cacheKey = `direct_dashboard_v5_${activeSeason}_${activeMode}_${clientDay}`;
-
-      const ts = Date.now();
-      const [dashRes, recentRes] = await Promise.all([
-        fetch(`/api/dashboard?day=${clientDay}&season=${activeSeason}&sliderMode=${activeMode}&bypass=true&_t=${ts}`, {
-          cache: 'no-store',
-          headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' }
-        })
-          .then((r) => r.json())
-          .catch(() => null),
-        fetch(`/api/anime/recent?bypass=true&_t=${ts}`, {
-          cache: 'no-store',
-          headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' }
-        })
-          .then((r) => r.json())
-          .catch(() => null)
-      ]);
-
-      let freshRecent: any[] = [];
-      if (recentRes?.success && Array.isArray(recentRes.data) && recentRes.data.length > 0) {
-        freshRecent = recentRes.data.map((ep: any, idx: number) => {
-          const rawTitle = ep.title || '';
-          const cleanedTitle = rawTitle.includes(' S') ? rawTitle : cleanAnimeTitle(rawTitle);
-          const extractedEp =
-            ep.episodeNumber || ep.episode || rawTitle.match(/الحلقة\s*(\d+)/)?.[1] || '1';
-          const posterImg = ep.posterUrl || ep.imageUrl || ep.thumbnailUrl;
-          return {
-            _id: ep.id || `scraped-${ts}-${idx}`,
-            episodeNumber: extractedEp,
-            title: cleanedTitle,
-            link: ep.link || '',
-            animeId: {
-              _id:
-                typeof ep.animeId === 'string'
-                  ? ep.animeId
-                  : ep.animeId?._id || `search-${cleanedTitle}`,
-              title: cleanedTitle,
-              titleAr: cleanedTitle,
-              posterUrl: posterImg,
-              thumbnailUrl: posterImg,
-              episodeLink: ep.link || ''
-            }
-          };
-        });
-      }
-
-      if (dashRes?.success && dashRes.data) {
-        const updatedDashboard = {
-          ...dashRes.data,
-          recentEpisodes:
-            freshRecent.length > 0 ? freshRecent : dashRes.data.recentEpisodes || []
-        };
-        clientCache.set(cacheKey, updatedDashboard, 10 * 60 * 1000);
-        setDashboard(updatedDashboard);
-        setDashboardError(false);
-      } else if (freshRecent.length > 0) {
-        setDashboard((prev) => {
-          const next = { ...prev, recentEpisodes: freshRecent };
-          clientCache.set(cacheKey, next, 10 * 60 * 1000);
-          return next;
-        });
-        setDashboardError(false);
-      }
-    } catch (e) {
-      console.warn('On-demand refresh fallback:', e);
-    } finally {
-      setIsRefreshing(false);
-      setInitialLoading(false);
-    }
+    await Promise.all([
+      fetchDashboard(undefined, undefined, true),
+      handleRefreshRecentOnly(),
+    ]);
   };
 
   // Load Continue Watching from scoped localStorage and cloud entries when signed in
@@ -472,21 +413,88 @@ export default function HomeView({
     };
   }, [user?.id, watchHistoryKey]);
 
-  // Load schedule for a specific day when user clicks a day chip in HomeView
+  useEffect(() => {
+    const syncReading = () => {
+      setReadingHistory(mangaListService.getReadingHistory(user?.id));
+    };
+    syncReading();
+    window.addEventListener('manga-history-updated', syncReading);
+    return () => window.removeEventListener('manga-history-updated', syncReading);
+  }, [user?.id]);
+
+  useEffect(() => {
+    void cloudCatalogService.getBundleWithCloud<any>({
+      bundleId: 'manga_hub_ALL_p1',
+      kind: 'manga_hub',
+      freshTtlMs: 3 * 60 * 60 * 1000,
+      staleTtlMs: 24 * 60 * 60 * 1000,
+      countItems: (d) => (d?.trending?.length || 0) + (d?.latest?.length || 0),
+      fetchLive: async () => {
+        const res = await fetch('/api/manga/hub?origin=ALL&page=1');
+        if (!res.ok) return null;
+        const json = await res.json();
+        return json?.success && json?.data ? json.data : null;
+      },
+      onData: (data) => {
+        const items = [...(data?.trending || []), ...(data?.latest || [])];
+        const uniqueMap = new Map<string, any>();
+        items.forEach((m: any) => {
+          if (m?._id && !uniqueMap.has(String(m._id))) uniqueMap.set(String(m._id), m);
+        });
+        const merged = Array.from(uniqueMap.values()).slice(0, 14);
+        if (merged.length > 0) {
+          setLatestManga(merged);
+          clientCache.set('client_home_manga_hub_v1', data, 3 * 60 * 60 * 1000);
+        }
+      },
+    });
+  }, []);
+
+  const handleRemoveReadingHistoryItem = (e: React.MouseEvent, mangaId: string) => {
+    e.stopPropagation();
+    const uid = user?.id || 'guest';
+    const next = readingHistory.filter((h) => String(h.mangaId) !== String(mangaId));
+    setReadingHistory(next);
+    try {
+      localStorage.setItem(`local_reading_history_${uid}`, JSON.stringify(next));
+      window.dispatchEvent(new CustomEvent('manga-history-updated'));
+    } catch {}
+  };
+
+  const handleClearReadingHistory = () => {
+    const uid = user?.id || 'guest';
+    setReadingHistory([]);
+    try {
+      localStorage.removeItem(`local_reading_history_${uid}`);
+      window.dispatchEvent(new CustomEvent('manga-history-updated'));
+    } catch {}
+  };
+
+  // Load schedule for a specific day when user clicks a day chip in HomeView (cloud-backed)
   const handleSelectScheduleDay = async (dayKey: string) => {
     setSelectedScheduleDay(dayKey);
     if (dayKey === todayKey || customDaySchedule[dayKey]) return;
 
     setScheduleDayLoading(true);
     try {
-      const res = await fetch(`/api/dashboard?day=${dayKey}&season=${sliderSettings.season || 'auto'}`, {
-        cache: 'no-store'
-      })
-        .then((r) => r.json())
-        .catch(() => null);
-      if (res?.success && Array.isArray(res.data?.schedule) && res.data.schedule.length > 0) {
-        setCustomDaySchedule((prev) => ({ ...prev, [dayKey]: res.data.schedule }));
-      }
+      await cloudCatalogService.getBundleWithCloud<any[]>({
+        bundleId: `sched_${dayKey}`,
+        kind: 'schedule',
+        freshTtlMs: 24 * 60 * 60 * 1000,
+        staleTtlMs: 7 * 24 * 60 * 60 * 1000,
+        countItems: (arr) => (Array.isArray(arr) ? arr.length : 0),
+        fetchLive: async () => {
+          const res = await fetch(`/api/anime/jikan-schedule?day=${dayKey}`);
+          if (!res.ok) return null;
+          const json = await res.json();
+          return json?.success && Array.isArray(json.data) ? json.data : null;
+        },
+        onData: (list) => {
+          if (Array.isArray(list) && list.length > 0) {
+            setCustomDaySchedule((prev) => ({ ...prev, [dayKey]: list }));
+          }
+        },
+      });
     } catch {} finally {
       setScheduleDayLoading(false);
     }
@@ -511,8 +519,13 @@ export default function HomeView({
   };
 
   useEffect(() => {
-    // Load dashboard immediately without waiting for Firestore round-trip
+    // Load dashboard immediately via 3-tier Cloud Catalog (Device -> Shared Cloud -> Live Server)
     void fetchDashboard('auto', 'best_season');
+
+    // Device-only Recent Episodes: auto-fetch ONLY if device has zero stored episodes yet
+    if (!recentEpisodesLocal.getCached(1)) {
+      void handleRefreshRecentOnly();
+    }
 
     let lastFetchedConfigKey = 'auto|best_season';
 
@@ -610,7 +623,9 @@ export default function HomeView({
   };
 
   const rawRecentEpisodes =
-    dashboard.recentEpisodes && dashboard.recentEpisodes.length > 0
+    recentDeviceState.items && recentDeviceState.items.length > 0
+      ? recentDeviceState.items
+      : dashboard.recentEpisodes && dashboard.recentEpisodes.length > 0
       ? dashboard.recentEpisodes
       : [];
 
@@ -984,20 +999,152 @@ export default function HomeView({
         )}
       </AnimatePresence>
 
-      {/* 4. Latest Episodes */}
+      {/* 3.5. Continue Reading Strip */}
+      <AnimatePresence>
+        {readingHistory.length > 0 && (
+          <motion.section
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, height: 0 }}
+            className="px-4 md:px-8"
+          >
+            <div className="flex justify-between items-end mb-3 max-w-7xl mx-auto">
+              <div className="flex items-center gap-2">
+                <h3 className="text-white font-black text-lg border-r-4 border-amber-500 pr-2 flex items-center gap-2">
+                  <span>استمر في القراءة</span>
+                  <span className="text-[11px] bg-amber-500/15 text-amber-400 border border-amber-500/30 px-2 py-0.5 rounded-full font-mono tabular-nums">
+                    {readingHistory.length}
+                  </span>
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={handleClearReadingHistory}
+                className="text-[11px] text-neutral-400 hover:text-red-400 flex items-center gap-1 transition cursor-pointer"
+              >
+                <Trash2 size={12} />
+                <span>مسح السجل</span>
+              </button>
+            </div>
+            <div className="flex gap-3.5 overflow-x-auto pb-4 hide-scrollbar max-w-7xl mx-auto">
+              {readingHistory.map((item, idx) => {
+                const progressPct = item.totalPages > 0
+                  ? Math.min(100, Math.max(8, Math.round((item.pageIndex / item.totalPages) * 100)))
+                  : 20;
+                return (
+                  <motion.div
+                    key={`reading-history-${item.mangaId}-${idx}`}
+                    onClick={() => {
+                      if (onReadMangaChapter && item.chapterId) {
+                        onReadMangaChapter({
+                          manga: {
+                            _id: item.mangaId,
+                            mangadexId: item.mangadexId,
+                            title: item.title,
+                            posterUrl: item.posterUrl,
+                            mediaFormat: item.mediaFormat,
+                            originLabel: item.originLabel,
+                            defaultReadingMode:
+                              item.mediaFormat === 'manhwa' || item.mediaFormat === 'manhua'
+                                ? 'webtoon'
+                                : 'paged',
+                          },
+                          chapter: {
+                            id: item.chapterId,
+                            num: item.chapterNum,
+                            chapterNumber: Number(item.chapterNum || 1),
+                            title: item.chapterTitle || `الفصل ${item.chapterNum}`,
+                          },
+                          chapters: [],
+                          initialPage: item.pageIndex || 1,
+                        });
+                      } else {
+                        onMangaClick?.(item.mangaId);
+                      }
+                    }}
+                    whileHover={{ y: -6, scale: 1.02, borderColor: '#f59e0b' }}
+                    whileTap={{ scale: 0.98 }}
+                    className={`theme-keep-dark cursor-pointer ${display.isCoverScreen ? 'w-[155px]' : 'w-[175px] md:w-[230px] lg:w-[260px]'} flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 transition-all duration-300 aspect-[16/9] bg-neutral-900 gpu-accelerated shadow-lg`}
+                  >
+                    <img
+                      src={item.posterUrl || 'https://via.placeholder.com/300x168?text=Manga'}
+                      referrerPolicy="no-referrer"
+                      loading="lazy"
+                      className="w-full h-full object-cover opacity-80 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500"
+                      alt={item.title}
+                    />
+                    <button
+                      type="button"
+                      onClick={(e) => handleRemoveReadingHistoryItem(e, item.mangaId)}
+                      title="إزالة من استمر في القراءة"
+                      className="absolute top-2 left-2 z-20 w-6 h-6 rounded-full bg-black/70 hover:bg-red-600 text-neutral-300 hover:text-white border border-white/15 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all cursor-pointer"
+                    >
+                      <X size={12} />
+                    </button>
+
+                    <div className="absolute inset-0 bg-gradient-to-t from-black via-black/45 to-transparent flex flex-col justify-end p-3">
+                      <div className="flex items-center justify-between gap-2 mb-1">
+                        <div className="flex items-center gap-1.5">
+                          <div className="w-6 h-6 rounded-full bg-amber-500 text-black shadow-md shadow-amber-500/30 flex items-center justify-center">
+                            <BookOpen size={11} />
+                          </div>
+                          <span className="text-amber-300 text-[11px] font-black tabular-nums">
+                            الفصل {item.chapterNum || 1}
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-neutral-300 font-mono tabular-nums">
+                          {item.pageIndex}/{item.totalPages || '?'}
+                        </span>
+                      </div>
+                      <h5 className="font-bold text-xs md:text-sm text-white truncate drop-shadow mb-2">
+                        {item.title}
+                      </h5>
+                      <div className="w-full h-1 bg-white/15 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-gradient-to-r from-amber-500 to-yellow-300 rounded-full transition-all duration-500"
+                          style={{ width: `${progressPct}%` }}
+                        />
+                      </div>
+                    </div>
+                  </motion.div>
+                );
+              })}
+            </div>
+          </motion.section>
+        )}
+      </AnimatePresence>
+
+      {/* 4. Latest Episodes (Device-Only + Manual Refresh) */}
       <section className="px-4 md:px-8">
-        <div className="flex justify-between items-end mb-3 max-w-7xl mx-auto">
-          <div className="flex items-center gap-2">
+        <div className="flex flex-wrap justify-between items-center gap-2 mb-3 max-w-7xl mx-auto">
+          <div className="flex items-center gap-2.5">
             <h3 className="text-white font-black text-lg border-r-4 border-red-500 pr-2">
               أحدث الحلقات
             </h3>
+            {recentDeviceState.fetchedAt > 0 && (
+              <span className="text-[11px] font-bold text-neutral-400">
+                آخر تحديث: {recentEpisodesLocal.formatRelativeTimeAr(recentDeviceState.fetchedAt)}
+              </span>
+            )}
           </div>
-          <button
-            onClick={onNavigateToRecent}
-            className="text-[10px] md:text-xs font-bold text-neutral-400 hover:text-white flex items-center gap-1 group cursor-pointer"
-          >
-            عرض الكل <ChevronLeft size={14} className="transition-transform group-hover:-translate-x-1" />
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={handleRefreshRecentOnly}
+              disabled={refreshingRecent}
+              aria-label="تحديث أحدث الحلقات"
+              className="min-h-[44px] px-3 py-1.5 rounded-xl bg-neutral-900/90 hover:bg-neutral-800 border border-neutral-800 text-xs font-black text-neutral-200 hover:text-white flex items-center gap-1.5 transition active:scale-95 disabled:opacity-60 cursor-pointer"
+            >
+              <RefreshCw size={13} className={refreshingRecent ? 'animate-spin text-red-400' : 'text-red-400'} />
+              <span>{refreshingRecent ? 'جاري التحديث' : 'تحديث'}</span>
+            </button>
+            <button
+              onClick={onNavigateToRecent}
+              className="min-h-[44px] px-2.5 text-[11px] md:text-xs font-bold text-neutral-400 hover:text-white flex items-center gap-1 group cursor-pointer"
+            >
+              عرض الكل <ChevronLeft size={14} className="transition-transform group-hover:-translate-x-1" />
+            </button>
+          </div>
         </div>
 
         <div className="flex gap-3.5 overflow-x-auto pb-4 hide-scrollbar max-w-7xl mx-auto items-stretch">
@@ -1283,6 +1430,61 @@ export default function HomeView({
                     </span>
                     <h5 className="font-bold text-xs md:text-sm text-white drop-shadow line-clamp-2 text-right dir-rtl">
                       {anime.title}
+                    </h5>
+                  </div>
+                </motion.div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {/* 7.8. Latest Manga & Manhwa Section */}
+      {latestManga.length > 0 && (
+        <section className="px-4 md:px-8">
+          <div className="flex justify-between items-end mb-3 max-w-7xl mx-auto">
+            <h3 className="text-white font-black text-lg border-r-4 border-amber-500 pr-2 flex items-center gap-2">
+              <BookOpen size={18} className="text-amber-400" />
+              <span>أحدث المانجا والمانهوا</span>
+            </h3>
+            <button
+              type="button"
+              onClick={onNavigateToMangaHub}
+              className="text-[10px] md:text-xs font-bold text-neutral-400 hover:text-white flex items-center gap-1 group cursor-pointer"
+            >
+              عرض الكل <ChevronLeft size={14} className="transition-transform group-hover:-translate-x-1" />
+            </button>
+          </div>
+          <div className="flex gap-3 overflow-x-auto pb-4 hide-scrollbar max-w-7xl mx-auto">
+            {latestManga.map((manga: any, idx: number) => {
+              const targetId = String(manga._id || manga.anilistId);
+              return (
+                <motion.div
+                  key={`home-manga-${targetId}-${idx}`}
+                  onClick={() => onMangaClick?.(targetId)}
+                  whileHover={{ y: -6, scale: 1.02, borderColor: '#f59e0b' }}
+                  whileTap={{ scale: 0.98 }}
+                  className={`theme-keep-dark cursor-pointer ${display.isCoverScreen ? 'w-[118px]' : 'w-[130px] md:w-[180px] lg:w-[220px]'} flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 transition-all duration-300 aspect-[3/4] bg-neutral-900 gpu-accelerated`}
+                >
+                  <img
+                    src={manga.posterUrl || 'https://via.placeholder.com/200x300?text=Manga'}
+                    referrerPolicy="no-referrer"
+                    loading="lazy"
+                    className="w-full h-full object-cover opacity-95 group-hover:opacity-100 group-hover:scale-[1.03] transition-all duration-500"
+                    alt={manga.title}
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black via-black/25 to-transparent flex flex-col justify-end p-3 pointer-events-none">
+                    <span className="absolute top-2 right-2 bg-black/75 backdrop-blur-md text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded text-[10px] font-black shadow">
+                      {manga.originLabel || 'مانجا'}
+                    </span>
+                    {manga.rating > 0 && (
+                      <span className="absolute top-2 left-2 bg-black/70 backdrop-blur-md text-white px-2 py-0.5 rounded text-[10px] font-bold border border-white/10 flex items-center gap-1 tabular-nums">
+                        <Star size={10} className="text-yellow-400" fill="currentColor" />
+                        {Number(manga.rating).toFixed(1)}
+                      </span>
+                    )}
+                    <h5 className="font-bold text-xs md:text-sm text-white drop-shadow line-clamp-2 text-right">
+                      {manga.title}
                     </h5>
                   </div>
                 </motion.div>

@@ -25,6 +25,7 @@ export function createApiExpressApp(): express.Express {
           req.path.includes('download-stream') ||
           req.path.includes('play-stream') ||
           req.path.includes('stream-proxy') ||
+          req.path.includes('manga/image-proxy') ||
           req.path === '/api/anime/download'
         ) {
           return false;
@@ -93,6 +94,7 @@ export function createApiExpressApp(): express.Express {
       req.path.includes('download-stream') ||
       req.path.includes('play-stream') ||
       req.path.includes('stream-proxy') ||
+      req.path.includes('manga/image-proxy') ||
       req.path === '/anime/download';
 
     if (!isMediaProxy && req.path !== '/health') {
@@ -117,7 +119,14 @@ export function createApiExpressApp(): express.Express {
         });
       }
 
-      res.setTimeout(25_000, () => {
+      const isResolveEndpoint =
+        req.path === '/anime/resolve-download' ||
+        req.path === '/anime/resolve-play' ||
+        req.path === '/anime/servers' ||
+        req.path === '/manga/chapters' ||
+        req.path === '/manga/pages';
+
+      res.setTimeout(isResolveEndpoint ? 45_000 : 25_000, () => {
         if (!res.headersSent) {
           res.status(504).json({
             success: false,

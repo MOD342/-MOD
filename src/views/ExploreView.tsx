@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Search, Filter, Star, Loader2, ChevronDown, Calendar, Tv, Layers, RefreshCw, AlertCircle } from 'lucide-react';
+import { Search, Filter, Star, Loader2, ChevronDown, Calendar, Tv, Layers, RefreshCw, AlertCircle, BookOpen } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { clientCache } from '../utils/clientCache';
 import { cleanAnimeTitle } from '../utils/animeTitleCleaner';
@@ -53,6 +53,7 @@ const GENRE_ARABIC_MAP: Record<string, string> = {
 
 interface ExploreViewProps {
   onAnimeClick: (id: string) => void;
+  onMangaClick?: (id: string) => void;
   initialQuery?: string;
   onNavigate?: (view: string) => void;
 }
@@ -105,7 +106,9 @@ const CustomSelect = ({ label, value, options, onChange }: any) => {
   );
 };
 
-export default function ExploreView({ onAnimeClick, initialQuery, onNavigate }: ExploreViewProps) {
+export default function ExploreView({ onAnimeClick, onMangaClick, initialQuery, onNavigate }: ExploreViewProps) {
+  const [mediaKind, setMediaKind] = useState<'anime' | 'manga'>('anime');
+  const [mangaOrigin, setMangaOrigin] = useState<'ALL' | 'JP' | 'KR' | 'CN'>('ALL');
   const [query, setQuery] = useState(initialQuery || '');
   const [debouncedQuery, setDebouncedQuery] = useState(initialQuery || '');
   const [results, setResults] = useState<any[]>([]);
@@ -131,8 +134,22 @@ export default function ExploreView({ onAnimeClick, initialQuery, onNavigate }: 
     { mal_id: 37, name: "Supernatural" },
     { mal_id: 41, name: "Suspense" }
   ]);
+  const [mangaGenres, setMangaGenres] = useState<{ id: string; name: string; nameAr: string }[]>([
+    { id: 'Action', name: 'Action', nameAr: 'أكشن' },
+    { id: 'Adventure', name: 'Adventure', nameAr: 'مغامرات' },
+    { id: 'Fantasy', name: 'Fantasy', nameAr: 'فانتازيا' },
+    { id: 'Drama', name: 'Drama', nameAr: 'دراما' },
+    { id: 'Comedy', name: 'Comedy', nameAr: 'كوميدي' },
+    { id: 'Romance', name: 'Romance', nameAr: 'رومانسي' },
+    { id: 'Mystery', name: 'Mystery', nameAr: 'غموض' },
+    { id: 'Psychological', name: 'Psychological', nameAr: 'نفسي' },
+    { id: 'Thriller', name: 'Thriller', nameAr: 'إثارة وتشويق' },
+    { id: 'Horror', name: 'Horror', nameAr: 'رعب' },
+    { id: 'Supernatural', name: 'Supernatural', nameAr: 'خوارق' },
+  ]);
   
   const [selectedGenres, setSelectedGenres] = useState<number[]>([]);
+  const [selectedMangaGenres, setSelectedMangaGenres] = useState<string[]>([]);
   const [minScore, setMinScore] = useState('');
   const [status, setStatus] = useState('');
   const [year, setYear] = useState('');
@@ -151,6 +168,16 @@ export default function ExploreView({ onAnimeClick, initialQuery, onNavigate }: 
       },
       7 * 24 * 60 * 60 * 1000
     );
+    clientCache.fetchWithRevalidate<{ id: string; name: string; nameAr: string }[]>(
+      'client_manga_genres_cache_v1',
+      '/api/manga/genres',
+      (data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          setMangaGenres(data);
+        }
+      },
+      7 * 24 * 60 * 60 * 1000
+    );
   }, []);
 
   useEffect(() => {
@@ -162,20 +189,45 @@ export default function ExploreView({ onAnimeClick, initialQuery, onNavigate }: 
 
   useEffect(() => {
     fetchResults(true);
-  }, [debouncedQuery, selectedGenres, minScore, status, year, orderBy, sortOrder]);
+  }, [mediaKind, mangaOrigin, debouncedQuery, selectedGenres, selectedMangaGenres, minScore, status, year, orderBy, sortOrder]);
+
+  const switchMediaKind = (kind: 'anime' | 'manga') => {
+    if (kind === mediaKind) return;
+    setMediaKind(kind);
+    setStatus('');
+    setOrderBy('');
+    setYear('');
+    setSelectedGenres([]);
+    setSelectedMangaGenres([]);
+    setResults([]);
+    setPage(1);
+    setHasNextPage(true);
+  };
 
   const fetchResults = async (reset: boolean = false, forceBypass: boolean = false) => {
     const currentPage = reset ? 1 : page + 1;
-    let url = `/api/anime/search?page=${currentPage}`;
-    if (debouncedQuery) url += `&q=${encodeURIComponent(debouncedQuery)}`;
-    if (selectedGenres.length > 0) url += `&genres=${selectedGenres.join(',')}`;
-    if (minScore) url += `&min_score=${minScore}`;
-    if (status) url += `&status=${status}`;
-    if (year) url += `&year=${year}`;
-    if (orderBy) url += `&order_by=${orderBy}`;
-    if (sortOrder) url += `&sort=${sortOrder}`;
+    let url = '';
+    if (mediaKind === 'manga') {
+      url = `/api/manga/search?page=${currentPage}&origin=${mangaOrigin}`;
+      if (debouncedQuery) url += `&q=${encodeURIComponent(debouncedQuery)}`;
+      if (selectedMangaGenres.length > 0) url += `&genres=${encodeURIComponent(selectedMangaGenres.join(','))}`;
+      if (minScore) url += `&min_score=${minScore}`;
+      if (status) url += `&status=${encodeURIComponent(status)}`;
+      if (year) url += `&year=${year}`;
+      if (orderBy) url += `&order_by=${orderBy}`;
+      if (sortOrder) url += `&sort=${sortOrder}`;
+    } else {
+      url = `/api/anime/search?page=${currentPage}`;
+      if (debouncedQuery) url += `&q=${encodeURIComponent(debouncedQuery)}`;
+      if (selectedGenres.length > 0) url += `&genres=${selectedGenres.join(',')}`;
+      if (minScore) url += `&min_score=${minScore}`;
+      if (status) url += `&status=${status}`;
+      if (year) url += `&year=${year}`;
+      if (orderBy) url += `&order_by=${orderBy}`;
+      if (sortOrder) url += `&sort=${sortOrder}`;
+    }
 
-    const cacheKey = `client_explore_results_v3_${url}`;
+    const cacheKey = `client_explore_results_v4_${url}`;
     const networkUrl = forceBypass ? `${url}&bypass=true&_t=${Date.now()}` : url;
 
     if (reset) {
@@ -235,6 +287,12 @@ export default function ExploreView({ onAnimeClick, initialQuery, onNavigate }: 
     );
   };
 
+  const toggleMangaGenre = (id: string) => {
+    setSelectedMangaGenres(prev =>
+      prev.includes(id) ? prev.filter(g => g !== id) : [...prev, id]
+    );
+  };
+
   const isListMode = layoutMode === 'list';
   const isLargeGrid = layoutMode === 'grid2';
 
@@ -244,9 +302,33 @@ export default function ExploreView({ onAnimeClick, initialQuery, onNavigate }: 
       <div className="max-w-7xl mx-auto">
         {/* شريط العنوان والبحث العلوي - غير ثابت ومدمج */}
         <div className="bg-black border-b border-white/5 px-3.5 md:px-5 py-3 space-y-2.5">
-          <div className="flex items-center justify-between gap-2">
-            <h1 className="font-black text-base md:text-lg text-white">استكشف الأنمي</h1>
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <h1 className="font-black text-base md:text-lg text-white">
+              {mediaKind === 'manga' ? 'استكشف المانجا والمانهوا' : 'استكشف الأنمي'}
+            </h1>
             <div className="flex items-center gap-2">
+              <div className="flex items-center bg-neutral-900 border border-neutral-800 rounded-xl p-0.5">
+                <button
+                  type="button"
+                  onClick={() => switchMediaKind('anime')}
+                  className={`min-h-[34px] px-3 rounded-lg text-xs font-black transition cursor-pointer flex items-center gap-1.5 ${
+                    mediaKind === 'anime' ? 'bg-purple-600 text-white shadow' : 'text-neutral-400 hover:text-white'
+                  }`}
+                >
+                  <Tv size={13} />
+                  <span>الأنمي</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => switchMediaKind('manga')}
+                  className={`min-h-[34px] px-3 rounded-lg text-xs font-black transition cursor-pointer flex items-center gap-1.5 ${
+                    mediaKind === 'manga' ? 'bg-amber-500 text-black shadow' : 'text-neutral-400 hover:text-white'
+                  }`}
+                >
+                  <BookOpen size={13} />
+                  <span>مانجا ومانهوا</span>
+                </button>
+              </div>
               <LayoutModeToggleButton mode={layoutMode} onToggle={cycleLayoutMode} />
             </div>
           </div>
@@ -256,7 +338,7 @@ export default function ExploreView({ onAnimeClick, initialQuery, onNavigate }: 
               <Search className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-500" size={16} />
               <input 
                 type="text" 
-                placeholder="ابحث عن أنمي..." 
+                placeholder={mediaKind === 'manga' ? 'ابحث عن مانجا أو مانهوا...' : 'ابحث عن أنمي...'} 
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 className="w-full bg-neutral-900 border border-neutral-800 text-white rounded-xl py-2 pr-9 pl-3 focus:outline-none focus:border-purple-500/50 text-xs sm:text-sm transition"
@@ -272,6 +354,78 @@ export default function ExploreView({ onAnimeClick, initialQuery, onNavigate }: 
           </div>
 
           {/* شرائح الفلترة السريعة */}
+          {mediaKind === 'manga' ? (
+            <div className="flex items-center gap-1.5 overflow-x-auto hide-scrollbar pb-0.5 pt-0.5">
+              {(
+                [
+                  { id: 'ALL', label: 'الكل' },
+                  { id: 'JP', label: 'مانجا يابانية' },
+                  { id: 'KR', label: 'مانهوا كورية' },
+                  { id: 'CN', label: 'مانها صينية' },
+                ] as const
+              ).map((o) => (
+                <button
+                  key={o.id}
+                  type="button"
+                  onClick={() => setMangaOrigin(o.id)}
+                  className={`px-3 py-1 rounded-lg text-[11px] font-bold transition whitespace-nowrap cursor-pointer ${
+                    mangaOrigin === o.id
+                      ? 'bg-amber-500 text-black shadow'
+                      : 'bg-neutral-900 border border-neutral-800 text-neutral-400 hover:text-white'
+                  }`}
+                >
+                  {o.label}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => {
+                  setOrderBy(orderBy === 'score' ? '' : 'score');
+                  setSortOrder('desc');
+                }}
+                className={`px-3 py-1 rounded-lg text-[11px] font-bold transition whitespace-nowrap cursor-pointer ${
+                  orderBy === 'score'
+                    ? 'bg-purple-600 text-white shadow'
+                    : 'bg-neutral-900 border border-neutral-800 text-neutral-400 hover:text-white'
+                }`}
+              >
+                أعلى تقييم ⭐
+              </button>
+              <button
+                type="button"
+                onClick={() => setStatus(status === 'RELEASING' ? '' : 'RELEASING')}
+                className={`px-3 py-1 rounded-lg text-[11px] font-bold transition whitespace-nowrap cursor-pointer ${
+                  status === 'RELEASING'
+                    ? 'bg-purple-600 text-white shadow'
+                    : 'bg-neutral-900 border border-neutral-800 text-neutral-400 hover:text-white'
+                }`}
+              >
+                مستمر 🔴
+              </button>
+              <button
+                type="button"
+                onClick={() => toggleMangaGenre('Action')}
+                className={`px-3 py-1 rounded-lg text-[11px] font-bold transition whitespace-nowrap cursor-pointer ${
+                  selectedMangaGenres.includes('Action')
+                    ? 'bg-purple-600 text-white shadow'
+                    : 'bg-neutral-900 border border-neutral-800 text-neutral-400 hover:text-white'
+                }`}
+              >
+                أكشن ⚔️
+              </button>
+              <button
+                type="button"
+                onClick={() => toggleMangaGenre('Fantasy')}
+                className={`px-3 py-1 rounded-lg text-[11px] font-bold transition whitespace-nowrap cursor-pointer ${
+                  selectedMangaGenres.includes('Fantasy')
+                    ? 'bg-purple-600 text-white shadow'
+                    : 'bg-neutral-900 border border-neutral-800 text-neutral-400 hover:text-white'
+                }`}
+              >
+                فانتازيا 🔮
+              </button>
+            </div>
+          ) : (
           <div className="flex items-center gap-1.5 overflow-x-auto hide-scrollbar pb-0.5 pt-0.5">
             {onNavigate && (
               <>
@@ -372,6 +526,7 @@ export default function ExploreView({ onAnimeClick, initialQuery, onNavigate }: 
               خيالي 🔮
             </button>
           </div>
+          )}
           
           {/* لوحة الفلاتر المتقدمة */}
           <AnimatePresence>
@@ -386,7 +541,22 @@ export default function ExploreView({ onAnimeClick, initialQuery, onNavigate }: 
                   <div>
                     <h3 className="text-[11px] font-bold text-neutral-500 mb-2">التصنيفات</h3>
                     <div className="flex flex-wrap gap-1.5 max-h-36 overflow-y-auto hide-scrollbar">
-                      {genres.map((g, idx) => (
+                      {mediaKind === 'manga'
+                        ? mangaGenres.map((g, idx) => (
+                            <button
+                              key={`mgenre-${g.id}-${idx}`}
+                              type="button"
+                              onClick={() => toggleMangaGenre(g.id)}
+                              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                                selectedMangaGenres.includes(g.id)
+                                  ? 'bg-amber-500 text-black shadow'
+                                  : 'bg-neutral-900 border border-neutral-800 text-neutral-400 hover:text-white'
+                              }`}
+                            >
+                              {g.nameAr || g.name}
+                            </button>
+                          ))
+                        : genres.map((g, idx) => (
                         <button
                           key={`genre-${g?.mal_id || idx}-${idx}`}
                           onClick={() => toggleGenre(g.mal_id)}
@@ -440,12 +610,21 @@ export default function ExploreView({ onAnimeClick, initialQuery, onNavigate }: 
                       label="الحالة" 
                       value={status} 
                       onChange={setStatus}
-                      options={[
-                        { label: 'الكل', value: '' },
-                        { label: 'مستمر', value: 'airing' },
-                        { label: 'مكتمل', value: 'complete' },
-                        { label: 'قادم', value: 'upcoming' }
-                      ]}
+                      options={
+                        mediaKind === 'manga'
+                          ? [
+                              { label: 'الكل', value: '' },
+                              { label: 'مستمر', value: 'RELEASING' },
+                              { label: 'مكتمل', value: 'FINISHED' },
+                              { label: 'متوقف', value: 'HIATUS' },
+                            ]
+                          : [
+                              { label: 'الكل', value: '' },
+                              { label: 'مستمر', value: 'airing' },
+                              { label: 'مكتمل', value: 'complete' },
+                              { label: 'قادم', value: 'upcoming' },
+                            ]
+                      }
                     />
                   </div>
                   
@@ -453,6 +632,8 @@ export default function ExploreView({ onAnimeClick, initialQuery, onNavigate }: 
                     <button 
                       onClick={() => {
                         setSelectedGenres([]);
+                        setSelectedMangaGenres([]);
+                        setMangaOrigin('ALL');
                         setStatus('');
                         setMinScore('');
                         setYear('');
@@ -487,30 +668,47 @@ export default function ExploreView({ onAnimeClick, initialQuery, onNavigate }: 
             <>
               <div className={getLayoutGridClasses(layoutMode)}>
                 {results.map((anime, idx) => {
+                  const isManga = mediaKind === 'manga' || anime.mediaType === 'manga';
                   const cleanTitle = cleanAnimeTitle(anime.title || anime.titleAr || 'Anime');
                   const ratingVal = anime.rating && anime.rating !== 'N/A' && Number(anime.rating) > 0
                     ? Number(anime.rating).toFixed(1)
                     : null;
-                  const shortType = getShortTypeCode(anime.type || 'TV');
-                  const seasonLabel = getArabicSeasonLabel(anime.season, anime.releaseYear || anime.year);
+                  const shortType = isManga
+                    ? (anime.originLabel || 'مانجا')
+                    : getShortTypeCode(anime.type || 'TV');
+                  const seasonLabel = isManga
+                    ? (anime.releaseYear ? `عام ${anime.releaseYear}` : '')
+                    : getArabicSeasonLabel(anime.season, anime.releaseYear || anime.year);
                   const statusInfo = normalizeAnimeStatusAr(anime.status);
-                  const episodesTotal = anime.episodesCount || anime.totalEpisodes || null;
+                  const unitsTotal = isManga
+                    ? (anime.chaptersCount || null)
+                    : (anime.episodesCount || anime.totalEpisodes || null);
                   const genresList = Array.isArray(anime.genres)
                     ? anime.genres.slice(0, 3).map((g: string) => GENRE_ARABIC_MAP[g] || g)
                     : [];
+                  const handleItemClick = () => {
+                    if (isManga) {
+                      if (onMangaClick) onMangaClick(String(anime._id));
+                      else onNavigate?.('manga_details');
+                    } else {
+                      onAnimeClick(anime._id);
+                    }
+                  };
 
                   if (isListMode) {
                     return (
                       <div
                         key={`search-${anime._id}-${idx}`}
-                        onClick={() => onAnimeClick(anime._id)}
-                        onMouseEnter={() => clientCache.prefetchDetails(anime._id)}
+                        onClick={handleItemClick}
+                        onMouseEnter={() => {
+                          if (!isManga) clientCache.prefetchDetails(anime._id);
+                        }}
                         className="cursor-pointer group flex items-stretch bg-neutral-900/95 border border-neutral-800/90 hover:border-purple-500/60 rounded-xl transition-all overflow-hidden shadow-md min-h-[124px] sm:min-h-[132px]"
                       >
                         {/* البوستر يملأ الجانب بالكامل من الحافة للحافة */}
                         <div className="w-24 sm:w-28 shrink-0 bg-neutral-950 relative border-l border-white/10 overflow-hidden">
                           <img
-                            src={anime.posterUrl || 'https://via.placeholder.com/300x400?text=Anime'}
+                            src={anime.posterUrl || 'https://via.placeholder.com/300x400?text=Media'}
                             alt={cleanTitle}
                             loading="lazy"
                             referrerPolicy="no-referrer"
@@ -533,8 +731,8 @@ export default function ExploreView({ onAnimeClick, initialQuery, onNavigate }: 
                                 <Star size={10} fill="currentColor" /> {ratingVal}
                               </span>
                             )}
-                            <span className="bg-neutral-800 text-neutral-200 px-2 py-0.5 rounded-lg flex items-center gap-1" dir="ltr">
-                              <Tv size={10} className="text-neutral-400" />
+                            <span className="bg-neutral-800 text-neutral-200 px-2 py-0.5 rounded-lg flex items-center gap-1">
+                              {isManga ? <BookOpen size={10} className="text-amber-400" /> : <Tv size={10} className="text-neutral-400" />}
                               <span>{shortType}</span>
                             </span>
                             {statusInfo && (
@@ -548,10 +746,10 @@ export default function ExploreView({ onAnimeClick, initialQuery, onNavigate }: 
                                 <span>{seasonLabel}</span>
                               </span>
                             )}
-                            {episodesTotal ? (
-                              <span className="flex items-center gap-1 bg-neutral-950/90 border border-white/10 text-neutral-300 px-2 py-0.5 rounded-lg">
+                            {unitsTotal ? (
+                              <span className="flex items-center gap-1 bg-neutral-950/90 border border-white/10 text-neutral-300 px-2 py-0.5 rounded-lg tabular-nums">
                                 <Layers size={10} className="text-neutral-400" />
-                                <span>{episodesTotal} حلقة</span>
+                                <span>{unitsTotal} {isManga ? 'فصل' : 'حلقة'}</span>
                               </span>
                             ) : null}
                           </div>
@@ -573,29 +771,31 @@ export default function ExploreView({ onAnimeClick, initialQuery, onNavigate }: 
                     );
                   }
 
-                  // عرض الشبكة بدون فراغات + الاسم على البوستر + التقييم والنوع باختصار إنجليزي 3 حروف
+                  // عرض الشبكة بدون فراغات + الاسم على البوستر + التقييم والنوع
                   return (
                     <div 
                       key={`search-${anime._id}-${idx}`}
-                      onClick={() => onAnimeClick(anime._id)}
-                      onMouseEnter={() => clientCache.prefetchDetails(anime._id)}
+                      onClick={handleItemClick}
+                      onMouseEnter={() => {
+                        if (!isManga) clientCache.prefetchDetails(anime._id);
+                      }}
                       className="theme-keep-dark cursor-pointer group relative aspect-[3/4] overflow-hidden bg-neutral-950 border-b border-l border-white/10"
                     >
                       <img 
-                        src={anime.posterUrl || 'https://via.placeholder.com/300x400?text=Anime'} 
+                        src={anime.posterUrl || 'https://via.placeholder.com/300x400?text=Media'} 
                         alt={cleanTitle} 
                         loading="lazy" 
                         referrerPolicy="no-referrer"
                         className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" 
                       />
 
-                      {/* شريط علوي فوق البوستر: النوع (3 حروف) + التقييم */}
+                      {/* شريط علوي فوق البوستر: النوع + التقييم */}
                       <div className="absolute top-1.5 inset-x-1.5 z-10 flex items-center justify-between gap-1 pointer-events-none" dir="ltr">
                         <span className="bg-black/80 backdrop-blur-md text-white px-1.5 py-0.5 rounded text-[9px] sm:text-[10px] font-black border border-white/15 uppercase tracking-tight">
                           {shortType}
                         </span>
                         {ratingVal && (
-                          <span className="bg-black/80 backdrop-blur-md text-yellow-400 px-1.5 py-0.5 rounded flex items-center gap-0.5 text-[9px] sm:text-[10px] font-black border border-white/15 shadow">
+                          <span className="bg-black/80 backdrop-blur-md text-yellow-400 px-1.5 py-0.5 rounded flex items-center gap-0.5 text-[9px] sm:text-[10px] font-black border border-white/15 shadow tabular-nums">
                             <Star size={8} fill="currentColor" /> {ratingVal}
                           </span>
                         )}

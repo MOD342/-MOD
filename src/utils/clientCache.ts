@@ -1,4 +1,5 @@
 import { isEphemeralCloudHost } from './apiUrl';
+import { cloudCatalogService } from '../services/cloudCatalogService';
 
 export interface ClientCacheStats {
   memoryItemsCount: number;
@@ -19,7 +20,7 @@ interface CacheEntry<T> {
  * يحافظ على جلسات تسجيل الدخول وحساب المستخدم وتقدم الألعاب والإعدادات في localStorage،
  * مع تخزين مؤقت خفيف في الذاكرة (RAM) لتسريع التنقل الفوري ومنع إعادة الطلبات المكررة.
  */
-const STORAGE_SCHEMA_VERSION = 'otaku_clean_v2026_3';
+const STORAGE_SCHEMA_VERSION = 'otaku_clean_v2026_4';
 const SWR_PERSIST_PREFIX = 'otaku_swr_';
 
 class ClientCacheManager {
@@ -124,21 +125,26 @@ class ClientCacheManager {
           .catch(() => {});
       }
 
-      // Purge stale Firestore document IndexedDB cache (preserving firebaseLocalStorageDb auth tokens)
-      if (typeof indexedDB !== 'undefined' && typeof indexedDB.databases === 'function') {
-        indexedDB
-          .databases()
-          .then((dbs) => {
-            for (const dbInfo of dbs) {
-              if (dbInfo.name && dbInfo.name.startsWith('firestore/')) {
-                try {
-                  indexedDB.deleteDatabase(dbInfo.name);
-                } catch {}
-              }
-            }
-          })
-          .catch(() => {});
-      }
+      // Purge stale local catalog & Firestore document IndexedDB cache (preserving firebaseLocalStorageDb auth tokens)
+      try {
+        if (typeof indexedDB !== 'undefined') {
+          indexedDB.deleteDatabase('otaku_device_catalog_db');
+          if (typeof indexedDB.databases === 'function') {
+            indexedDB
+              .databases()
+              .then((dbs) => {
+                for (const dbInfo of dbs) {
+                  if (dbInfo.name && dbInfo.name.startsWith('firestore/')) {
+                    try {
+                      indexedDB.deleteDatabase(dbInfo.name);
+                    } catch {}
+                  }
+                }
+              })
+              .catch(() => {});
+          }
+        }
+      } catch {}
     } catch {}
   }
 
@@ -221,9 +227,15 @@ class ClientCacheManager {
 
   prefetchDetails(id: string | number): void {
     if (!id || id === 'random' || id === 'unknown') return;
-    const cacheKey = `client_anime_details_v8_${id}`;
-    if (this.memoryCache.has(cacheKey) || this.inFlight.has(`/api/anime/details/${id}`)) return;
-    this.fetchWithRevalidate(cacheKey, `/api/anime/details/${id}`, () => {}, 15 * 60 * 1000).catch(() => {});
+    const strId = String(id);
+    if (this.inFlight.has(`prefetch:${strId}`)) return;
+    const p = cloudCatalogService
+      .getAnimeDetailsWithCloud(strId)
+      .catch(() => null)
+      .finally(() => {
+        this.inFlight.delete(`prefetch:${strId}`);
+      });
+    this.inFlight.set(`prefetch:${strId}`, p);
   }
 
   clearPrefix(prefix: string): void {
@@ -275,6 +287,7 @@ class ClientCacheManager {
     this.hits = 0;
     this.misses = 0;
     this.purgeAllBrowserStorage();
+    void cloudCatalogService.clearLocalDeviceCatalog();
   }
 
   private isMeaningfulData(data: any): boolean {

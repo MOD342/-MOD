@@ -59,6 +59,8 @@ export function isSameOriginFullStackWeb(): boolean {
     host.includes('.run.app') ||
     host.includes('ais-dev-') ||
     host.includes('ais-pre-') ||
+    host.endsWith('.googleusercontent.com') ||
+    host.endsWith('.usercontent.goog') ||
     host.endsWith('.up.railway.app') ||
     host.endsWith('.onrender.com')
   );
@@ -80,6 +82,10 @@ export function getConfiguredEnvApiUrl(): string {
 }
 
 export function resolveApiBaseHost(): string {
+  if (isSameOriginFullStackWeb()) {
+    return '';
+  }
+
   try {
     const storedHost = localStorage.getItem('custom_api_host');
     if (isValidRemoteApiHost(storedHost)) {

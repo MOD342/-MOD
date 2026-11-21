@@ -14,6 +14,7 @@ import {
   Layers,
   CloudOff,
   AlertCircle,
+  BookOpen,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import {
@@ -24,6 +25,11 @@ import {
   isActiveLibraryEntry,
   computeLibraryStats,
 } from '../services/listService';
+import {
+  mangaListService,
+  MangaEntry,
+  computeMangaStats,
+} from '../services/mangaListService';
 import { clientCache } from '../utils/clientCache';
 import { cleanAnimeTitle } from '../utils/animeTitleCleaner';
 import PullToRefresh from '../components/PullToRefresh';
@@ -37,6 +43,7 @@ import {
 
 interface MyListsViewProps {
   onAnimeClick: (id: string) => void;
+  onMangaClick?: (id: string) => void;
 }
 
 const MAIN_LISTS: { id: 'all' | MainListStatus; label: string }[] = [
@@ -48,17 +55,31 @@ const MAIN_LISTS: { id: 'all' | MainListStatus; label: string }[] = [
   { id: 'dropped', label: 'ملغي' },
 ];
 
-export default function MyListsView({ onAnimeClick }: MyListsViewProps) {
+const MANGA_LISTS: { id: 'all' | MainListStatus; label: string }[] = [
+  { id: 'all', label: 'الكل' },
+  { id: 'watching', label: 'أقرأه حالياً' },
+  { id: 'completed', label: 'مكتمل' },
+  { id: 'plan_to_watch', label: 'أنوي قراءته' },
+  { id: 'on_hold', label: 'مؤجل' },
+  { id: 'dropped', label: 'ملغي' },
+];
+
+export default function MyListsView({ onAnimeClick, onMangaClick }: MyListsViewProps) {
   const { user, signIn, userData } = useAuth();
   const customCacheKey = user?.id ? `client_mylists_custom_${user.id}` : 'client_mylists_custom_guest';
   const entriesCacheKey = user?.id ? `client_mylists_entries_${user.id}` : 'client_mylists_entries_guest';
+  const mangaEntriesCacheKey = user?.id ? `client_mylists_manga_${user.id}` : 'client_mylists_manga_guest';
 
+  const [libraryTab, setLibraryTab] = useState<'anime' | 'manga'>('anime');
   const [activeListId, setActiveListId] = useState<string>('all');
   const [customLists, setCustomLists] = useState<CustomList[]>(() => {
     return clientCache.get<CustomList[]>(customCacheKey) || [];
   });
   const [entries, setEntries] = useState<AnimeEntry[]>(() => {
     return clientCache.get<AnimeEntry[]>(entriesCacheKey) || [];
+  });
+  const [mangaEntries, setMangaEntries] = useState<MangaEntry[]>(() => {
+    return clientCache.get<MangaEntry[]>(mangaEntriesCacheKey) || [];
   });
   const [loading, setLoading] = useState(() => {
     return !clientCache.get(entriesCacheKey);
@@ -79,10 +100,12 @@ export default function MyListsView({ onAnimeClick }: MyListsViewProps) {
   useEffect(() => {
     const cachedCustom = clientCache.get<CustomList[]>(customCacheKey) || [];
     const cachedEntries = clientCache.get<AnimeEntry[]>(entriesCacheKey) || [];
+    const cachedManga = clientCache.get<MangaEntry[]>(mangaEntriesCacheKey) || [];
     setCustomLists(cachedCustom);
     setEntries(cachedEntries);
+    setMangaEntries(cachedManga);
     setLoading(cachedEntries.length === 0 && Boolean(user));
-  }, [customCacheKey, entriesCacheKey, user]);
+  }, [customCacheKey, entriesCacheKey, mangaEntriesCacheKey, user]);
 
   const loadData = useCallback(async (forceRefresh = false) => {
     if (!user) return;
@@ -93,9 +116,13 @@ export default function MyListsView({ onAnimeClick }: MyListsViewProps) {
       } else if (forceRefresh) {
         listService.invalidateUserCache(user.id);
       }
-      const [fetchedCustom, fetchedEntries] = await Promise.all([
+      if (forceRefresh) {
+        mangaListService.invalidateUserCache(user.id);
+      }
+      const [fetchedCustom, fetchedEntries, fetchedManga] = await Promise.all([
         listService.getCustomLists(user.id),
         listService.getAnimeEntries(user.id),
+        mangaListService.getMangaEntries(user.id, forceRefresh).catch(() => []),
       ]);
       const getMillis = (val: any) => {
         if (!val) return 0;
@@ -109,8 +136,10 @@ export default function MyListsView({ onAnimeClick }: MyListsViewProps) {
       const sortedCustom = [...fetchedCustom].sort((a, b) => getMillis(b.createdAt) - getMillis(a.createdAt));
       setCustomLists(sortedCustom);
       setEntries(fetchedEntries);
+      setMangaEntries(fetchedManga);
       clientCache.set(customCacheKey, sortedCustom, 60 * 60 * 1000);
       clientCache.set(entriesCacheKey, fetchedEntries, 60 * 60 * 1000);
+      clientCache.set(mangaEntriesCacheKey, fetchedManga, 60 * 60 * 1000);
       void listService.reconcileUserStats(user.id, fetchedEntries, userData);
     } catch (e) {
       console.error(e);
@@ -118,7 +147,7 @@ export default function MyListsView({ onAnimeClick }: MyListsViewProps) {
     } finally {
       setLoading(false);
     }
-  }, [user, isCloudAccount, customCacheKey, entriesCacheKey, userData]);
+  }, [user, isCloudAccount, customCacheKey, entriesCacheKey, mangaEntriesCacheKey, userData]);
 
   useEffect(() => {
     if (user) {
@@ -137,7 +166,11 @@ export default function MyListsView({ onAnimeClick }: MyListsViewProps) {
       }
     };
     window.addEventListener('otaku:library-updated', onLibraryUpdated);
-    return () => window.removeEventListener('otaku:library-updated', onLibraryUpdated);
+    window.addEventListener('manga-library-updated', onLibraryUpdated);
+    return () => {
+      window.removeEventListener('otaku:library-updated', onLibraryUpdated);
+      window.removeEventListener('manga-library-updated', onLibraryUpdated);
+    };
   }, [user, loadData]);
 
   const handleCreateList = async () => {
@@ -167,18 +200,31 @@ export default function MyListsView({ onAnimeClick }: MyListsViewProps) {
     e.stopPropagation();
     if (!user) return;
     try {
-      await listService.removeAnimeEntry(user.id, id);
-      setEntries((prev) => {
-        const next = prev.filter((a) => a.id !== id);
-        clientCache.set(entriesCacheKey, next, 60 * 60 * 1000);
-        return next;
-      });
+      if (libraryTab === 'manga') {
+        await mangaListService.removeMangaEntry(user.id, id);
+        setMangaEntries((prev) => {
+          const next = prev.filter((a) => a.id !== id);
+          clientCache.set(mangaEntriesCacheKey, next, 60 * 60 * 1000);
+          return next;
+        });
+      } else {
+        await listService.removeAnimeEntry(user.id, id);
+        setEntries((prev) => {
+          const next = prev.filter((a) => a.id !== id);
+          clientCache.set(entriesCacheKey, next, 60 * 60 * 1000);
+          return next;
+        });
+      }
     } catch (err) {
       console.error(err);
     }
   };
 
   const libraryStats = useMemo(() => computeLibraryStats(entries), [entries]);
+  const mangaStats = useMemo(() => computeMangaStats(mangaEntries, userData), [mangaEntries, userData]);
+
+  const activeLists = libraryTab === 'manga' ? MANGA_LISTS : MAIN_LISTS;
+  const activeSourceEntries = libraryTab === 'manga' ? mangaEntries : entries;
 
   const tabCounts = useMemo(() => {
     const counts: Record<string, number> = {
@@ -189,8 +235,8 @@ export default function MyListsView({ onAnimeClick }: MyListsViewProps) {
       on_hold: 0,
       dropped: 0,
     };
-    entries.forEach((entry) => {
-      if (isActiveLibraryEntry(entry)) {
+    activeSourceEntries.forEach((entry) => {
+      if (isActiveLibraryEntry(entry as any)) {
         counts.all += 1;
       }
       if (entry.status && counts[entry.status] !== undefined) {
@@ -205,14 +251,14 @@ export default function MyListsView({ onAnimeClick }: MyListsViewProps) {
       }
     });
     return counts;
-  }, [entries]);
+  }, [activeSourceEntries]);
 
   const currentDisplayEntries = useMemo(() => {
-    const filtered = entries.filter((e) => {
+    const filtered = activeSourceEntries.filter((e) => {
       if (activeListId === 'all') {
-        return isActiveLibraryEntry(e);
+        return isActiveLibraryEntry(e as any);
       }
-      if (MAIN_LISTS.some((m) => m.id === activeListId)) {
+      if (activeLists.some((m) => m.id === activeListId)) {
         return e.status === activeListId;
       }
       return e.customLists?.[activeListId] === true;
@@ -238,7 +284,7 @@ export default function MyListsView({ onAnimeClick }: MyListsViewProps) {
       }
       return sortOrder === 'desc' ? -comparison : comparison;
     });
-  }, [entries, activeListId, sortBy, sortOrder]);
+  }, [activeSourceEntries, activeLists, activeListId, sortBy, sortOrder]);
 
   if (!user) {
     return (
@@ -273,7 +319,9 @@ export default function MyListsView({ onAnimeClick }: MyListsViewProps) {
                 <h1 className="font-black text-base md:text-lg text-white">مكتبتي</h1>
                 {!loading && (
                   <span className="text-[11px] font-bold text-neutral-400 tabular-nums">
-                    {libraryStats.totalInLibrary} عمل · {libraryStats.completedAnimeCount} مكتمل · {libraryStats.totalEpisodesWatched} حلقة
+                    {libraryTab === 'manga'
+                      ? `${mangaStats.totalListCount} عمل · ${mangaStats.completedMangaCount} مكتمل · ${mangaStats.totalChaptersRead} فصل`
+                      : `${libraryStats.totalInLibrary} عمل · ${libraryStats.completedAnimeCount} مكتمل · ${libraryStats.totalEpisodesWatched} حلقة`}
                   </span>
                 )}
                 {!isCloudAccount && (
@@ -287,7 +335,30 @@ export default function MyListsView({ onAnimeClick }: MyListsViewProps) {
                 )}
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center bg-neutral-900 border border-neutral-800 rounded-xl p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setLibraryTab('anime')}
+                    className={`min-h-[34px] px-3 rounded-lg text-xs font-black transition cursor-pointer flex items-center gap-1.5 ${
+                      libraryTab === 'anime' ? 'bg-purple-600 text-white shadow' : 'text-neutral-400 hover:text-white'
+                    }`}
+                  >
+                    <Tv size={13} />
+                    <span>مكتبة الأنمي</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLibraryTab('manga')}
+                    className={`min-h-[34px] px-3 rounded-lg text-xs font-black transition cursor-pointer flex items-center gap-1.5 ${
+                      libraryTab === 'manga' ? 'bg-amber-500 text-black shadow' : 'text-neutral-400 hover:text-white'
+                    }`}
+                  >
+                    <BookOpen size={13} />
+                    <span>مكتبة القراءة</span>
+                  </button>
+                </div>
+
                 <div className="flex items-center bg-neutral-900 border border-neutral-800 rounded-xl px-1.5 py-0.5">
                   <select
                     value={sortBy}
@@ -312,7 +383,7 @@ export default function MyListsView({ onAnimeClick }: MyListsViewProps) {
             </div>
 
             <div className="flex gap-1.5 overflow-x-auto hide-scrollbar pb-0.5 pt-0.5">
-              {MAIN_LISTS.map((list) => {
+              {activeLists.map((list) => {
                 const count = tabCounts[list.id] || 0;
                 return (
                   <button
@@ -418,33 +489,46 @@ export default function MyListsView({ onAnimeClick }: MyListsViewProps) {
             ) : currentDisplayEntries.length > 0 ? (
               <div className={getLayoutGridClasses(layoutMode)}>
                 {currentDisplayEntries.map((anime: any, idx) => {
-                  const cleanTitle = cleanAnimeTitle(anime.title || 'Anime');
-                  const targetId = anime.animeId || anime.id;
-                  const statusInfo = MAIN_LISTS.find((m) => m.id === anime.status)?.label || (anime.isFavorite ? 'في المفضلة' : 'محفوظ');
-                  const shortType = getShortTypeCode(anime.type || 'TV');
+                  const isManga = libraryTab === 'manga';
+                  const cleanTitle = cleanAnimeTitle(anime.title || (isManga ? 'Manga' : 'Anime'));
+                  const targetId = isManga ? (anime.mangaId || anime.id) : (anime.animeId || anime.id);
+                  const statusInfo = activeLists.find((m) => m.id === anime.status)?.label || (anime.isFavorite ? 'في المفضلة' : 'محفوظ');
+                  const shortType = isManga
+                    ? (anime.mediaFormat === 'manhwa' ? 'مانهوا' : anime.mediaFormat === 'manhua' ? 'مانها' : 'مانجا')
+                    : getShortTypeCode(anime.type || 'TV');
                   const scoreVal = typeof anime.score === 'number' && anime.score > 0 ? anime.score.toFixed(1) : null;
-                  const seasonLabel = getArabicSeasonLabel(anime.season, anime.releaseYear);
-                  const watchedCount = Array.isArray(anime.watchedEpisodes) && anime.watchedEpisodes.length > 0
-                    ? anime.watchedEpisodes.length
-                    : (anime.progress || 0);
-                  const totalEps = anime.episodesCount || 0;
+                  const seasonLabel = isManga
+                    ? (anime.releaseYear ? `عام ${anime.releaseYear}` : '')
+                    : getArabicSeasonLabel(anime.season, anime.releaseYear);
+                  const unitProgress = isManga
+                    ? (anime.lastReadChapter || (Array.isArray(anime.readChapters) ? anime.readChapters.length : 0) || anime.progress || 0)
+                    : (Array.isArray(anime.watchedEpisodes) && anime.watchedEpisodes.length > 0
+                        ? anime.watchedEpisodes.length
+                        : (anime.progress || 0));
+                  const totalUnits = isManga ? (anime.chaptersCount || 0) : (anime.episodesCount || 0);
+                  const openEntry = () => {
+                    if (isManga) onMangaClick?.(targetId);
+                    else onAnimeClick(targetId);
+                  };
 
                   if (isListMode) {
                     return (
                       <div
                         key={`${anime.id}-${idx}`}
-                        onClick={() => onAnimeClick(targetId)}
-                        onMouseEnter={() => clientCache.prefetchDetails(targetId)}
+                        onClick={openEntry}
+                        onMouseEnter={() => {
+                          if (!isManga) clientCache.prefetchDetails(targetId);
+                        }}
                         className="cursor-pointer group flex items-stretch bg-neutral-900/95 border border-neutral-800/90 hover:border-purple-500/60 rounded-xl transition-all overflow-hidden relative shadow-md min-h-[124px] sm:min-h-[132px]"
                       >
                         <div className="w-24 sm:w-28 shrink-0 bg-neutral-950 relative border-l border-white/10 overflow-hidden">
                           <img
-                            src={anime.posterUrl || 'https://via.placeholder.com/300x400?text=Anime'}
+                            src={anime.posterUrl || 'https://via.placeholder.com/300x400?text=Media'}
                             alt={cleanTitle}
                             loading="lazy"
                             referrerPolicy="no-referrer"
                             onError={(e) => {
-                              e.currentTarget.src = 'https://via.placeholder.com/300x400?text=Anime';
+                              e.currentTarget.src = 'https://via.placeholder.com/300x400?text=Media';
                             }}
                             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                           />
@@ -460,13 +544,13 @@ export default function MyListsView({ onAnimeClick }: MyListsViewProps) {
 
                           <div className="flex flex-wrap items-center justify-start gap-1.5 text-[10px] sm:text-xs font-bold">
                             {scoreVal && (
-                              <span className="bg-yellow-500/15 border border-yellow-500/30 text-yellow-400 px-2 py-0.5 rounded-lg flex items-center gap-1" dir="ltr">
+                              <span className="bg-yellow-500/15 border border-yellow-500/30 text-yellow-400 px-2 py-0.5 rounded-lg flex items-center gap-1 tabular-nums" dir="ltr">
                                 <Star size={10} fill="currentColor" />
                                 <span>{scoreVal}</span>
                               </span>
                             )}
-                            <span className="bg-neutral-800 text-neutral-200 px-2 py-0.5 rounded-lg flex items-center gap-1" dir="ltr">
-                              <Tv size={10} className="text-neutral-400" />
+                            <span className="bg-neutral-800 text-neutral-200 px-2 py-0.5 rounded-lg flex items-center gap-1">
+                              {isManga ? <BookOpen size={10} className="text-amber-400" /> : <Tv size={10} className="text-neutral-400" />}
                               <span>{shortType}</span>
                             </span>
                             <span className="bg-purple-600/20 border border-purple-500/30 text-purple-300 px-2 py-0.5 rounded-lg flex items-center gap-1">
@@ -482,11 +566,11 @@ export default function MyListsView({ onAnimeClick }: MyListsViewProps) {
                                 <span>{seasonLabel}</span>
                               </span>
                             )}
-                            {(watchedCount > 0 || totalEps > 0) && (
-                              <span className="flex items-center gap-1 bg-neutral-950/90 border border-white/10 text-neutral-300 px-2 py-0.5 rounded-md">
+                            {(unitProgress > 0 || totalUnits > 0) && (
+                              <span className="flex items-center gap-1 bg-neutral-950/90 border border-white/10 text-neutral-300 px-2 py-0.5 rounded-md tabular-nums">
                                 <Layers size={10} className="text-neutral-400" />
                                 <span>
-                                  {watchedCount} / {totalEps > 0 ? totalEps : '?'} حلقة
+                                  {unitProgress} / {totalUnits > 0 ? totalUnits : '?'} {isManga ? 'فصل' : 'حلقة'}
                                 </span>
                               </span>
                             )}
@@ -507,17 +591,19 @@ export default function MyListsView({ onAnimeClick }: MyListsViewProps) {
                   return (
                     <div
                       key={`${anime.id}-${idx}`}
-                      onClick={() => onAnimeClick(targetId)}
-                      onMouseEnter={() => clientCache.prefetchDetails(targetId)}
+                      onClick={openEntry}
+                      onMouseEnter={() => {
+                        if (!isManga) clientCache.prefetchDetails(targetId);
+                      }}
                       className="theme-keep-dark cursor-pointer group relative aspect-[3/4] overflow-hidden bg-neutral-950 border-b border-l border-white/10"
                     >
                       <img
-                        src={anime.posterUrl || 'https://via.placeholder.com/300x400?text=Anime'}
+                        src={anime.posterUrl || 'https://via.placeholder.com/300x400?text=Media'}
                         alt={cleanTitle}
                         loading="lazy"
                         referrerPolicy="no-referrer"
                         onError={(e) => {
-                          e.currentTarget.src = 'https://via.placeholder.com/300x400?text=Anime';
+                          e.currentTarget.src = 'https://via.placeholder.com/300x400?text=Media';
                         }}
                         className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                       />
@@ -528,7 +614,7 @@ export default function MyListsView({ onAnimeClick }: MyListsViewProps) {
                             {shortType}
                           </span>
                           {scoreVal && (
-                            <span className="bg-black/80 backdrop-blur-md text-yellow-400 px-1.5 py-0.5 rounded flex items-center gap-0.5 text-[9px] sm:text-[10px] font-black border border-white/15">
+                            <span className="bg-black/80 backdrop-blur-md text-yellow-400 px-1.5 py-0.5 rounded flex items-center gap-0.5 text-[9px] sm:text-[10px] font-black border border-white/15 tabular-nums">
                               <Star size={8} fill="currentColor" />
                               <span>{scoreVal}</span>
                             </span>
@@ -577,7 +663,9 @@ export default function MyListsView({ onAnimeClick }: MyListsViewProps) {
                   <p className="text-xs text-neutral-500 max-w-xs leading-relaxed">
                     {fetchError
                       ? 'تأكد من اتصالك بالإنترنت ثم أعد المحاولة.'
-                      : 'تصفح الأنميات وقم بإضافتها إلى قوائمك من صفحة تفاصيل الأنمي لمتابعتها لاحقاً.'}
+                      : libraryTab === 'manga'
+                        ? 'تصفح المانجا والمانهوا وقم بإضافتها إلى مكتبة القراءة لمتابعة فصولك لاحقاً.'
+                        : 'تصفح الأنميات وقم بإضافتها إلى قوائمك من صفحة تفاصيل الأنمي لمتابعتها لاحقاً.'}
                   </p>
                 </div>
                 {fetchError && (

@@ -272,6 +272,111 @@ async function verifyBinaryVideoUrl(
   }
 }
 
+async function readChunkWithTimeout(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs = 25_000,
+): Promise<{ done: boolean; value?: Uint8Array }> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    reader.read().finally(() => {
+      if (timer) clearTimeout(timer);
+    }),
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("Upstream read idle timeout")), timeoutMs);
+    }),
+  ]);
+}
+
+async function extractMegaMaxMirrors(
+  rawUrl: string,
+  preferredQuality: PreferredQuality,
+): Promise<Array<{ url: string; qualityTier: "FHD" | "HD" | "SD" | null; sizeBytes?: number }>> {
+  try {
+    const u = new URL(rawUrl);
+    const idMatch = u.pathname.match(/\/(?:iframe|e|d)\/([A-Za-z0-9_-]+)/i);
+    if (!idMatch) return [];
+    const hashId = idMatch[1];
+    const origin = `${u.protocol}//${u.host}`;
+    const iframeUrl = `${origin}/iframe/${hashId}`;
+
+    const pageResp = await fetchWithTimeout(
+      iframeUrl,
+      { headers: { "User-Agent": STREAM_UA, Referer: `${origin}/` } },
+      4500,
+    );
+    if (!pageResp.ok) return [];
+    const html = await pageResp.text();
+    const versionMatch = html.match(/"version"\s*:\s*"([a-f0-9]+)"/i);
+    const inertiaVersion = versionMatch?.[1] || "";
+
+    const partialResp = await fetchWithTimeout(
+      iframeUrl,
+      {
+        headers: {
+          "User-Agent": STREAM_UA,
+          "X-Inertia": "true",
+          ...(inertiaVersion ? { "X-Inertia-Version": inertiaVersion } : {}),
+          "X-Inertia-Partial-Component": "files/mirror/video",
+          "X-Inertia-Partial-Data": "streams",
+          "X-Requested-With": "XMLHttpRequest",
+          Referer: iframeUrl,
+        },
+      },
+      5500,
+    );
+    if (!partialResp.ok) return [];
+    const json: any = await partialResp.json();
+    const streamGroups: any[] = Array.isArray(json?.props?.streams?.data)
+      ? json.props.streams.data
+      : [];
+    if (streamGroups.length === 0) return [];
+
+    const sortedGroups = [...streamGroups].sort(
+      (a, b) =>
+        scoreQualityMatch(normalizeQualityTier(b?.label), preferredQuality) -
+        scoreQualityMatch(normalizeQualityTier(a?.label), preferredQuality),
+    );
+
+    const mirrorList: Array<{ url: string; qualityTier: "FHD" | "HD" | "SD" | null; sizeBytes?: number }> = [];
+    const preferredDrivers = ["mixdrop", "lulustream", "videa", "sendvid", "mp4upload", "uqload", "streamwish", "dood"];
+
+    for (const grp of sortedGroups) {
+      const qTier = normalizeQualityTier(grp?.label) || null;
+      const sizeBytes = Number(grp?.size) > 0 ? Number(grp.size) : undefined;
+      const mirrors: any[] = Array.isArray(grp?.mirrors) ? grp.mirrors : [];
+      const sortedMirrors = [...mirrors].sort((a, b) => {
+        const da = String(a?.driver || "").toLowerCase();
+        const db = String(b?.driver || "").toLowerCase();
+        const ia = preferredDrivers.findIndex((p) => da.includes(p));
+        const ib = preferredDrivers.findIndex((p) => db.includes(p));
+        return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+      });
+      for (const m of sortedMirrors) {
+        let link = String(m?.link || "").trim();
+        if (!link) continue;
+        if (link.startsWith("//")) link = `https:${link}`;
+        if (!link.startsWith("http")) continue;
+        const dLower = String(m?.driver || link).toLowerCase();
+        if (
+          dLower.includes("mixdrop") ||
+          dLower.includes("lulustream") ||
+          dLower.includes("videa") ||
+          dLower.includes("sendvid") ||
+          dLower.includes("mp4upload") ||
+          dLower.includes("uqload") ||
+          dLower.includes("wish") ||
+          dLower.includes("dood")
+        ) {
+          mirrorList.push({ url: link, qualityTier: qTier, sizeBytes });
+        }
+      }
+    }
+    return mirrorList;
+  } catch {
+    return [];
+  }
+}
+
 async function resolveSingleCandidateToVideo(
   rawUrl: string,
   filename: string,
@@ -366,6 +471,32 @@ async function resolveSingleCandidateToVideo(
     }
   }
 
+  // MegaMax / Share4Max multi-resolution mirror expansion
+  if (rawUrl.toLowerCase().includes("megamax.") || rawUrl.toLowerCase().includes("share4max.")) {
+    const mirrors = await serverCache.getOrFetch(
+      `megamax_mirrors_v1:${rawUrl}:${preferredQuality}`,
+      () => extractMegaMaxMirrors(rawUrl, preferredQuality),
+      5 * 60 * 1000,
+    );
+    let hlsBackup: ResolvedDownloadTarget | undefined;
+    for (const mirror of mirrors.slice(0, 5)) {
+      const sub = await resolveSingleCandidateToVideo(
+        mirror.url,
+        filename,
+        preferredQuality,
+        mirror.qualityTier || serverQualityHint || null,
+      ).catch((): { mp4?: ResolvedDownloadTarget; hls?: ResolvedDownloadTarget } => ({}));
+      if (sub.mp4) {
+        if (!sub.mp4.sizeBytes && mirror.sizeBytes) sub.mp4.sizeBytes = mirror.sizeBytes;
+        return { mp4: sub.mp4 };
+      }
+      if (sub.hls && !hlsBackup) {
+        hlsBackup = sub.hls;
+      }
+    }
+    return hlsBackup ? { hls: hlsBackup } : {};
+  }
+
   const candidateUrlsToTry: {
     streamUrl: string;
     referer: string;
@@ -383,8 +514,11 @@ async function resolveSingleCandidateToVideo(
   } else {
     // Normalize non-embed URLs to embed URLs where scrapers give direct streams
     let extractInput = rawUrl;
-    if (extractInput.includes("uqload") && !extractInput.includes("/embed-")) {
-      extractInput = extractInput.replace(/(uqload\.[a-z]+\/)([A-Za-z0-9_-]+)/i, "$1embed-$2");
+    if (extractInput.includes("uqload")) {
+      const uqMatch = extractInput.match(/(https?:\/\/[^/]+\/)(?:e\/|embed-)?([A-Za-z0-9_-]+)/i);
+      if (uqMatch && !extractInput.includes("/embed-")) {
+        extractInput = `${uqMatch[1]}embed-${uqMatch[2]}.html`;
+      }
     }
     if (extractInput.includes("mp4upload.com/") && !extractInput.includes("/embed-")) {
       extractInput = extractInput.replace(/mp4upload\.com\/([A-Za-z0-9_-]+)/i, "mp4upload.com/embed-$1.html");
@@ -450,24 +584,43 @@ async function resolveSingleCandidateToVideo(
   for (const cand of candidateUrlsToTry) {
     if (cand.isHls) {
       if (!hlsFallback) {
+        let isValidHls = false;
         let isPublicHls = false;
         try {
-          const rNoRef = await fetchWithTimeout(cand.streamUrl, { headers: { "User-Agent": STREAM_UA } }, 3500);
-          if (rNoRef.ok) {
-            const txt = await rNoRef.text();
-            if (txt.includes("#EXTM3U")) isPublicHls = true;
+          const rWithRef = await fetchWithTimeout(
+            cand.streamUrl,
+            { headers: { "User-Agent": STREAM_UA, ...(cand.referer ? { Referer: cand.referer } : {}) } },
+            4000,
+          );
+          if (rWithRef.ok) {
+            const txt = await rWithRef.text();
+            if (txt.includes("#EXTM3U")) {
+              isValidHls = true;
+              if (!cand.referer) isPublicHls = true;
+            }
           }
         } catch (_) {}
-        hlsFallback = {
-          streamUrl: cand.streamUrl,
-          referer: cand.referer,
-          filename,
-          mode: "hls-remux",
-          serverName: "HLS Direct",
-          resolvedQuality: cand.qualityTier || serverQualityHint || "HD",
-          publicNoReferer: isPublicHls,
-          mimeType: "application/vnd.apple.mpegurl",
-        };
+        if (isValidHls && cand.referer) {
+          try {
+            const rNoRef = await fetchWithTimeout(cand.streamUrl, { headers: { "User-Agent": STREAM_UA } }, 3000);
+            if (rNoRef.ok) {
+              const txt = await rNoRef.text();
+              if (txt.includes("#EXTM3U")) isPublicHls = true;
+            }
+          } catch (_) {}
+        }
+        if (isValidHls) {
+          hlsFallback = {
+            streamUrl: cand.streamUrl,
+            referer: cand.referer,
+            filename,
+            mode: "hls-remux",
+            serverName: "HLS Direct",
+            resolvedQuality: cand.qualityTier || serverQualityHint || "HD",
+            publicNoReferer: isPublicHls,
+            mimeType: "application/vnd.apple.mpegurl",
+          };
+        }
       }
       continue;
     }
@@ -590,13 +743,22 @@ export async function resolveBestDownloadTarget(
   let firstPublicMp4: ResolvedDownloadTarget | null = null;
   let firstPublicHls: ResolvedDownloadTarget | null = null;
 
+  const resolveStart = Date.now();
   for (let i = 0; i < ordered.length; i += 3) {
+    if (Date.now() - resolveStart > 19_000 && (firstMp4 || firstHlsFallback)) {
+      break;
+    }
     const batch = ordered.slice(i, i + 3);
     const results = await Promise.all(
       batch.map((u) => {
         const meta = expandedMeta[u];
         const qHint = normalizeQualityTier(meta?.quality);
-        return resolveSingleCandidateToVideo(u, safeFilename, preferredQuality, qHint)
+        return Promise.race([
+          resolveSingleCandidateToVideo(u, safeFilename, preferredQuality, qHint),
+          new Promise<{ mp4?: ResolvedDownloadTarget; hls?: ResolvedDownloadTarget }>((resolve) =>
+            setTimeout(() => resolve({}), 12_000),
+          ),
+        ])
           .then((res) => {
             if (res.mp4 && meta?.serverName && !res.mp4.serverName) {
               res.mp4.serverName = meta.serverName;
@@ -628,6 +790,8 @@ export async function resolveBestDownloadTarget(
       if (firstPublicMp4 && (preferredQuality === "auto" || firstPublicMp4.resolvedQuality === preferredQuality || i >= 3)) break;
       if (firstPublicHls && i >= 3) break;
     } else if (firstMp4 && firstPublicMp4 && (preferredQuality === "auto" || firstMp4.resolvedQuality === preferredQuality || i >= 3)) {
+      break;
+    } else if ((firstMp4 || firstHlsFallback) && i >= 6) {
       break;
     }
   }
@@ -714,9 +878,17 @@ async function streamMegaTarget(
   iv.writeBigUInt64BE(blockIdx, 8);
 
   const rangeSuffix = `/${alignedStart}-${end}`;
-  const upstream = await fetch(`${target.streamUrl}${rangeSuffix}`, {
-    headers: { "User-Agent": STREAM_UA },
-  });
+  const megaCtrl = new AbortController();
+  const megaTimer = setTimeout(() => megaCtrl.abort(), 20_000);
+  let upstream: globalThis.Response;
+  try {
+    upstream = await fetch(`${target.streamUrl}${rangeSuffix}`, {
+      headers: { "User-Agent": STREAM_UA },
+      signal: megaCtrl.signal,
+    });
+  } finally {
+    clearTimeout(megaTimer);
+  }
 
   if (!upstream.ok || !upstream.body) {
     if (!res.headersSent) return res.status(502).send("تعذر سحب الملف من خادم Mega");
@@ -726,15 +898,19 @@ async function streamMegaTarget(
   const decipher = crypto.createDecipheriv("aes-128-ctr", aesKey, iv);
   let remainingSkip = skipBytes;
   const reader = upstream.body.getReader();
+  let clientAborted = false;
 
-  req.on("close", () => {
-    reader.cancel().catch(() => {});
+  res.on("close", () => {
+    if (!res.writableFinished) {
+      clientAborted = true;
+      reader.cancel().catch(() => {});
+    }
   });
 
   try {
     while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+      const { done, value } = await readChunkWithTimeout(reader, 25_000);
+      if (done || clientAborted || !value) break;
       let plain = decipher.update(Buffer.from(value));
       if (remainingSkip > 0) {
         if (plain.length <= remainingSkip) {
@@ -772,17 +948,19 @@ export async function streamResolvedDownloadTarget(
   }
 
   if (target.mode === "hls-remux") {
-    sendVideoHeaders(res, target.filename, "video/mp4", asAttachment);
     if (req.method === "HEAD") {
+      sendVideoHeaders(res, target.filename, "video/mp4", asAttachment);
       return res.end();
     }
     const ffArgs: string[] = [
+      "-rw_timeout",
+      "15000000",
       "-reconnect",
       "1",
       "-reconnect_streamed",
       "1",
       "-reconnect_delay_max",
-      "5",
+      "4",
     ];
     if (target.referer) {
       ffArgs.push("-headers", `Referer: ${target.referer}\r\nUser-Agent: ${STREAM_UA}\r\n`);
@@ -804,15 +982,72 @@ export async function streamResolvedDownloadTarget(
     );
 
     const ff = spawn("ffmpeg", ffArgs, { stdio: ["ignore", "pipe", "pipe"] });
-    req.on("close", () => {
-      try {
-        ff.kill("SIGKILL");
-      } catch (_) {}
+    let headersCommitted = false;
+    let ended = false;
+
+    const startupTimer = setTimeout(() => {
+      if (!headersCommitted && !ended) {
+        ended = true;
+        try {
+          ff.kill("SIGKILL");
+        } catch (_) {}
+        if (!res.headersSent) {
+          res.status(504).send("انتهت مهلة بدء معالجة البث");
+        } else if (!res.writableEnded) {
+          res.end();
+        }
+      }
+    }, 15_000);
+
+    res.on("close", () => {
+      if (!res.writableFinished) {
+        ended = true;
+        clearTimeout(startupTimer);
+        try {
+          ff.kill("SIGKILL");
+        } catch (_) {}
+      }
     });
-    ff.stdout.pipe(res);
+
+    ff.stdout.on("data", (chunk: Buffer) => {
+      if (ended || res.writableEnded) return;
+      if (!headersCommitted) {
+        headersCommitted = true;
+        clearTimeout(startupTimer);
+        sendVideoHeaders(res, target.filename, "video/mp4", asAttachment);
+      }
+      res.write(chunk);
+    });
+
+    ff.stdout.on("end", () => {
+      clearTimeout(startupTimer);
+      if (ended) return;
+      ended = true;
+      if (!headersCommitted && !res.headersSent) {
+        res.status(502).send("تعذر استخراج بيانات الفيديو من البث");
+      } else if (!res.writableEnded) {
+        res.end();
+      }
+    });
+
     ff.on("error", () => {
+      clearTimeout(startupTimer);
+      if (ended) return;
+      ended = true;
       if (!res.headersSent) res.status(502).send("Video remux failed");
       else if (!res.writableEnded) res.end();
+    });
+
+    ff.on("close", () => {
+      clearTimeout(startupTimer);
+      if (!headersCommitted && !ended) {
+        ended = true;
+        if (!res.headersSent) {
+          res.status(502).send("تعذر سحب ملف الفيديو من هذا السيرفر");
+        } else if (!res.writableEnded) {
+          res.end();
+        }
+      }
     });
     return;
   }
@@ -821,7 +1056,7 @@ export async function streamResolvedDownloadTarget(
     target.streamUrl,
     target.referer,
     req.headers.range as string | undefined,
-    30000,
+    25000,
   );
 
   if (!upstream.ok || !upstream.body) {
@@ -856,21 +1091,31 @@ export async function streamResolvedDownloadTarget(
   }
 
   const reader = upstream.body.getReader();
-  req.on("close", () => {
-    reader.cancel().catch(() => {});
+  let clientClosed = false;
+  res.on("close", () => {
+    if (!res.writableFinished) {
+      clientClosed = true;
+      reader.cancel().catch(() => {});
+    }
   });
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (!res.writableEnded) {
-      res.write(Buffer.from(value));
-    } else {
-      break;
+  try {
+    while (true) {
+      const { done, value } = await readChunkWithTimeout(reader, 25_000);
+      if (done || clientAbortedOrClosed(clientClosed) || !value) break;
+      if (!res.writableEnded) {
+        res.write(Buffer.from(value));
+      } else {
+        break;
+      }
     }
-  }
+  } catch (_) {}
   if (!res.writableEnded) {
     res.end();
   }
+}
+
+function clientAbortedOrClosed(closed: boolean): boolean {
+  return closed;
 }
 

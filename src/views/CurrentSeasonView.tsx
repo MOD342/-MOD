@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { ChevronRight, Star, Tv, Calendar, RefreshCw, AlertCircle } from 'lucide-react';
 import { clientCache } from '../utils/clientCache';
+import { cloudCatalogService } from '../services/cloudCatalogService';
 import { LongPressCopy } from '../components/LongPressCopy';
 import { getCuratedSeasonAnime } from '../data/curatedAnimeDatabase';
 import PullToRefresh from '../components/PullToRefresh';
@@ -27,7 +28,7 @@ export default function CurrentSeasonView({ onBack, onAnimeClick }: { onBack: ()
   const [refreshing, setRefreshing] = useState(false);
   const [fetchError, setFetchError] = useState(false);
 
-  // Fetch season data with Stale-While-Revalidate and clientCache
+  // Fetch season data via 3-tier Cloud Catalog (Device -> Shared Cloud -> Live)
   const loadSeasonData = useCallback(async (season: string, year: number, forceBypass = false) => {
     let url = '/api/anime/season';
     if (season !== 'now') {
@@ -47,27 +48,39 @@ export default function CurrentSeasonView({ onBack, onAnimeClick }: { onBack: ()
     }
 
     try {
-      await clientCache.fetchWithRevalidate<any[]>(
-        cacheKey,
-        url,
-        (data) => {
-          if (Array.isArray(data) && data.length > 0) {
-            setAnimeList(data);
+      const isCurrent = season === 'now';
+      const data = await cloudCatalogService.getBundleWithCloud<any[]>({
+        bundleId: `season_${season}_${year}`,
+        kind: 'season',
+        freshTtlMs: isCurrent ? 6 * 60 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000,
+        staleTtlMs: isCurrent ? 7 * 24 * 60 * 60 * 1000 : 90 * 24 * 60 * 60 * 1000,
+        forceRefresh: forceBypass,
+        countItems: (arr) => (Array.isArray(arr) ? arr.length : 0),
+        fetchLive: async () => {
+          const sep = url.includes('?') ? '&' : '?';
+          const reqUrl = forceBypass ? `${url}${sep}_t=${Date.now()}` : url;
+          const res = await fetch(reqUrl, { cache: forceBypass ? 'no-store' : 'default' });
+          if (!res.ok) return null;
+          const json = await res.json();
+          return json?.success && Array.isArray(json.data) ? json.data : null;
+        },
+        onData: (list) => {
+          if (Array.isArray(list) && list.length > 0) {
+            setAnimeList(list);
             setFetchError(false);
+            clientCache.set(cacheKey, list, 6 * 60 * 60 * 1000);
           }
           setLoading(false);
           setRefreshing(false);
         },
-        7 * 24 * 60 * 60 * 1000,
-        {
-          forceRefresh: forceBypass,
-          onError: () => {
-            if (!cached || cached.length === 0) {
-              setFetchError(true);
-            }
-          }
-        }
-      );
+      });
+      if (!data && (!cached || cached.length === 0)) {
+        setFetchError(true);
+      }
+    } catch {
+      if (!cached || cached.length === 0) {
+        setFetchError(true);
+      }
     } finally {
       setLoading(false);
       setRefreshing(false);

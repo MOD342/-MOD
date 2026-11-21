@@ -23,7 +23,7 @@ export interface EpisodeServer {
   serverName: string;
   url: string;
   type: 'iframe' | 'direct';
-  quality?: '1080p' | '720p' | '480p' | 'auto';
+  quality?: '1080p' | '720p' | '480p' | 'multi' | 'auto';
   category?: 'watch' | 'download';
 }
 
@@ -394,16 +394,17 @@ export class ScraperService {
 
   private normalizeOkanimeHostName(raw: string, url: string): string {
     const h = `${raw} ${url}`.toLowerCase();
-    if (h.includes('mega.nz') || h === 'mega' || h.includes('meganz')) return 'Mega';
+    if (/\bvk\b/i.test(raw) || h.includes('vk.com') || h.includes('vkvideo') || h.includes('vk video')) return 'VK Video';
+    if (h.includes('mega.nz') || raw.trim().toLowerCase() === 'mega' || h.includes('meganz')) return 'Mega';
     if (h.includes('mp4upload')) return 'MP4Upload';
-    if (h.includes('vk.com') || h.includes('vkvideo') || h === 'vk') return 'VK Video';
-    if (h.includes('drive.google')) return 'Google Drive';
+    if (h.includes('drive.google') || h.includes('gdrive')) return 'Google Drive';
     if (h.includes('mediafire')) return 'MediaFire';
     if (h.includes('sendvid')) return 'Sendvid';
     if (h.includes('uqload')) return 'Uqload';
     if (h.includes('4shared')) return '4Shared';
     if (h.includes('videa')) return 'Videa';
     if (h.includes('ok.ru')) return 'Ok.ru';
+    if (h.includes('dailymotion')) return 'Dailymotion';
     if (h.includes('vidmoly')) return 'Vidmoly';
     if (h.includes('streamwish') || h.includes('asnwish')) return 'Streamwish';
     if (h.includes('share4max') || h.includes('megamax')) return 'MegaMax';
@@ -413,6 +414,20 @@ export class ScraperService {
     if (h.includes('filemoon')) return 'Filemoon';
     if (h.includes('dood') || h.includes('d000d')) return 'DoodStream';
     return raw ? raw.trim() : 'Direct Server';
+  }
+
+  private isMultiQualityWatchHost(serverName: string, url: string): boolean {
+    const lower = `${serverName} ${url}`.toLowerCase();
+    return (
+      lower.includes('vk video') ||
+      lower.includes('vk.com') ||
+      lower.includes('vkvideo') ||
+      lower.includes('ok.ru') ||
+      lower.includes('dailymotion') ||
+      lower.includes('videa') ||
+      lower.includes('megamax') ||
+      lower.includes('share4max')
+    );
   }
 
   private async searchOkanimeSlug(query: string): Promise<string | null> {
@@ -547,8 +562,31 @@ export class ScraperService {
       if (!embedUrl.startsWith('http')) return;
 
       const qText = $(el).find('span').first().text().trim() || $(el).text().trim();
-      const quality = this.mapOkanimeQuality(qText);
       const serverName = this.normalizeOkanimeHostName(rawServer, embedUrl);
+      const quality: EpisodeServer['quality'] = this.isMultiQualityWatchHost(serverName, embedUrl)
+        ? 'multi'
+        : this.mapOkanimeQuality(qText);
+
+      // Deduplicate MegaMax entries sharing the same hashId (preferring /iframe/)
+      const megaMatch = embedUrl.match(/https?:\/\/[^/]*(?:megamax|share4max)[^/]*\/(?:iframe|e)\/([A-Za-z0-9_-]+)/i);
+      if (megaMatch) {
+        const canonicalMegaUrl = embedUrl.replace(/\/e\/([A-Za-z0-9_-]+)/i, '/iframe/$1');
+        const existingIdx = watch.findIndex((s) => s.url.includes(megaMatch[1]));
+        if (existingIdx !== -1) {
+          if (embedUrl.includes('/iframe/')) {
+            watch[existingIdx].url = canonicalMegaUrl;
+          }
+          return;
+        }
+        watch.push({
+          serverName,
+          url: canonicalMegaUrl,
+          type: 'iframe',
+          quality: 'multi',
+          category: 'watch',
+        });
+        return;
+      }
 
       if (!watch.some(s => s.url === embedUrl)) {
         watch.push({
@@ -1923,7 +1961,7 @@ export class ScraperService {
       }
     }
 
-    const cacheKey = `servers_v7_okanime_fast:${episodeId}:${jikanId}:${animeTitle || ''}:${explicitSeason || 1}:${epNum}`;
+    const cacheKey = `servers_v8_okanime_fast:${episodeId}:${jikanId}:${animeTitle || ''}:${explicitSeason || 1}:${epNum}`;
     const cachedServers = await this.getCached<EpisodeServer[]>(cacheKey);
     if (cachedServers && Array.isArray(cachedServers) && cachedServers.length > 0) {
       return cachedServers;
@@ -2094,21 +2132,30 @@ export class ScraperService {
         );
       };
 
+      for (const w of watchServers) {
+        if (this.isMultiQualityWatchHost(w.serverName, w.url)) {
+          w.quality = 'multi';
+        }
+      }
+
       const getServerReliabilityScore = (server: EpisodeServer): number => {
         const lowerName = (server.serverName || '').toLowerCase();
         const lowerUrl = (server.url || '').toLowerCase();
+
+        // Multi-quality in-player servers appear first at the top
+        if (lowerName.includes('vk') || lowerUrl.includes('vk.com') || lowerUrl.includes('vkvideo')) return 130;
+        if (lowerName.includes('ok.ru') || lowerUrl.includes('ok.ru')) return 122;
+        if (lowerName.includes('dailymotion') || lowerUrl.includes('dailymotion.com')) return 118;
+        if (lowerName.includes('videa') || lowerUrl.includes('videa.hu')) return 115;
+        if (lowerName.includes('megamax') || lowerUrl.includes('megamax') || lowerUrl.includes('share4max')) return 112;
 
         if (lowerName.includes('mega') && !lowerName.includes('megamax') && !lowerUrl.includes('share4max')) return 100;
         if (lowerUrl.includes('mega.nz')) return 100;
         if (lowerName.includes('sendvid') || lowerUrl.includes('sendvid.com')) return 95;
         if (lowerName.includes('mp4upload') || lowerUrl.includes('mp4upload.com')) return 90;
         if (lowerName.includes('drive') || lowerUrl.includes('drive.google')) return 85;
-        if (lowerName.includes('ok.ru') || lowerUrl.includes('ok.ru')) return 80;
-        if (lowerName.includes('vk') || lowerUrl.includes('vk.com') || lowerUrl.includes('vkvideo')) return 78;
         if (lowerName.includes('uqload') || lowerUrl.includes('uqload.')) return 75;
         if (lowerName.includes('streamwish') || lowerUrl.includes('asnwish') || lowerUrl.includes('filemoon')) return 70;
-        if (lowerName.includes('videa') || lowerName.includes('dailymotion') || lowerUrl.includes('videa.hu')) return 65;
-        if (lowerName.includes('megamax') || lowerUrl.includes('share4max')) return 40;
         if (lowerName.includes('vidmoly') || lowerUrl.includes('vidmoly')) return 20;
         if (lowerName.includes('sibnet') || lowerUrl.includes('sibnet')) return 10;
 

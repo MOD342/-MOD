@@ -31,6 +31,8 @@ export interface ChatAnimeCard {
   episodes: number | null;
   year: number | null;
   genres: string[];
+  mediaType?: 'anime' | 'manga';
+  originLabel?: string;
 }
 
 interface ChatMessage {
@@ -67,9 +69,11 @@ function renderFormattedText(text: string): React.ReactNode {
 export default function AiChatView({
   onBack,
   onNavigate,
+  onMangaClick,
 }: {
   onBack: () => void;
   onNavigate?: (viewName: string, props?: any) => void;
+  onMangaClick?: (id: string) => void;
 }) {
   const { user, userData, userRole } = useAuth();
   const display = useDeviceDisplay();
@@ -259,10 +263,18 @@ export default function AiChatView({
     }
   };
 
-  const openAnimeDetails = (animeId: string) => {
-    if (!animeId) return;
+  const openCardDetails = (card: ChatAnimeCard) => {
+    if (!card?.id) return;
+    if (card.mediaType === 'manga') {
+      if (onMangaClick) {
+        onMangaClick(card.id);
+      } else if (onNavigate) {
+        onNavigate('manga_details', { id: card.id });
+      }
+      return;
+    }
     if (onNavigate) {
-      onNavigate('anime_details', { id: animeId });
+      onNavigate('anime_details', { id: card.id });
     }
   };
 
@@ -474,7 +486,7 @@ export default function AiChatView({
                             <button
                               key={`${c.id}-${anime.id}`}
                               type="button"
-                              onClick={() => openAnimeDetails(anime.id)}
+                              onClick={() => openCardDetails(anime)}
                               className="group w-full min-h-[84px] bg-[#111116] hover:bg-[#191922] border border-zinc-800 hover:border-[#FF1744]/60 rounded-2xl p-2.5 flex items-center gap-3 text-right transition cursor-pointer"
                             >
                               <div className="w-14 h-20 rounded-xl overflow-hidden bg-zinc-900 border border-zinc-800 shrink-0 flex items-center justify-center">
@@ -503,11 +515,11 @@ export default function AiChatView({
                                     </span>
                                   )}
                                   {anime.rating && <span aria-hidden="true">·</span>}
-                                  <span>{anime.type}</span>
+                                  <span>{anime.originLabel || anime.type}</span>
                                   {anime.episodes && (
                                     <>
                                       <span aria-hidden="true">·</span>
-                                      <span>{anime.episodes} حلقة</span>
+                                      <span>{anime.episodes} {anime.mediaType === 'manga' ? 'فصل' : 'حلقة'}</span>
                                     </>
                                   )}
                                   {anime.year && (
@@ -525,7 +537,11 @@ export default function AiChatView({
                                 )}
 
                                 <div className="pt-0.5 flex items-center gap-1 text-[11px] font-bold text-[#FF1744]">
-                                  <span>فتح صفحة الأنمي</span>
+                                  <span>
+                                    {anime.mediaType === 'manga'
+                                      ? (anime.originLabel ? `اقرأ الـ${anime.originLabel}` : 'فتح صفحة القراءة')
+                                      : 'فتح صفحة الأنمي'}
+                                  </span>
                                   <ChevronLeft size={13} className="group-hover:-translate-x-0.5 transition-transform" />
                                 </div>
                               </div>

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Play, Star, List, MessageCircle, Heart, Share2, Info, ChevronRight, Loader2, Users, Youtube, X, Plus, LogIn, ThumbsUp, ThumbsDown, Copy, Reply, Flag, EyeOff, Eye, Edit2, Trash2, ShieldCheck, CheckSquare, PlayCircle, Trophy, Send, Flame, Download, Lightbulb, Home, RefreshCw, AlertCircle } from 'lucide-react';
+import { Play, Star, List, MessageCircle, Heart, Share2, Info, ChevronRight, Loader2, Users, Youtube, X, Plus, LogIn, ThumbsUp, ThumbsDown, Copy, Reply, Flag, EyeOff, Eye, Edit2, Trash2, ShieldCheck, CheckSquare, PlayCircle, Trophy, Send, Flame, Download, Lightbulb, Home, RefreshCw, AlertCircle, BookOpen } from 'lucide-react';
 import { Search } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { db } from '../firebase';
@@ -10,6 +10,7 @@ import { Recommendation, getApprovedRecommendations, addRecommendation, Comment,
 import { notificationsService } from '../services/notificationsService';
 import { isStaffEmail } from '../services/moderationService';
 import { clientCache } from '../utils/clientCache';
+import { cloudCatalogService } from '../services/cloudCatalogService';
 import { LongPressCopy } from '../components/LongPressCopy';
 import { openExternalUrl } from '../utils/externalNavigation';
 import ViewportPortal from '../components/ViewportPortal';
@@ -99,6 +100,7 @@ interface AnimeDetailsProps {
   onHome?: () => void;
   onWatch: (episode: any, anime: any) => void;
   onAnimeClick?: (id: string, autoplayEpisode?: string) => void;
+  onMangaClick?: (id: string) => void;
   onNavigate?: (view: string, props?: any) => void;
 }
 
@@ -196,7 +198,7 @@ function recordRandomAnimeSeen(animeId?: string | number, malId?: string | numbe
   }
 }
 
-export default function AnimeDetailsView({ id, showComments = false, focusCommentId, autoplayEpisode, onBack, onHome, onWatch, onAnimeClick, onNavigate }: AnimeDetailsProps) {
+export default function AnimeDetailsView({ id, showComments = false, focusCommentId, autoplayEpisode, onBack, onHome, onWatch, onAnimeClick, onMangaClick, onNavigate }: AnimeDetailsProps) {
   const { user, signIn, userRole, userData } = useAuth();
   const [anime, setAnime] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -415,43 +417,50 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
 
     try {
       let resolvedData = false;
-      const result = await clientCache.fetchWithRevalidate(
-        `client_anime_details_v8_${id}`,
-        `/api/anime/details/${id}`,
-        (data: any) => {
-          if (data && generation === fetchGenerationRef.current) {
-            resolvedData = true;
-            setAnime(data);
-            setLoadError(false);
-            if (data?.description && /[a-zA-Z]{10,}/.test(data.description)) {
-              fetch('/api/anime/translate-synopsis', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ animeId: data._id || id, text: data.description })
-              })
-                .then(r => r.json())
-                .then(res => {
-                  if (generation === fetchGenerationRef.current && res.success && res.translated && /[\u0600-\u06FF]/.test(res.translated)) {
-                    setAnime((prev: any) => prev ? { ...prev, description: res.translated } : prev);
-                  }
-                })
-                .catch(() => {});
-            }
-            import('../services/listService').then(({ listService }) => {
-               listService.getAnimeAppRating(data._id || id).then((r) => {
-                 if (generation === fetchGenerationRef.current) setAppRating(r);
-               });
-            });
+      const handleResolvedAnime = (data: any) => {
+        if (!data || generation !== fetchGenerationRef.current) return;
+        resolvedData = true;
+        setAnime(data);
+        setLoading(false);
+        setLoadError(false);
+        clientCache.set(`client_anime_details_v8_${id}`, data, 12 * 60 * 60 * 1000);
+        if (data?.description && /[a-zA-Z]{10,}/.test(data.description)) {
+          fetch('/api/anime/translate-synopsis', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ animeId: data._id || id, text: data.description }),
+          })
+            .then((r) => r.json())
+            .then((res) => {
+              if (
+                generation === fetchGenerationRef.current &&
+                res.success &&
+                res.translated &&
+                /[\u0600-\u06FF]/.test(res.translated)
+              ) {
+                setAnime((prev: any) => (prev ? { ...prev, description: res.translated } : prev));
+                void cloudCatalogService.updateCachedAnimeSynopsis(String(id), res.translated);
+              }
+            })
+            .catch(() => {});
+        }
+        import('../services/listService').then(({ listService }) => {
+          listService.getAnimeAppRating(data._id || id).then((r) => {
+            if (generation === fetchGenerationRef.current) setAppRating(r);
+          });
+        });
+      };
+
+      const result = await cloudCatalogService.getAnimeDetailsWithCloud(String(id), {
+        forceRefresh: forceBypass,
+        onData: (data) => handleResolvedAnime(data),
+        onError: () => {
+          if (!hasCachedData && !resolvedData && generation === fetchGenerationRef.current) {
+            setLoadError(true);
           }
         },
-        12 * 60 * 60 * 1000,
-        {
-          forceRefresh: forceBypass,
-          onError: () => {
-            if (!hasCachedData && generation === fetchGenerationRef.current) setLoadError(true);
-          }
-        }
-      );
+      });
+      if (result) handleResolvedAnime(result);
       if (!result && !resolvedData && !hasCachedData && !anime && generation === fetchGenerationRef.current) {
         setLoadError(true);
       }
@@ -1236,6 +1245,24 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
               <MessageCircle size={20} />
             </button>
           </div>
+
+          {anime.sourceManga?.id && (
+            <button
+              type="button"
+              onClick={() => {
+                const targetMangaId = String(anime.sourceManga.id);
+                if (onMangaClick) onMangaClick(targetMangaId);
+                else onNavigate?.('manga_details', { id: targetMangaId });
+              }}
+              className="w-full min-h-[44px] mb-3 px-4 py-2.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/15 border border-amber-500/30 text-amber-300 font-black text-xs flex items-center justify-between gap-2 transition cursor-pointer"
+            >
+              <span className="flex items-center gap-2 min-w-0">
+                <BookOpen size={16} className="shrink-0" />
+                <span className="truncate">اقرأ المانجا / المانهوا: {anime.sourceManga.title || 'الأصلية'}</span>
+              </span>
+              <ChevronRight size={16} className="rotate-180 shrink-0" />
+            </button>
+          )}
           
           {/* Tabs */}
           <div className="flex gap-2 overflow-x-auto hide-scrollbar border-b border-neutral-800 pb-2 mt-3">

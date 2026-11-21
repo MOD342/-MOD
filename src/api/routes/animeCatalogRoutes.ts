@@ -184,6 +184,9 @@ router.get(
           related = aniRes.related || [];
           jikanRecommendations = aniRes.recommendations || [];
           aniPictures = aniRes.pictures || [];
+          if (aniRes.sourceManga) {
+            catalogData.sourceManga = aniRes.sourceManga;
+          }
         } else {
           // Fallback to Jikan
           const [fullRes, charsRes, relRes, recsRes] = await Promise.all([
@@ -262,6 +265,9 @@ router.get(
           related = aniRes.related || [];
           jikanRecommendations = aniRes.recommendations || [];
           aniPictures = aniRes.pictures || [];
+          if (aniRes.sourceManga) {
+            catalogData.sourceManga = aniRes.sourceManga;
+          }
           if (!searchedId && (catalogData.title || catalogData.title_english)) {
             const retrySlug = await raceTimeout(
               scraper.searchAnime(catalogData.title || catalogData.title_english).catch(() => null),
@@ -299,6 +305,9 @@ router.get(
           related = aniRes.related || [];
           jikanRecommendations = aniRes.recommendations || [];
           aniPictures = aniRes.pictures || [];
+          if (aniRes.sourceManga) {
+            catalogData.sourceManga = aniRes.sourceManga;
+          }
         }
       }
 
@@ -396,6 +405,9 @@ router.get(
           data.posterUrl;
         if (catalogData.bannerUrl) {
           data.bannerUrl = catalogData.bannerUrl;
+        }
+        if (catalogData.sourceManga) {
+          data.sourceManga = catalogData.sourceManga;
         }
         if (catalogData.score) {
           data.rating = catalogData.score;

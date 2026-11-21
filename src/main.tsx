@@ -114,10 +114,32 @@ async function smartFetch(input: RequestInfo | URL, init?: RequestInit): Promise
     const configuredHost = resolveApiBaseHost();
     const apiRelativePath = extractApiRelativePath(urlString);
 
-    const isAiChatEndpoint = apiRelativePath.split('?')[0] === '/api/ai/chat';
+    const rawPathname = apiRelativePath.split('?')[0];
+    const isAiChatEndpoint = rawPathname === '/api/ai/chat';
+    const isStreamingOrBinaryEndpoint =
+      rawPathname === '/api/anime/download-stream' ||
+      rawPathname === '/api/anime/stream-proxy' ||
+      rawPathname === '/api/anime/download' ||
+      rawPathname.startsWith('/api/anime/play-stream/') ||
+      rawPathname === '/api/manga/image-proxy';
 
-    // داخل حزمة APK بدون خادم خلفي ثابت مهيأ، استخدم المحرك المباشر فوراً (ما عدا الدردشة الحية التي تتطلب الخادم)
-    if (isApkLocalShell && !configuredHost && apiRelativePath.startsWith('/api/') && !isAiChatEndpoint) {
+    if (isStreamingOrBinaryEndpoint) {
+      return originalFetch(resolveFetchInput(input), init);
+    }
+
+    const isNonFallbackResolveEndpoint =
+      rawPathname === '/api/anime/resolve-download' ||
+      rawPathname === '/api/anime/resolve-play' ||
+      rawPathname === '/api/anime/extract';
+
+    // داخل حزمة APK بدون خادم خلفي ثابت مهيأ، استخدم المحرك المباشر فوراً (ما عدا الدردشة الحية وتجهيز الروابط المباشرة)
+    if (
+      isApkLocalShell &&
+      !configuredHost &&
+      apiRelativePath.startsWith('/api/') &&
+      !isAiChatEndpoint &&
+      !isNonFallbackResolveEndpoint
+    ) {
       const fbRes = await handleFrontendFallback(apiRelativePath, init);
       if (fbRes) return fbRes;
     }
@@ -130,8 +152,21 @@ async function smartFetch(input: RequestInfo | URL, init?: RequestInit): Promise
         ? resolvedInput.toString()
         : (resolvedInput as Request).url || urlString;
 
-    const isServersEndpoint = apiRelativePath.split('?')[0] === '/api/anime/servers';
-    const timeoutMs = isAiChatEndpoint ? 24000 : isServersEndpoint ? 15000 : 11000;
+    const isServersEndpoint = rawPathname === '/api/anime/servers';
+    const isMangaEndpoint = rawPathname.startsWith('/api/manga/');
+    const isLongCatalogEndpoint =
+      isMangaEndpoint || rawPathname.startsWith('/api/anime/details/');
+    const timeoutMs = isNonFallbackResolveEndpoint
+      ? 36000
+      : isMangaEndpoint
+      ? 34000
+      : isAiChatEndpoint
+      ? 24000
+      : isLongCatalogEndpoint
+      ? 28000
+      : isServersEndpoint
+      ? 18000
+      : 11000;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -155,11 +190,44 @@ async function smartFetch(input: RequestInfo | URL, init?: RequestInit): Promise
       if (!fetchOptions.signal) {
         fetchOptions.signal = controller.signal;
       }
+      if (!fetchOptions.credentials) {
+        fetchOptions.credentials = 'same-origin';
+      }
 
-      const res = await originalFetch(resolvedInput, fetchOptions);
-      const contentType = res.headers.get('content-type') || '';
+      const maxAttempts = isMangaEndpoint ? 3 : 1;
+      let res: Response | null = null;
+      let contentType = '';
+      let lastFetchErr: any = null;
 
-      if (isAiChatEndpoint && contentType.includes('application/json')) {
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        try {
+          res = await originalFetch(resolvedInput, fetchOptions);
+          contentType = res.headers.get('content-type') || '';
+          const shouldRetry =
+            isMangaEndpoint &&
+            attempt < maxAttempts - 1 &&
+            (res.status >= 500 || res.status === 429 || !contentType.includes('application/json'));
+          if (!shouldRetry) {
+            lastFetchErr = null;
+            break;
+          }
+        } catch (fetchErr: any) {
+          lastFetchErr = fetchErr;
+          if (!isMangaEndpoint || attempt >= maxAttempts - 1 || controller.signal.aborted) {
+            throw fetchErr;
+          }
+        }
+        await new Promise((r) => setTimeout(r, attempt === 0 ? 900 : 2000));
+      }
+
+      if (lastFetchErr || !res) {
+        throw lastFetchErr || new Error('Network request failed');
+      }
+
+      if (
+        (isAiChatEndpoint || isNonFallbackResolveEndpoint || rawPathname === '/api/manga/pages') &&
+        contentType.includes('application/json')
+      ) {
         return res;
       }
 

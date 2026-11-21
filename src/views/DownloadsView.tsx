@@ -15,6 +15,7 @@ import {
   AlertTriangle,
   Loader2,
   Tv,
+  BookOpen,
 } from 'lucide-react';
 import {
   downloadManagerService,
@@ -30,11 +31,19 @@ interface DownloadsViewProps {
   onBack: () => void;
   onExplore?: () => void;
   onOpenAnime?: (animeId: string) => void;
+  onOpenManga?: (mangaId: string) => void;
+  onOpenOfflineChapter?: (item: DownloadQueueItem) => void;
 }
 
 type FilterKey = 'all' | 'active' | 'completed' | 'paused';
 
-export default function DownloadsView({ onBack, onExplore, onOpenAnime }: DownloadsViewProps) {
+export default function DownloadsView({
+  onBack,
+  onExplore,
+  onOpenAnime,
+  onOpenManga,
+  onOpenOfflineChapter,
+}: DownloadsViewProps) {
   const items = useDownloadQueue();
   const [filter, setFilter] = useState<FilterKey>('all');
   const [playingOffline, setPlayingOffline] = useState<{
@@ -47,6 +56,7 @@ export default function DownloadsView({ onBack, onExplore, onOpenAnime }: Downlo
     let active = 0;
     let completed = 0;
     let paused = 0;
+    let failed = 0;
     for (const item of items) {
       if (item.status === 'queued' || item.status === 'resolving' || item.status === 'downloading') {
         active++;
@@ -54,9 +64,12 @@ export default function DownloadsView({ onBack, onExplore, onOpenAnime }: Downlo
         completed++;
       } else {
         paused++;
+        if (item.status === 'failed') {
+          failed++;
+        }
       }
     }
-    return { all: items.length, active, completed, paused };
+    return { all: items.length, active, completed, paused, failed };
   }, [items]);
 
   const filteredItems = useMemo(() => {
@@ -109,14 +122,21 @@ export default function DownloadsView({ onBack, onExplore, onOpenAnime }: Downlo
   };
 
   const renderStatusText = (item: DownloadQueueItem) => {
+    const isChapter = item.itemType === 'chapter';
     switch (item.status) {
       case 'queued':
         return 'في انتظار الدور';
       case 'resolving':
-        return 'جاري تجهيز أفضل جودة متاحة...';
+        return isChapter ? 'جاري تجهيز صفحات الفصل...' : 'جاري تجهيز أفضل جودة متاحة...';
       case 'downloading': {
-        const parts: string[] = [`${item.progress}%`];
-        if (item.downloadedBytes > 0) {
+        const pctLabel =
+          !isChapter && item.totalBytes <= 0 && item.progress > 0
+            ? `~${item.progress}%`
+            : `${item.progress}%`;
+        const parts: string[] = [pctLabel];
+        if (isChapter) {
+          parts.push(`${item.downloadedPages || 0} / ${item.totalPages || '?'} صفحة`);
+        } else if (item.downloadedBytes > 0) {
           parts.push(
             item.totalBytes > 0
               ? `${formatBytes(item.downloadedBytes)} / ${formatBytes(item.totalBytes)}`
@@ -124,12 +144,17 @@ export default function DownloadsView({ onBack, onExplore, onOpenAnime }: Downlo
           );
         }
         const spd = formatSpeed(item.speedBps);
-        if (spd) parts.push(spd);
+        if (spd && !isChapter) parts.push(spd);
         return parts.join(' · ');
       }
       case 'paused':
         return 'متوقف مؤقتاً';
       case 'completed':
+        if (isChapter) {
+          return item.totalPages
+            ? `مكتمل · ${item.totalPages} صفحة جاهزة للقراءة`
+            : 'اكتمل تنزيل الفصل';
+        }
         return item.targetMode === 'external'
           ? 'تم الإرسال للتنزيل الخارجي'
           : item.totalBytes > 0
@@ -176,6 +201,16 @@ export default function DownloadsView({ onBack, onExplore, onOpenAnime }: Downlo
               >
                 <PauseCircle size={15} />
                 <span className="hidden sm:inline">إيقاف الكل</span>
+              </button>
+            )}
+            {counts.failed > 0 && (
+              <button
+                type="button"
+                onClick={() => downloadManagerService.retryAllFailed()}
+                className="min-h-[40px] px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-xs font-black text-white flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap"
+              >
+                <RotateCcw size={15} />
+                <span className="hidden sm:inline">إعادة الفاشلة ({counts.failed})</span>
               </button>
             )}
             {counts.paused > 0 && (
@@ -282,7 +317,13 @@ export default function DownloadsView({ onBack, onExplore, onOpenAnime }: Downlo
                     {/* Poster Thumbnail */}
                     <button
                       type="button"
-                      onClick={() => onOpenAnime && onOpenAnime(item.animeId)}
+                      onClick={() => {
+                        if (item.itemType === 'chapter') {
+                          onOpenManga?.(item.mangaId || item.animeId);
+                        } else {
+                          onOpenAnime?.(item.animeId);
+                        }
+                      }}
                       className="w-14 h-20 rounded-xl bg-neutral-900 border border-neutral-800 overflow-hidden shrink-0 cursor-pointer flex items-center justify-center"
                     >
                       {item.posterUrl ? (
@@ -292,6 +333,8 @@ export default function DownloadsView({ onBack, onExplore, onOpenAnime }: Downlo
                           referrerPolicy="no-referrer"
                           className="w-full h-full object-cover"
                         />
+                      ) : item.itemType === 'chapter' ? (
+                        <BookOpen size={20} className="text-neutral-600" />
                       ) : (
                         <Tv size={20} className="text-neutral-600" />
                       )}
@@ -317,20 +360,35 @@ export default function DownloadsView({ onBack, onExplore, onOpenAnime }: Downlo
                       </div>
 
                       <div className="text-xs font-bold text-neutral-300 mt-0.5 tabular-nums truncate">
-                        {item.episodeTitle || `الحلقة ${item.episodeNum}`}
-                        {item.seasonNumber > 1 ? ` · الموسم ${item.seasonNumber}` : ''}
+                        {item.itemType === 'chapter'
+                          ? item.chapterTitle || `الفصل ${item.chapterNum || item.episodeNum}`
+                          : (
+                            <>
+                              {item.episodeTitle || `الحلقة ${item.episodeNum}`}
+                              {item.seasonNumber > 1 ? ` · الموسم ${item.seasonNumber}` : ''}
+                            </>
+                          )}
                       </div>
 
                       <div className="text-[11px] text-neutral-400 mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 tabular-nums">
-                        <span>
-                          الجودة:{' '}
-                          <strong className="text-neutral-200 font-bold">
-                            {item.resolvedQuality
-                              ? formatQualityLabel(item.resolvedQuality)
-                              : formatQualityLabel(item.requestedQuality)}
-                          </strong>
-                        </span>
-                        {item.usedFallbackQuality && (
+                        {item.itemType === 'chapter' ? (
+                          <span>
+                            اللغة:{' '}
+                            <strong className="text-neutral-200 font-bold">
+                              {item.resolvedQuality || 'عربي'}
+                            </strong>
+                          </span>
+                        ) : (
+                          <span>
+                            الجودة:{' '}
+                            <strong className="text-neutral-200 font-bold">
+                              {item.resolvedQuality
+                                ? formatQualityLabel(item.resolvedQuality)
+                                : formatQualityLabel(item.requestedQuality)}
+                            </strong>
+                          </span>
+                        )}
+                        {item.usedFallbackQuality && item.itemType !== 'chapter' && (
                           <>
                             <span aria-hidden="true">·</span>
                             <span className="text-amber-400 font-semibold">
@@ -338,7 +396,7 @@ export default function DownloadsView({ onBack, onExplore, onOpenAnime }: Downlo
                             </span>
                           </>
                         )}
-                        {item.serverName && (
+                        {item.serverName && item.itemType !== 'chapter' && (
                           <>
                             <span aria-hidden="true">·</span>
                             <span>{item.serverName}</span>
@@ -359,6 +417,8 @@ export default function DownloadsView({ onBack, onExplore, onOpenAnime }: Downlo
                             ? 'bg-amber-500'
                             : item.status === 'paused'
                             ? 'bg-neutral-500'
+                            : item.status === 'resolving' || item.status === 'downloading'
+                            ? 'bg-[#FF1744] animate-pulse'
                             : 'bg-[#FF1744]'
                         }`}
                         style={{
@@ -412,7 +472,18 @@ export default function DownloadsView({ onBack, onExplore, onOpenAnime }: Downlo
                       </button>
                     )}
 
-                    {isCompleted && item.hasOfflineFile && (
+                    {isCompleted && item.hasOfflineFile && item.itemType === 'chapter' && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenOfflineChapter?.(item)}
+                        className="min-h-[40px] px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-xs font-black text-white flex items-center gap-1.5 transition cursor-pointer"
+                      >
+                        <BookOpen size={14} />
+                        <span>قراءة أوفلاين</span>
+                      </button>
+                    )}
+
+                    {isCompleted && item.hasOfflineFile && item.itemType !== 'chapter' && (
                       <button
                         type="button"
                         onClick={() => void handlePlayOffline(item)}
@@ -423,7 +494,7 @@ export default function DownloadsView({ onBack, onExplore, onOpenAnime }: Downlo
                       </button>
                     )}
 
-                    {isCompleted && item.targetMode === 'internal' && (
+                    {isCompleted && item.targetMode === 'internal' && item.itemType !== 'chapter' && (
                       <button
                         type="button"
                         onClick={() => void handleSaveDevice(item)}
@@ -434,7 +505,7 @@ export default function DownloadsView({ onBack, onExplore, onOpenAnime }: Downlo
                       </button>
                     )}
 
-                    {(item.externalDirectUrl || item.downloadUrl) && (
+                    {item.itemType !== 'chapter' && (item.externalDirectUrl || item.downloadUrl) && (
                       <button
                         type="button"
                         onClick={() => void handleExternalHandoff(item)}

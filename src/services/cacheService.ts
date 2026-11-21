@@ -35,7 +35,7 @@ class CacheService {
   private mode: '10k_smart_ram' | 'zero_live' = '10k_smart_ram';
   private ramStore = new Map<string, CacheEntry<any>>();
   private inFlight = new Map<string, Promise<any>>();
-  private readonly maxKeys = 1500;
+  private readonly maxKeys = 3000;
   private readonly defaultTtlMs = 120 * 1000; // 2 minutes fresh window
 
   private hits = 0;
@@ -116,11 +116,11 @@ class CacheService {
       return;
     }
 
-    // Cap fresh TTL at 15 minutes; retain stale fallback window up to 30 minutes for instant SWR
-    const safeTtlMs = Math.min(ttlMs, 15 * 60 * 1000);
+    // Cap fresh TTL at 6 hours; retain stale fallback window up to 24 hours for instant SWR
+    const safeTtlMs = Math.min(ttlMs, 6 * 60 * 60 * 1000);
     const safeStaleMs = Math.min(
       Math.max(staleWindowMs ?? Math.max(safeTtlMs * 4, 10 * 60 * 1000), safeTtlMs),
-      30 * 60 * 1000
+      24 * 60 * 60 * 1000
     );
 
     if (this.ramStore.has(key)) {

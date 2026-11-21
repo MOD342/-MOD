@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { ChevronRight, ChevronLeft, RefreshCw, Play, Star, Tv, Film, Crown, AlertCircle } from 'lucide-react';
 import { clientCache } from '../utils/clientCache';
+import { cloudCatalogService } from '../services/cloudCatalogService';
 import { cleanAnimeTitle } from '../utils/animeTitleCleaner';
 import PullToRefresh from '../components/PullToRefresh';
 import {
@@ -49,48 +50,60 @@ export default function CatalogCollectionView({ mode, onBack, onAnimeClick }: Ca
     }
 
     try {
-      const ts = Date.now();
-      const queryParams = new URLSearchParams({ page: String(safePage) });
-      if (forceBypass) {
-        queryParams.set('bypass', 'true');
-        queryParams.set('_t', String(ts));
-      }
-
-      const r = await fetch(`${endpointBase}?${queryParams.toString()}`, {
-        cache: 'no-store',
-        headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' }
-      });
-      if (r.ok) {
-        const json = await r.json();
-        if (json.success && Array.isArray(json.data) && json.data.length > 0) {
-          const formatted = json.data.map((item: any, idx: number) => {
-            const cleanTitle = cleanAnimeTitle(item.title || '') || item.title || 'Anime';
-            const targetId = item._id || item.slug || item.id || `search-${cleanTitle}`;
-            const posterImg = item.posterUrl || item.imageUrl || '';
-            return {
-              _id: String(targetId),
-              slug: item.slug || item.id,
-              title: cleanTitle,
-              posterUrl: posterImg,
-              type: item.type || (isMovies ? 'فيلم' : 'مسلسل'),
-              episodesCount: item.episodesCount,
-              rating: item.rating || null,
-              genres: Array.isArray(item.genres) ? item.genres : [],
-              description: item.description || '',
-              rank: (safePage - 1) * 30 + idx + 1,
-            };
+      const bundleKind = isMovies ? 'movies' : 'top';
+      const resolved = await cloudCatalogService.getBundleWithCloud<{ items: any[]; hasNext: boolean }>({
+        bundleId: `${mode}_p_${safePage}`,
+        kind: bundleKind,
+        freshTtlMs: isMovies ? 24 * 60 * 60 * 1000 : 12 * 60 * 60 * 1000,
+        staleTtlMs: 7 * 24 * 60 * 60 * 1000,
+        forceRefresh: forceBypass,
+        countItems: (d) => (Array.isArray(d?.items) ? d.items.length : 0),
+        fetchLive: async () => {
+          const ts = Date.now();
+          const queryParams = new URLSearchParams({ page: String(safePage) });
+          if (forceBypass) {
+            queryParams.set('bypass', 'true');
+            queryParams.set('_t', String(ts));
+          }
+          const r = await fetch(`${endpointBase}?${queryParams.toString()}`, {
+            cache: forceBypass ? 'no-store' : 'default',
           });
-          const nextFlag = typeof json.hasNext === 'boolean' ? json.hasNext : formatted.length >= 20;
-          setItems(formatted);
-          setHasNext(nextFlag);
-          clientCache.set(cacheKey, { items: formatted, hasNext: nextFlag }, 30 * 60 * 1000);
-          setRefreshing(false);
-          setLoading(false);
-          return;
-        }
-      }
+          if (!r.ok) return null;
+          const json = await r.json();
+          if (json.success && Array.isArray(json.data) && json.data.length > 0) {
+            const formatted = json.data.map((item: any, idx: number) => {
+              const cleanTitle = cleanAnimeTitle(item.title || '') || item.title || 'Anime';
+              const targetId = item._id || item.slug || item.id || `search-${cleanTitle}`;
+              const posterImg = item.posterUrl || item.imageUrl || '';
+              return {
+                _id: String(targetId),
+                slug: item.slug || item.id,
+                title: cleanTitle,
+                posterUrl: posterImg,
+                type: item.type || (isMovies ? 'فيلم' : 'مسلسل'),
+                episodesCount: item.episodesCount,
+                rating: item.rating || null,
+                genres: Array.isArray(item.genres) ? item.genres : [],
+                description: item.description ? String(item.description).slice(0, 260) : '',
+                rank: (safePage - 1) * 30 + idx + 1,
+              };
+            });
+            const nextFlag = typeof json.hasNext === 'boolean' ? json.hasNext : formatted.length >= 20;
+            return { items: formatted, hasNext: nextFlag };
+          }
+          return null;
+        },
+        onData: (bundleData) => {
+          if (bundleData?.items?.length) {
+            setItems(bundleData.items);
+            setHasNext(Boolean(bundleData.hasNext));
+            clientCache.set(cacheKey, bundleData, 60 * 60 * 1000);
+            setLoading(false);
+          }
+        },
+      });
 
-      if (items.length === 0) {
+      if (!resolved && items.length === 0) {
         setFetchError(true);
       }
     } catch {

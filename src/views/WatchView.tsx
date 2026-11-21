@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
+import Hls from 'hls.js';
 import {
-  ChevronRight,
   MessageSquare,
   Download,
   Server,
@@ -17,7 +17,11 @@ import {
   Check,
   AlertCircle,
   ExternalLink,
-  FolderDown
+  FolderDown,
+  RefreshCw,
+  Maximize2,
+  Minimize2,
+  X
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { isStaffEmail } from '../services/moderationService';
@@ -35,6 +39,7 @@ import {
 } from 'firebase/firestore';
 import { STORE_ITEMS_SORTED, getAvatarShapeClass } from '../data/storeItems';
 import { clientCache } from '../utils/clientCache';
+import { cloudCatalogService } from '../services/cloudCatalogService';
 import {
   resolveApiUrl,
   resolveAbsoluteApiUrlForExternalIntent,
@@ -58,13 +63,19 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
   const [serverSubTab, setServerSubTab] = useState<'watch' | 'download'>('watch');
   const [servers, setServers] = useState<any[]>([]);
   const [activeServerUrl, setActiveServerUrl] = useState<string | null>(null);
-  const [extractedStream, setExtractedStream] = useState<{ url: string; type: string } | null>(null);
+  const [extractedStream, setExtractedStream] = useState<{
+    url: string;
+    type: 'direct' | 'hls';
+    sources?: { file: string; label: string; type: string }[];
+  } | null>(null);
   const [loadingServers, setLoadingServers] = useState(false);
   const [copiedDownloadUrl, setCopiedDownloadUrl] = useState<string | null>(null);
   const [downloadingKey, setDownloadingKey] = useState<string | null>(null);
   const [launchingExternalPlayer, setLaunchingExternalPlayer] = useState(false);
   const [launchingExternalDownload, setLaunchingExternalDownload] = useState(false);
+  const [qualityPickerMode, setQualityPickerMode] = useState<'play' | 'download' | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [isPlayerFullscreen, setIsPlayerFullscreen] = useState(false);
   const [downloadFeedback, setDownloadFeedback] = useState<{
     type: 'error' | 'success';
     text: string;
@@ -73,6 +84,9 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
   } | null>(null);
   const activeBlobUrlRef = React.useRef<string | null>(null);
   const extractAbortRef = React.useRef<AbortController | null>(null);
+  const playerContainerRef = React.useRef<HTMLDivElement | null>(null);
+  const videoRef = React.useRef<HTMLVideoElement | null>(null);
+  const hlsInstanceRef = React.useRef<Hls | null>(null);
   const { user, userData, userRole } = useAuth();
   const display = useDeviceDisplay();
   const [confirmDeleteChatId, setConfirmDeleteChatId] = useState<string | null>(null);
@@ -141,17 +155,20 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
       }
     }
 
-    // Fetch Servers with clientCache instant fallback
+    // Fetch Servers with 3-tier cloud server intelligence (RAM/IDB -> Shared Cloud -> Live Scraper)
     if (episode) {
       window.scrollTo({ top: 0, behavior: 'smooth' });
       const activeSeasonNumber = episode?.seasonNumber || watchSeasonNum || 1;
-      const serversCacheKey = `servers_v13_${anime?._id || 'unknown'}_s_${activeSeasonNumber}_ep_${episode?.num || episode?.id || '1'}`;
+      const serversCacheKey = `servers_v14_${anime?._id || 'unknown'}_s_${activeSeasonNumber}_ep_${episode?.num || episode?.id || '1'}`;
       const cachedServers = clientCache.get<any[]>(serversCacheKey);
+      let initialized = false;
 
       if (cachedServers && Array.isArray(cachedServers) && cachedServers.length > 0) {
-        setServers(cachedServers);
+        const normalized = normalizeWatchServersList(cachedServers);
+        initialized = true;
+        setServers(normalized);
         setLoadingServers(false);
-        const firstWatch = cachedServers.find((s: any) => s.category !== 'download') || cachedServers[0];
+        const firstWatch = normalized.find((s: any) => s.category !== 'download') || normalized[0];
         if (firstWatch?.url) handleServerSelect(firstWatch.url);
       } else {
         setLoadingServers(true);
@@ -160,33 +177,47 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
         setExtractedStream(null);
       }
 
-      fetch('/api/anime/servers', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          url: episode.id || episode.link || '',
-          animeId: anime?._id || anime?.malId,
-          animeTitle: anime?.englishTitle || anime?.title,
-          seasonNumber: activeSeasonNumber,
-          episodeNum: episode?.num
+      const serverLookup = {
+        url: episode.id || episode.link || '',
+        animeId: anime?._id || anime?.malId,
+        animeTitle: anime?.englishTitle || anime?.title,
+        seasonNumber: activeSeasonNumber,
+        episodeNum: episode?.num,
+      };
+
+      void cloudCatalogService
+        .getEpisodeServersWithCloud(serverLookup, {
+          onData: (list) => {
+            if (Array.isArray(list) && list.length > 0) {
+              const normalized = normalizeWatchServersList(list);
+              setServers(normalized);
+              setLoadingServers(false);
+              clientCache.set(serversCacheKey, normalized, 2 * 60 * 60 * 1000);
+              if (!initialized) {
+                initialized = true;
+                const firstWatch = normalized.find((s: any) => s.category !== 'download') || normalized[0];
+                if (firstWatch?.url) handleServerSelect(firstWatch.url);
+              }
+            }
+          },
         })
-      })
-      .then(r => r.json())
-      .then(data => {
-        if (data && data.success && data.data && Array.isArray(data.data) && data.data.length > 0) {
-          setServers(data.data);
-          clientCache.set(serversCacheKey, data.data, 2 * 60 * 60 * 1000);
-          if (!cachedServers || cachedServers.length === 0) {
-            const firstWatch = data.data.find((s: any) => s.category !== 'download') || data.data[0];
-            if (firstWatch?.url) handleServerSelect(firstWatch.url);
+        .then((finalList) => {
+          if (Array.isArray(finalList) && finalList.length > 0) {
+            const normalized = normalizeWatchServersList(finalList);
+            setServers(normalized);
+            clientCache.set(serversCacheKey, normalized, 2 * 60 * 60 * 1000);
+            if (!initialized) {
+              initialized = true;
+              const firstWatch = normalized.find((s: any) => s.category !== 'download') || normalized[0];
+              if (firstWatch?.url) handleServerSelect(firstWatch.url);
+            }
+          } else if (!initialized) {
+            setServers([]);
+            setActiveServerUrl(null);
           }
-        } else if (!cachedServers || cachedServers.length === 0) {
-          setServers([]);
-          setActiveServerUrl(null);
-        }
-      })
-      .catch(console.error)
-      .finally(() => setLoadingServers(false));
+        })
+        .catch(console.error)
+        .finally(() => setLoadingServers(false));
     }
   }, [anime, episode]);
 
@@ -224,6 +255,8 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
   // دالة تنظيف اسم السيرفر ليعرض الاسم الرئيسي فقط بدون أي نصوص إضافية أو رموز
   const getCleanServerMainName = (rawName: string, urlStr: string, idx: number): string => {
     const lowerUrl = (urlStr || '').toLowerCase();
+    const lowerRaw = (rawName || '').toLowerCase();
+    if (/\bvk\b/i.test(rawName || '') || lowerUrl.includes('vk.com') || lowerUrl.includes('vkvideo')) return 'VK Video';
     if (lowerUrl.includes('vidmoly')) return 'Vidmoly';
     if (lowerUrl.includes('mega.nz')) return 'Mega';
     if (lowerUrl.includes('videa.hu')) return 'Videa';
@@ -257,7 +290,7 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
     if (lowerUrl.includes('workupload')) return 'WorkUpload';
     if (lowerUrl.includes('krakenfiles')) return 'KrakenFiles';
     if (lowerUrl.includes('hexupload') || lowerUrl.includes('hexload')) return 'HexUpload';
-    if (lowerUrl.includes('megamax') || lowerUrl.includes('share4max')) return 'MegaMax';
+    if (lowerUrl.includes('megamax') || lowerUrl.includes('share4max') || lowerRaw.includes('megamax')) return 'MegaMax';
     if (lowerUrl.includes('yourupload')) return 'YourUpload';
     if (lowerUrl.includes('drop.download')) return 'DropDownload';
     if (lowerUrl.includes('megaup')) return 'MegaUp';
@@ -274,9 +307,72 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
     return cleaned || `سيرفر ${idx + 1}`;
   };
 
-  // دالة توحيد رمز الجودة ليكون فقط FHD أو HD أو SD بدون أي أرقام
-  const getCleanQualityLabel = (q?: string): 'FHD' | 'HD' | 'SD' => {
+  const isMultiQualityServer = (rawName?: string, urlStr?: string, rawQuality?: string): boolean => {
+    if (String(rawQuality || '').toLowerCase() === 'multi') return true;
+    const h = `${rawName || ''} ${urlStr || ''}`.toLowerCase();
+    return (
+      /\bvk\b/i.test(rawName || '') ||
+      h.includes('vk video') ||
+      h.includes('vk.com') ||
+      h.includes('vkvideo') ||
+      h.includes('ok.ru') ||
+      h.includes('dailymotion') ||
+      h.includes('videa') ||
+      h.includes('megamax') ||
+      h.includes('share4max')
+    );
+  };
+
+  const getServerPriorityRank = (srv: any): number => {
+    const n = String(srv?.serverName || '').toLowerCase();
+    const u = String(srv?.url || '').toLowerCase();
+    if (n.includes('vk') || u.includes('vk.com') || u.includes('vkvideo')) return 130;
+    if (n.includes('ok.ru') || u.includes('ok.ru')) return 122;
+    if (n.includes('dailymotion') || u.includes('dailymotion')) return 118;
+    if (n.includes('videa') || u.includes('videa')) return 115;
+    if (n.includes('megamax') || u.includes('megamax') || u.includes('share4max')) return 112;
+    if (n.includes('mega') && !n.includes('megamax') && !u.includes('share4max')) return 100;
+    if (n.includes('sendvid') || u.includes('sendvid')) return 95;
+    if (n.includes('mp4upload') || u.includes('mp4upload')) return 90;
+    if (n.includes('drive') || u.includes('drive.google')) return 85;
+    if (n.includes('uqload') || u.includes('uqload')) return 75;
+    if (n.includes('streamwish') || u.includes('asnwish') || u.includes('filemoon')) return 70;
+    if (n.includes('vidmoly') || u.includes('vidmoly')) return 20;
+    if (n.includes('sibnet') || u.includes('sibnet')) return 10;
+    return 50;
+  };
+
+  const normalizeWatchServersList = (list: any[]): any[] => {
+    const watches: any[] = [];
+    const downloads: any[] = [];
+    const seenMegaIds = new Set<string>();
+
+    for (const s of list || []) {
+      if (!s || !s.url) continue;
+      if (s.category === 'download') {
+        downloads.push(s);
+        continue;
+      }
+      const megaMatch = String(s.url).match(/https?:\/\/[^/]*(?:megamax|share4max)[^/]*\/(?:iframe|e)\/([A-Za-z0-9_-]+)/i);
+      if (megaMatch) {
+        if (seenMegaIds.has(megaMatch[1])) continue;
+        seenMegaIds.add(megaMatch[1]);
+        const canonicalUrl = String(s.url).replace(/\/e\/([A-Za-z0-9_-]+)/i, '/iframe/$1');
+        watches.push({ ...s, url: canonicalUrl, quality: 'multi' });
+        continue;
+      }
+      const isMulti = isMultiQualityServer(s.serverName, s.url, s.quality);
+      watches.push(isMulti ? { ...s, quality: 'multi' } : s);
+    }
+
+    watches.sort((a, b) => getServerPriorityRank(b) - getServerPriorityRank(a));
+    return [...watches, ...downloads];
+  };
+
+  // دالة توحيد رمز الجودة ليكون متعدد أو FHD أو HD أو SD
+  const getCleanQualityLabel = (q?: string, isMulti?: boolean): 'متعدد' | 'FHD' | 'HD' | 'SD' => {
     const lower = String(q || '').toLowerCase();
+    if (isMulti || lower === 'multi') return 'متعدد';
     if (lower.includes('1080') || lower.includes('fhd')) return 'FHD';
     if (lower.includes('480') || lower.includes('360') || lower.includes('sd')) return 'SD';
     return 'HD';
@@ -314,7 +410,152 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
     };
   }, []);
 
-  const handleServerSelect = (url: string) => {
+  // Sync fullscreen state & Escape handler & HLS playback wiring
+  useEffect(() => {
+    const onFsChange = () => {
+      const fsEl =
+        document.fullscreenElement ||
+        (document as any).webkitFullscreenElement ||
+        (document as any).mozFullScreenElement;
+      if (!fsEl) {
+        try { (screen.orientation as any)?.unlock?.(); } catch (_) {}
+      }
+      setIsPlayerFullscreen(Boolean(fsEl));
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsPlayerFullscreen(false);
+        try { (screen.orientation as any)?.unlock?.(); } catch (_) {}
+      }
+    };
+    document.addEventListener('fullscreenchange', onFsChange);
+    document.addEventListener('webkitfullscreenchange', onFsChange);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('fullscreenchange', onFsChange);
+      document.removeEventListener('webkitfullscreenchange', onFsChange);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (hlsInstanceRef.current) {
+      try { hlsInstanceRef.current.destroy(); } catch (_) {}
+      hlsInstanceRef.current = null;
+    }
+    const videoEl = videoRef.current;
+    if (!extractedStream || !videoEl) return;
+
+    if (extractedStream.type === 'hls') {
+      if (Hls.isSupported()) {
+        const hls = new Hls({ enableWorker: true, lowLatencyMode: false });
+        hlsInstanceRef.current = hls;
+        hls.loadSource(extractedStream.url);
+        hls.attachMedia(videoEl);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          videoEl.play().catch(() => {});
+        });
+        hls.on(Hls.Events.ERROR, (_evt, data) => {
+          if (data.fatal) {
+            try { hls.destroy(); } catch (_) {}
+            hlsInstanceRef.current = null;
+            setExtractedStream(null);
+          }
+        });
+      } else if (videoEl.canPlayType('application/vnd.apple.mpegurl')) {
+        videoEl.src = extractedStream.url;
+        videoEl.play().catch(() => {});
+      }
+    }
+
+    return () => {
+      if (hlsInstanceRef.current) {
+        try { hlsInstanceRef.current.destroy(); } catch (_) {}
+        hlsInstanceRef.current = null;
+      }
+    };
+  }, [extractedStream?.url, extractedStream?.type]);
+
+  const togglePlayerFullscreen = async () => {
+    const container = playerContainerRef.current;
+    const videoEl = videoRef.current as any;
+    const fsEl =
+      document.fullscreenElement ||
+      (document as any).webkitFullscreenElement ||
+      (document as any).mozFullScreenElement;
+
+    if (fsEl || isPlayerFullscreen) {
+      if (fsEl) {
+        try {
+          if (document.exitFullscreen) await document.exitFullscreen();
+          else if ((document as any).webkitExitFullscreen) (document as any).webkitExitFullscreen();
+        } catch (_) {}
+      }
+      try { (screen.orientation as any)?.unlock?.(); } catch (_) {}
+      setIsPlayerFullscreen(false);
+      return;
+    }
+
+    let enteredNative = false;
+    if (container) {
+      try {
+        if (container.requestFullscreen) {
+          await container.requestFullscreen();
+          enteredNative = true;
+        } else if ((container as any).webkitRequestFullscreen) {
+          (container as any).webkitRequestFullscreen();
+          enteredNative = true;
+        }
+      } catch (_) {}
+    }
+    if (!enteredNative && videoEl && typeof videoEl.webkitEnterFullscreen === 'function') {
+      try {
+        videoEl.webkitEnterFullscreen();
+        enteredNative = true;
+      } catch (_) {}
+    }
+
+    try { await (screen.orientation as any)?.lock?.('landscape'); } catch (_) {}
+    // Always toggle viewport theater fullscreen if native fullscreen was blocked (e.g. WebView / sandboxed preview)
+    setIsPlayerFullscreen(true);
+  };
+
+  const handleRefreshServers = () => {
+    if (!episode || loadingServers) return;
+    const activeSeasonNumber = episode?.seasonNumber || watchSeasonNum || 1;
+    const serversCacheKey = `servers_v14_${anime?._id || 'unknown'}_s_${activeSeasonNumber}_ep_${episode?.num || episode?.id || '1'}`;
+    setLoadingServers(true);
+    setActionNotice(null);
+    void cloudCatalogService
+      .getEpisodeServersWithCloud(
+        {
+          url: episode.id || episode.link || '',
+          animeId: anime?._id || anime?.malId,
+          animeTitle: anime?.englishTitle || anime?.title,
+          seasonNumber: activeSeasonNumber,
+          episodeNum: episode?.num,
+        },
+        { forceRefresh: true },
+      )
+      .then((list) => {
+        if (Array.isArray(list) && list.length > 0) {
+          const normalized = normalizeWatchServersList(list);
+          setServers(normalized);
+          clientCache.set(serversCacheKey, normalized, 2 * 60 * 60 * 1000);
+          const firstWatch = normalized.find((s: any) => s.category !== 'download') || normalized[0];
+          if (firstWatch?.url) handleServerSelect(firstWatch.url);
+        } else {
+          setServers([]);
+        }
+      })
+      .catch(console.error)
+      .finally(() => setLoadingServers(false));
+  };
+
+  const handleServerSelect = (url: string, userInitiated = false) => {
+    if (userInitiated && url) {
+      cloudCatalogService.setPreferredServerHost(url);
+    }
     setActiveServerUrl(url);
     setExtractedStream(null);
     if (extractAbortRef.current) {
@@ -323,20 +564,34 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
     }
 
     const lower = (url || '').toLowerCase();
+    // Keep VK Video / Ok.ru / Dailymotion inside their clean native multi-quality iframe players
+    const keepNativeMultiIframe =
+      lower.includes('vk.com') ||
+      lower.includes('vkvideo') ||
+      lower.includes('ok.ru') ||
+      lower.includes('dailymotion');
+
     const isExtractableHost =
-      lower.includes('sendvid') ||
-      lower.includes('mp4upload') ||
-      lower.includes('yourupload') ||
-      lower.includes('videa.hu') ||
-      lower.includes('vidmoly') ||
-      lower.includes('mixdrop') ||
-      lower.includes('vidoza') ||
-      lower.includes('filemoon') ||
-      lower.includes('dood') ||
-      lower.includes('d000d') ||
-      lower.includes('lulustream') ||
-      lower.includes('streamtape') ||
-      lower.includes('ok.ru');
+      !keepNativeMultiIframe &&
+      (lower.includes('megamax') ||
+        lower.includes('share4max') ||
+        lower.includes('sendvid') ||
+        lower.includes('mp4upload') ||
+        lower.includes('yourupload') ||
+        lower.includes('videa.hu') ||
+        lower.includes('vidmoly') ||
+        lower.includes('mixdrop') ||
+        lower.includes('vidoza') ||
+        lower.includes('filemoon') ||
+        lower.includes('dood') ||
+        lower.includes('d000d') ||
+        lower.includes('lulustream') ||
+        lower.includes('morencius') ||
+        lower.includes('earnvids') ||
+        lower.includes('asnwish') ||
+        lower.includes('streamwish') ||
+        lower.includes('uqload') ||
+        lower.includes('streamtape'));
 
     if (isExtractableHost && typeof AbortController !== 'undefined') {
       const ctrl = new AbortController();
@@ -352,13 +607,21 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
           if (ctrl.signal.aborted) return;
           const directUrl = res?.data?.directUrl;
           const streamType = res?.data?.type;
+          const sources = Array.isArray(res?.data?.sources) ? res.data.sources : [];
           if (
             res?.success &&
             typeof directUrl === 'string' &&
             (directUrl.startsWith('http') || directUrl.startsWith('/api/')) &&
-            streamType === 'direct'
+            (streamType === 'direct' || streamType === 'hls')
           ) {
-            setExtractedStream({ url: resolveApiUrl(directUrl), type: streamType });
+            setExtractedStream({
+              url: resolveApiUrl(directUrl),
+              type: streamType,
+              sources: sources.map((src: any) => ({
+                ...src,
+                file: resolveApiUrl(String(src.file || '')),
+              })),
+            });
           }
         })
         .catch(() => {});
@@ -508,12 +771,28 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
       });
 
       const data = await resp.json();
+      const serverOutcomeParams = episode
+        ? {
+            url: episode.id || episode.link || '',
+            animeId: anime?._id || anime?.malId,
+            seasonNumber: episode?.seasonNumber || watchSeasonNum || 1,
+            episodeNum: episode?.num,
+          }
+        : null;
+
       if (!data?.success || !data?.downloadUrl) {
+        if (serverOutcomeParams) {
+          void cloudCatalogService.recordServerOutcome(serverOutcomeParams, primaryUrl, false);
+        }
         setDownloadFeedback({
           type: 'error',
           text: data?.message || 'تعذر تجهيز رابط التحميل لهذه الحلقة، يرجى تجربة خيار آخر.',
         });
         return;
+      }
+
+      if (serverOutcomeParams) {
+        void cloudCatalogService.recordServerOutcome(serverOutcomeParams, primaryUrl, true);
       }
 
       const filename = data.filename || `Anime-Ep-${episode?.num || 1}.mp4`;
@@ -560,11 +839,71 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
     }
   };
 
-  const handleLaunchExternalPlayer = async () => {
+  const matchQualityTierFromLabel = (raw?: string | null): 'FHD' | 'HD' | 'SD' | null => {
+    const l = String(raw || '').toLowerCase();
+    if (!l) return null;
+    if (l.includes('1080') || l.includes('fhd') || l.includes('full')) return 'FHD';
+    if (l.includes('720') || l.includes('hd')) return 'HD';
+    if (l.includes('480') || l.includes('360') || l.includes('240') || l.includes('sd')) return 'SD';
+    return null;
+  };
+
+  const detectedQualityInfo = React.useMemo(() => {
+    const available = new Set<'FHD' | 'HD' | 'SD'>();
+    let hasMulti = false;
+    for (const src of extractedStream?.sources || []) {
+      const t = matchQualityTierFromLabel(src?.label);
+      if (t) available.add(t);
+    }
+    for (const s of servers) {
+      if (isMultiQualityServer(s?.serverName, s?.url, s?.quality)) {
+        hasMulti = true;
+      }
+      const t = matchQualityTierFromLabel(s?.quality);
+      if (t) available.add(t);
+    }
+    return { available, hasMulti };
+  }, [servers, extractedStream?.sources]);
+
+  const openQualityPicker = (mode: 'play' | 'download') => {
+    if ((mode === 'play' && launchingExternalPlayer) || (mode === 'download' && launchingExternalDownload)) return;
+    setActionNotice(null);
+    if (servers.length === 0 && !activeServerUrl && !extractedStream?.url) {
+      setActionNotice(
+        mode === 'play'
+          ? 'لا تتوفر روابط تشغيل حالياً.'
+          : 'لا تتوفر روابط تنزيل لهذه الحلقة حالياً.',
+      );
+      return;
+    }
+    setQualityPickerMode(mode);
+  };
+
+  const handleLaunchExternalPlayer = async (selectedQuality: 'auto' | 'FHD' | 'HD' | 'SD' = 'auto') => {
     if (launchingExternalPlayer) return;
+    setQualityPickerMode(null);
     setActionNotice(null);
 
-    if (extractedStream?.url && extractedStream.type === 'direct') {
+    if (extractedStream?.sources && extractedStream.sources.length > 0) {
+      const directMp4Sources = extractedStream.sources.filter(
+        (src) => src.file && src.type !== 'iframe' && src.type !== 'hls',
+      );
+      const exactMatch =
+        selectedQuality === 'auto'
+          ? directMp4Sources[0]
+          : directMp4Sources.find((src) => matchQualityTierFromLabel(src.label) === selectedQuality);
+      if (exactMatch?.file) {
+        const absUrl = resolveAbsoluteApiUrlForExternalIntent(exactMatch.file);
+        const epTitle = `${anime?.title || 'أنمي'} - ${episode?.title || `الحلقة ${episode?.num || 1}`}`;
+        const ok = await openExternalPlayer(absUrl, epTitle, 'video/*');
+        if (!ok) {
+          setActionNotice('تعذر فتح المشغل الخارجي على هذا الجهاز.');
+        }
+        return;
+      }
+    }
+
+    if (selectedQuality === 'auto' && extractedStream?.url && extractedStream.type === 'direct') {
       const absUrl = resolveAbsoluteApiUrlForExternalIntent(extractedStream.url);
       const epTitle = `${anime?.title || 'أنمي'} - ${episode?.title || `الحلقة ${episode?.num || 1}`}`;
       const ok = await openExternalPlayer(absUrl, epTitle, 'video/*');
@@ -595,6 +934,13 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
         body: JSON.stringify({
           url: candidates[0],
           fallbackUrls: candidates.slice(1),
+          serverCandidates: servers.map((s) => ({
+            url: s.url,
+            quality: s.quality,
+            serverName: s.serverName,
+            category: s.category,
+          })),
+          preferredQuality: selectedQuality,
           title: anime?.englishTitle || anime?.title || 'Anime',
           ep: episode?.num || 1,
         }),
@@ -602,6 +948,9 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
       const data = await resp.json();
       const epTitle = `${anime?.title || 'أنمي'} - ${episode?.title || `الحلقة ${episode?.num || 1}`}`;
       if (data?.success && data?.streamUrl) {
+        if (selectedQuality !== 'auto' && data.resolvedQuality && data.resolvedQuality !== selectedQuality) {
+          setActionNotice(`تم التشغيل بأقرب جودة متوفرة (${data.resolvedQuality}).`);
+        }
         const targetUrl = resolveAbsoluteApiUrlForExternalIntent(data.streamUrl);
         await openExternalPlayer(targetUrl, epTitle, data.mimeType || 'video/*');
       } else if (activeServerUrl) {
@@ -620,8 +969,9 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
     }
   };
 
-  const handleLaunchExternalDownload = async () => {
+  const handleLaunchExternalDownload = async (selectedQuality: 'auto' | 'FHD' | 'HD' | 'SD' = 'auto') => {
     if (launchingExternalDownload) return;
+    setQualityPickerMode(null);
     setActionNotice(null);
 
     const dlCandidates = servers.filter((s) => s.category === 'download').map((s) => s.url);
@@ -647,7 +997,7 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
             serverName: s.serverName,
             category: s.category,
           })),
-          preferredQuality: 'auto',
+          preferredQuality: selectedQuality,
           title: anime?.englishTitle || anime?.title || 'Anime',
           ep: episode?.num || 1,
           preferExternal: true,
@@ -657,6 +1007,9 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
       if (!data?.success || !data?.downloadUrl) {
         setActionNotice(data?.message || 'تعذر تجهيز رابط التنزيل الخارجي، يرجى المحاولة مجدداً.');
         return;
+      }
+      if (data.usedFallbackQuality && data.resolvedQuality) {
+        setActionNotice(`تم التوجيه بأقرب جودة متوفرة (${data.resolvedQuality}).`);
       }
       const filename = data.filename || `Anime-Ep-${episode?.num || 1}.mp4`;
       const targetUrl =
@@ -817,22 +1170,40 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
         }
       >
         <div
-          className={`w-full bg-black border-b border-neutral-900 shadow-2xl ${
-            isSplitWatchLayout
-              ? 'rounded-2xl overflow-hidden border border-white/10'
-              : 'sticky top-0 z-50'
-          }`}
-          style={{
-            paddingTop: isSplitWatchLayout ? '0px' : 'var(--safe-top, 0px)',
-            height: display.isTabletopPosture ? 'var(--fold-top-pane, 46dvh)' : undefined,
-          }}
+          ref={playerContainerRef}
+          className={
+            isPlayerFullscreen
+              ? 'fixed inset-0 z-[9999] w-screen h-[100dvh] bg-black flex items-center justify-center'
+              : `w-full bg-black border-b border-neutral-900 shadow-2xl ${
+                  isSplitWatchLayout
+                    ? 'rounded-2xl overflow-hidden border border-white/10'
+                    : 'sticky top-0 z-50'
+                }`
+          }
+          style={
+            isPlayerFullscreen
+              ? undefined
+              : {
+                  paddingTop: isSplitWatchLayout ? '0px' : 'var(--safe-top, 0px)',
+                  height: display.isTabletopPosture ? 'var(--fold-top-pane, 46dvh)' : undefined,
+                }
+          }
         >
           <div className={`theme-keep-dark w-full bg-black relative flex flex-col justify-between overflow-hidden group ${
-            display.isTabletopPosture ? 'h-full' : 'aspect-video'
+            isPlayerFullscreen || display.isTabletopPosture ? 'h-full' : 'aspect-video'
           }`}>
-            <button onClick={onBack} className="absolute top-3 right-3 w-10 h-10 bg-black/60 backdrop-blur-md rounded-full flex items-center justify-center text-white z-20 border border-white/10 hover:bg-white/20 transition-all opacity-90 sm:opacity-75 group-hover:opacity-100 shadow-lg select-none cursor-pointer">
-              <ChevronRight size={22} className="-translate-x-0.5" />
-            </button>
+            {/* Compact Fullscreen / Expand button (guarantees working fullscreen on all WebViews & embeds) */}
+            {(extractedStream || activeServerUrl) && (
+              <button
+                type="button"
+                onClick={togglePlayerFullscreen}
+                aria-label={isPlayerFullscreen ? 'إغلاق ملء الشاشة' : 'ملء الشاشة'}
+                title={isPlayerFullscreen ? 'إغلاق ملء الشاشة' : 'ملء الشاشة'}
+                className="absolute top-3 left-3 w-10 h-10 bg-black/65 backdrop-blur-md rounded-full flex items-center justify-center text-white z-30 border border-white/15 hover:bg-purple-600/80 transition-all opacity-80 sm:opacity-60 group-hover:opacity-100 shadow-lg select-none cursor-pointer"
+              >
+                {isPlayerFullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
+              </button>
+            )}
 
             <div className="absolute inset-0 flex items-center justify-center bg-neutral-950">
               {loadingServers ? (
@@ -840,31 +1211,121 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
                   <div className="w-10 h-10 rounded-full border-2 border-purple-500 border-t-transparent animate-spin" />
                   <span className="text-xs sm:text-sm font-bold text-neutral-400">جاري تجهيز الحلقة...</span>
                 </div>
-              ) : extractedStream && extractedStream.type === 'direct' ? (
+              ) : extractedStream && (extractedStream.type === 'direct' || extractedStream.type === 'hls') ? (
                 <div className="w-full h-full relative bg-black">
+                  {Array.isArray(extractedStream.sources) && extractedStream.sources.length > 1 && (
+                    <div className="absolute top-3 right-3 z-30 flex items-center gap-1 bg-black/70 backdrop-blur-md p-1 rounded-xl border border-white/15">
+                      {extractedStream.sources.map((src, idx) => {
+                        const isSel = extractedStream.url === src.file;
+                        return (
+                          <button
+                            key={`${src.label}-${idx}`}
+                            type="button"
+                            onClick={() =>
+                              setExtractedStream((prev) =>
+                                prev
+                                  ? {
+                                      ...prev,
+                                      url: src.file,
+                                      type: src.type === 'hls' ? 'hls' : 'direct',
+                                    }
+                                  : prev,
+                              )
+                            }
+                            className={`px-2 py-1 rounded-lg text-[10px] font-black transition cursor-pointer ${
+                              isSel
+                                ? 'bg-purple-600 text-white shadow-sm'
+                                : 'text-neutral-300 hover:bg-white/10'
+                            }`}
+                          >
+                            {src.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                   <video
-                    key={extractedStream.url}
-                    src={extractedStream.url}
+                    ref={videoRef}
+                    key={extractedStream.type === 'hls' ? 'hls-player' : extractedStream.url}
+                    src={extractedStream.type === 'hls' ? undefined : extractedStream.url}
                     controls
                     autoPlay
                     playsInline
-                    onError={() => setExtractedStream(null)}
+                    onCanPlay={() => {
+                      if (activeServerUrl && episode) {
+                        void cloudCatalogService.recordServerOutcome(
+                          {
+                            url: episode.id || episode.link || '',
+                            animeId: anime?._id || anime?.malId,
+                            seasonNumber: episode?.seasonNumber || watchSeasonNum || 1,
+                            episodeNum: episode?.num,
+                          },
+                          activeServerUrl,
+                          true,
+                        );
+                      }
+                    }}
+                    onError={() => {
+                      if (activeServerUrl && episode) {
+                        void cloudCatalogService.recordServerOutcome(
+                          {
+                            url: episode.id || episode.link || '',
+                            animeId: anime?._id || anime?.malId,
+                            seasonNumber: episode?.seasonNumber || watchSeasonNum || 1,
+                            episodeNum: episode?.num,
+                          },
+                          activeServerUrl,
+                          false,
+                        );
+                      }
+                      setExtractedStream(null);
+                    }}
                     className="w-full h-full bg-black"
                   />
                 </div>
               ) : activeServerUrl ? (
-                <div className="w-full h-full relative bg-black">
-                  <iframe
-                    key={activeServerUrl}
-                    src={resolveApiUrl(activeServerUrl)}
-                    title={episode?.title || `الحلقة ${episode?.num}`}
-                    className="w-full h-full border-0"
-                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
-                    allowFullScreen
-                    referrerPolicy="no-referrer"
-                    sandbox="allow-scripts allow-same-origin allow-forms allow-presentation"
-                  />
-                </div>
+                (() => {
+                  const lowerSrv = activeServerUrl.toLowerCase();
+                  const isMegaMax = lowerSrv.includes('megamax') || lowerSrv.includes('share4max');
+                  let iframeSrc = resolveApiUrl(activeServerUrl);
+                  if (isMegaMax) {
+                    iframeSrc = iframeSrc.replace(/\/e\/([A-Za-z0-9_-]+)/i, '/iframe/$1');
+                    if (!iframeSrc.includes('nt=')) {
+                      iframeSrc += (iframeSrc.includes('?') ? '&' : '?') + 'nt=1';
+                    }
+                  }
+                  const isCleanTrustedHost =
+                    lowerSrv.includes('vk.com') ||
+                    lowerSrv.includes('vkvideo') ||
+                    lowerSrv.includes('ok.ru') ||
+                    lowerSrv.includes('dailymotion') ||
+                    lowerSrv.includes('videa.hu') ||
+                    lowerSrv.includes('drive.google') ||
+                    lowerSrv.includes('mega.nz') ||
+                    isMegaMax ||
+                    lowerSrv.includes('sendvid') ||
+                    lowerSrv.includes('mp4upload') ||
+                    lowerSrv.includes('yourupload');
+
+                  return (
+                    <div className="w-full h-full relative bg-black">
+                      <iframe
+                        key={iframeSrc}
+                        src={iframeSrc}
+                        title={episode?.title || `الحلقة ${episode?.num}`}
+                        className="w-full h-full border-0"
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen *; autoplay *"
+                        allowFullScreen
+                        referrerPolicy="no-referrer"
+                        sandbox={
+                          isCleanTrustedHost
+                            ? undefined
+                            : 'allow-scripts allow-same-origin allow-forms allow-presentation allow-orientation-lock'
+                        }
+                      />
+                    </div>
+                  );
+                })()
               ) : (
                 <div className="text-center">
                   <div className="w-14 h-14 mx-auto rounded-full bg-neutral-900/80 border border-neutral-800 flex items-center justify-center mb-3">
@@ -940,15 +1401,15 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
           <button
             type="button"
             disabled={launchingExternalPlayer}
-            onClick={handleLaunchExternalPlayer}
-            className="min-h-[44px] px-2.5 py-2 rounded-xl bg-neutral-900/90 hover:bg-neutral-800 border border-neutral-800 text-neutral-100 text-[11px] sm:text-xs font-black flex items-center justify-center gap-1.5 transition cursor-pointer disabled:opacity-60 whitespace-nowrap"
+            onClick={() => openQualityPicker('play')}
+            className="min-h-[48px] px-1.5 sm:px-3 py-2 rounded-xl bg-purple-500/15 hover:bg-purple-500/25 border border-purple-500/40 text-purple-100 text-[11px] sm:text-xs font-black flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 text-center leading-tight transition cursor-pointer disabled:opacity-60"
           >
             {launchingExternalPlayer ? (
-              <Loader2 size={14} className="animate-spin text-purple-400 shrink-0" />
+              <Loader2 size={15} className="animate-spin text-purple-400 shrink-0" />
             ) : (
-              <ExternalLink size={14} className="text-purple-400 shrink-0" />
+              <ExternalLink size={15} className="text-purple-400 shrink-0" />
             )}
-            <span className="truncate">المشغل الخارجي</span>
+            <span>المشغل الخارجي</span>
           </button>
 
           <button
@@ -957,24 +1418,24 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
               if (onAnimeClick) onAnimeClick();
               else onBack();
             }}
-            className="min-h-[44px] px-2.5 py-2 rounded-xl bg-neutral-900/90 hover:bg-neutral-800 border border-neutral-800 text-neutral-100 text-[11px] sm:text-xs font-black flex items-center justify-center gap-1.5 transition cursor-pointer whitespace-nowrap"
+            className="min-h-[48px] px-1.5 sm:px-3 py-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/40 text-rose-100 text-[11px] sm:text-xs font-black flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 text-center leading-tight transition cursor-pointer"
           >
-            <Tv size={14} className="text-rose-400 shrink-0" />
-            <span className="truncate">صفحة الأنمي</span>
+            <Tv size={15} className="text-rose-400 shrink-0" />
+            <span>صفحة الأنمي</span>
           </button>
 
           <button
             type="button"
             disabled={launchingExternalDownload}
-            onClick={handleLaunchExternalDownload}
-            className="min-h-[44px] px-2.5 py-2 rounded-xl bg-neutral-900/90 hover:bg-neutral-800 border border-neutral-800 text-neutral-100 text-[11px] sm:text-xs font-black flex items-center justify-center gap-1.5 transition cursor-pointer disabled:opacity-60 whitespace-nowrap"
+            onClick={() => openQualityPicker('download')}
+            className="min-h-[48px] px-1.5 sm:px-3 py-2 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-100 text-[11px] sm:text-xs font-black flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 text-center leading-tight transition cursor-pointer disabled:opacity-60"
           >
             {launchingExternalDownload ? (
-              <Loader2 size={14} className="animate-spin text-indigo-400 shrink-0" />
+              <Loader2 size={15} className="animate-spin text-emerald-400 shrink-0" />
             ) : (
-              <Download size={14} className="text-indigo-400 shrink-0" />
+              <Download size={15} className="text-emerald-400 shrink-0" />
             )}
-            <span className="truncate">التنزيل الخارجي</span>
+            <span>التنزيل الخارجي</span>
           </button>
         </div>
 
@@ -1299,10 +1760,21 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
 
                 if (displayList.length === 0) {
                   return (
-                    <div className="text-center text-neutral-400 font-bold p-8 border border-neutral-800/80 rounded-2xl bg-[#0f0f0f]/40">
-                      {serverSubTab === 'download'
-                        ? 'لا تتوفر روابط تحميل حالياً.'
-                        : 'لا تتوفر خيارات مشاهدة لهذه الحلقة حالياً.'}
+                    <div className="text-center text-neutral-400 font-bold p-8 border border-neutral-800/80 rounded-2xl bg-[#0f0f0f]/40 flex flex-col items-center gap-3">
+                      <p>
+                        {serverSubTab === 'download'
+                          ? 'لا تتوفر روابط تحميل حالياً.'
+                          : 'لا تتوفر خيارات مشاهدة لهذه الحلقة حالياً.'}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={handleRefreshServers}
+                        disabled={loadingServers}
+                        className="min-h-[44px] px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-white text-xs font-black flex items-center gap-2 transition cursor-pointer disabled:opacity-50"
+                      >
+                        <RefreshCw size={14} className={loadingServers ? 'animate-spin' : ''} />
+                        <span>إعادة جلب الخيارات</span>
+                      </button>
                     </div>
                   );
                 }
@@ -1356,10 +1828,13 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
                       {displayList.map((s, i) => {
                         const isActive = activeServerUrl === s.url && serverSubTab === 'watch';
                         const mainName = getCleanServerMainName(s.serverName, s.url, i);
-                        const cleanQuality = getCleanQualityLabel(s.quality);
+                        const isMulti = serverSubTab === 'watch' && isMultiQualityServer(s.serverName, s.url, s.quality);
+                        const cleanQuality = getCleanQualityLabel(s.quality, isMulti);
 
                         let qualityBadgeColor = 'bg-amber-500/15 text-amber-400 border border-amber-500/30';
-                        if (cleanQuality === 'FHD') {
+                        if (cleanQuality === 'متعدد') {
+                          qualityBadgeColor = 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/35';
+                        } else if (cleanQuality === 'FHD') {
                           qualityBadgeColor = 'bg-red-500/15 text-red-400 border border-red-500/30';
                         } else if (cleanQuality === 'SD') {
                           qualityBadgeColor = 'bg-blue-500/15 text-blue-400 border border-blue-500/30';
@@ -1452,7 +1927,7 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
                         <button
                           key={i}
                           type="button"
-                          onClick={() => handleServerSelect(s.url)}
+                          onClick={() => handleServerSelect(s.url, true)}
                           className={`w-full relative overflow-hidden rounded-xl p-3.5 flex items-center justify-between group transition-all duration-300 border cursor-pointer ${
                             isActive 
                               ? 'bg-purple-900/15 border-purple-500 ring-1 ring-purple-500 shadow-[0_0_20px_rgba(168,85,247,0.12)]'
@@ -1487,6 +1962,129 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
           )}
         </motion.div>
       </div>
+
+      {/* Pre-redirect Quality Selection Modal */}
+      {qualityPickerMode && (
+        <div
+          className="fixed inset-0 z-[100] bg-black/75 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4"
+          dir="rtl"
+          onClick={() => setQualityPickerMode(null)}
+        >
+          <div
+            className="w-full sm:max-w-md bg-[#101014] border-t sm:border border-neutral-800 rounded-t-2xl sm:rounded-2xl p-4 sm:p-5 shadow-2xl space-y-4"
+            style={{ paddingBottom: 'calc(1rem + var(--safe-bottom, 0px))' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div
+                  className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border ${
+                    qualityPickerMode === 'play'
+                      ? 'bg-purple-500/15 border-purple-500/35 text-purple-300'
+                      : 'bg-emerald-500/15 border-emerald-500/35 text-emerald-300'
+                  }`}
+                >
+                  {qualityPickerMode === 'play' ? <ExternalLink size={18} /> : <Download size={18} />}
+                </div>
+                <div>
+                  <h3 className="text-sm sm:text-base font-black text-white">
+                    {qualityPickerMode === 'play'
+                      ? 'اختر جودة التشغيل الخارجي'
+                      : 'اختر جودة التنزيل الخارجي'}
+                  </h3>
+                  <p className="text-[11px] text-neutral-400 font-bold mt-0.5">
+                    {episode?.title || `الحلقة ${episode?.num || 1}`}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setQualityPickerMode(null)}
+                aria-label="إغلاق"
+                className="w-9 h-9 rounded-xl bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-neutral-400 hover:text-white flex items-center justify-center transition cursor-pointer shrink-0"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              {(
+                [
+                  {
+                    id: 'auto' as const,
+                    title: 'تلقائي (أعلى جودة متاحة)',
+                    subtitle: 'يختار أفضل وأسرع رابط متوفر للحلقة تلقائياً',
+                    badge: 'تلقائي',
+                    badgeClass: 'bg-purple-500/15 text-purple-300 border-purple-500/35',
+                  },
+                  {
+                    id: 'FHD' as const,
+                    title: 'جودة فائقة الوضوح • 1080p',
+                    subtitle: 'أفضل تفاصيل للصورة (حجم أكبر)',
+                    badge: 'FHD',
+                    badgeClass: 'bg-red-500/15 text-red-300 border-red-500/35',
+                  },
+                  {
+                    id: 'HD' as const,
+                    title: 'جودة عالية متوازنة • 720p',
+                    subtitle: 'وضوح ممتاز مع سرعة تحميل وتشغيل عالية',
+                    badge: 'HD',
+                    badgeClass: 'bg-amber-500/15 text-amber-300 border-amber-500/35',
+                  },
+                  {
+                    id: 'SD' as const,
+                    title: 'جودة اقتصادية خفيفة • 480p',
+                    subtitle: 'مناسبة لتوفير البيانات والإنترنت البطيء',
+                    badge: 'SD',
+                    badgeClass: 'bg-blue-500/15 text-blue-300 border-blue-500/35',
+                  },
+                ] as const
+              ).map((opt) => {
+                const isDetected =
+                  opt.id !== 'auto' &&
+                  (detectedQualityInfo.available.has(opt.id) || detectedQualityInfo.hasMulti);
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() =>
+                      qualityPickerMode === 'play'
+                        ? void handleLaunchExternalPlayer(opt.id)
+                        : void handleLaunchExternalDownload(opt.id)
+                    }
+                    className={`w-full min-h-[54px] px-3.5 py-2.5 rounded-xl bg-neutral-900/90 hover:bg-neutral-800/90 border border-neutral-800 ${
+                      qualityPickerMode === 'play'
+                        ? 'hover:border-purple-500/50'
+                        : 'hover:border-emerald-500/50'
+                    } flex items-center justify-between gap-3 text-right transition cursor-pointer`}
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-xs sm:text-sm font-black text-white">
+                          {opt.title}
+                        </span>
+                        {isDetected && (
+                          <span className="text-[10px] font-bold text-emerald-400">
+                            • متوفرة
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-neutral-400 font-medium mt-0.5">
+                        {opt.subtitle}
+                      </p>
+                    </div>
+                    <span
+                      className={`px-2.5 py-1 rounded-lg text-[10px] font-black border shrink-0 ${opt.badgeClass}`}
+                    >
+                      {opt.badge}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
     </motion.div>
   );
 }

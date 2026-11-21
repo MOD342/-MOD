@@ -45,6 +45,7 @@ router.get(
           : "best_season")
       ).toLowerCase();
       const bypass = req.query.bypass === "true";
+      const excludeRecent = req.query.excludeRecent === "1" || req.query.excludeRecent === "true";
       const days = [
         "sunday",
         "monday",
@@ -58,13 +59,15 @@ router.get(
         ? userDay
         : days[new Date().getDay()];
 
-      const cacheKey = `dashboard-v7-${currentDay}-${requestedSeason}-${requestedSliderMode}`;
+      const cacheKey = `dashboard-v7-${currentDay}-${requestedSeason}-${requestedSliderMode}${excludeRecent ? "-norecent" : ""}`;
 
       if (bypass) {
         await serverCache.delete(cacheKey);
-        await serverCache.delete("recent_episodes");
-        await serverCache.delete("recent_episodes_okanime_primary_v1_page_1");
-        await serverCache.delete("recent_episodes_animedar_isolated_v3_page_1");
+        if (!excludeRecent) {
+          await serverCache.delete("recent_episodes");
+          await serverCache.delete("recent_episodes_okanime_primary_v1_page_1");
+          await serverCache.delete("recent_episodes_animedar_isolated_v3_page_1");
+        }
         await serverCache.delete("schedule_okanime_week_v2");
         await serverCache.delete("okanime_movies_v1_p_1");
         await serverCache.delete("okanime_top_v1_p_1");
@@ -78,6 +81,8 @@ router.get(
             await serverCache.delete(`dashboard-v6-${d}-auto-${m}`);
             await serverCache.delete(`dashboard-v7-${d}-${requestedSeason}-${m}`);
             await serverCache.delete(`dashboard-v7-${d}-auto-${m}`);
+            await serverCache.delete(`dashboard-v7-${d}-${requestedSeason}-${m}-norecent`);
+            await serverCache.delete(`dashboard-v7-${d}-auto-${m}-norecent`);
           }
         }
       }
@@ -138,11 +143,13 @@ router.get(
             3200,
             []
           ),
-          fetchWithTimeout(
-            scraper.getRecentEpisodes(bypass).catch(() => []),
-            bypass ? 7500 : 6500,
-            []
-          ),
+          excludeRecent
+            ? Promise.resolve([])
+            : fetchWithTimeout(
+                scraper.getRecentEpisodes(bypass).catch(() => []),
+                bypass ? 7500 : 6500,
+                []
+              ),
           fetchWithTimeout(
             scraper.getScheduleByDayMap(bypass).then(async (weekMap) => {
               const matched = weekMap && Array.isArray(weekMap[currentDay]) ? weekMap[currentDay] : [];
@@ -386,7 +393,7 @@ router.get(
 
       // If recentEpisodes failed to scrape live, try stale real scraped cache before falling back
       let finalRecent = recentEpisodes;
-      if (finalRecent.length === 0) {
+      if (!excludeRecent && finalRecent.length === 0) {
         const staleRaw = await serverCache.get<any[]>("recent_episodes", true);
         if (Array.isArray(staleRaw) && staleRaw.length > 0) {
           finalRecent = staleRaw.map((item, idx) => {
@@ -417,7 +424,7 @@ router.get(
 
       const resultPayload = {
         top5: top5.length > 0 ? top5 : getCuratedTop5(),
-        recentEpisodes: finalRecent,
+        recentEpisodes: excludeRecent ? [] : finalRecent,
         popular: popular.length > 0 ? popular : getCuratedSeasonAnime(),
         currentSeason: currentSeason.length > 0 ? currentSeason : getCuratedSeasonAnime(),
         schedule: schedule.length > 0 ? schedule : getCuratedTop5(),
@@ -425,8 +432,8 @@ router.get(
         topAnime: topAnimeList,
       };
 
-      // Only cache for full 90s when live recentEpisodes succeeded; otherwise short 10s cache
-      if (finalRecent.length === 0) {
+      // Only cache for full window when live recentEpisodes succeeded (or excludeRecent is requested)
+      if (!excludeRecent && finalRecent.length === 0) {
         setTimeout(() => {
           serverCache.delete(cacheKey).catch(() => {});
         }, 5000);

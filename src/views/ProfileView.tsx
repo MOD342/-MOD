@@ -4,10 +4,11 @@ import {
   Settings, ChevronLeft, ChevronRight, Lock, ChevronDown,
   ListVideo, Flame, Trophy, PlayCircle, BarChart3,
   Shield, User, ThumbsUp, ThumbsDown, MessageSquare, CheckSquare, Paintbrush,
-  AlertCircle, UserPlus, LogIn, Swords, Cloud, HardDrive, CheckCircle2, Loader2, Award
+  AlertCircle, UserPlus, LogIn, Swords, Cloud, HardDrive, CheckCircle2, Loader2, Award, BookOpen
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { listService, AnimeEntry, computeLibraryStats } from '../services/listService';
+import { mangaListService, MangaEntry, computeMangaStats } from '../services/mangaListService';
 import { STORE_ITEMS_SORTED, getAvatarShapeClass } from '../data/storeItems';
 import { isStaffEmail } from '../services/moderationService';
 import { doc, getDoc, getDocFromServer } from 'firebase/firestore';
@@ -51,6 +52,7 @@ export default function ProfileView({
   const display = useDeviceDisplay();
 
   const [entries, setEntries] = useState<AnimeEntry[]>([]);
+  const [mangaEntries, setMangaEntries] = useState<MangaEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshingProfile, setRefreshingProfile] = useState(false);
   const [profileError, setProfileError] = useState(false);
@@ -96,8 +98,12 @@ export default function ProfileView({
         await listService.forceCloudSync(user.id).catch(() => {});
       }
 
-      const uEntries = await listService.getAnimeEntries(targetId);
+      const [uEntries, mEntries] = await Promise.all([
+        listService.getAnimeEntries(targetId),
+        mangaListService.getMangaEntries(targetId, forceBypass).catch(() => []),
+      ]);
       setEntries(uEntries);
+      setMangaEntries(mEntries);
       if (isCurrentUser && user) {
         void listService.reconcileUserStats(user.id, uEntries, currentUserData);
       }
@@ -122,13 +128,27 @@ export default function ProfileView({
         listService.getAnimeEntries(targetId).then(setEntries).catch(() => {});
       }
     };
+    const handleMangaLibraryUpdated = (e: Event) => {
+      const detail = (e as CustomEvent)?.detail;
+      if (!detail?.userId || detail.userId === targetId) {
+        mangaListService.getMangaEntries(targetId).then(setMangaEntries).catch(() => {});
+      }
+    };
     window.addEventListener('otaku:library-updated', handleLibraryUpdated);
-    return () => window.removeEventListener('otaku:library-updated', handleLibraryUpdated);
+    window.addEventListener('manga-library-updated', handleMangaLibraryUpdated);
+    return () => {
+      window.removeEventListener('otaku:library-updated', handleLibraryUpdated);
+      window.removeEventListener('manga-library-updated', handleMangaLibraryUpdated);
+    };
   }, [targetId]);
 
   const stats = useMemo(() => {
     return computeLibraryStats(entries, userData);
   }, [entries, userData]);
+
+  const mangaStats = useMemo(() => {
+    return computeMangaStats(mangaEntries, userData);
+  }, [mangaEntries, userData]);
 
   const currentLevel = userData?.level || 1;
   const nextLevel = currentLevel + 1;
@@ -497,7 +517,7 @@ export default function ProfileView({
                 className="space-y-3"
               >
                 {/* Compact Snapshot Grid */}
-                <div className="grid grid-cols-2 gap-2.5">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
                   <div className="bg-[#09090d] border border-white/10 rounded-xl p-3 flex items-center justify-between">
                     <div>
                       <span className="text-[11px] text-neutral-400 font-bold block">حلقات مشاهدة</span>
@@ -509,9 +529,18 @@ export default function ProfileView({
                   </div>
                   <div className="bg-[#09090d] border border-white/10 rounded-xl p-3 flex items-center justify-between">
                     <div>
-                      <span className="text-[11px] text-neutral-400 font-bold block">أنمي بالقائمة</span>
+                      <span className="text-[11px] text-neutral-400 font-bold block">فصول مقروءة</span>
                       <span className="text-base font-black text-white font-mono tabular-nums mt-0.5 block">
-                        {showStats ? stats.totalListCount : '—'}
+                        {showHistory ? mangaStats.totalChaptersRead : '—'}
+                      </span>
+                    </div>
+                    <BookOpen size={20} className="text-amber-400 shrink-0" />
+                  </div>
+                  <div className="col-span-2 sm:col-span-1 bg-[#09090d] border border-white/10 rounded-xl p-3 flex items-center justify-between">
+                    <div>
+                      <span className="text-[11px] text-neutral-400 font-bold block">أعمال بالمكتبة</span>
+                      <span className="text-base font-black text-white font-mono tabular-nums mt-0.5 block">
+                        {showStats ? stats.totalListCount + mangaStats.totalListCount : '—'}
                       </span>
                     </div>
                     <ListVideo size={20} className="text-emerald-400 shrink-0" />

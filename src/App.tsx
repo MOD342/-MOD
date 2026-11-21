@@ -23,6 +23,7 @@ import { ViewportPortal } from './components/ViewportPortal';
 import { dispatchNativeSystemNotification } from './utils/systemPermissions';
 import { applyViewportAndCutoutMetrics } from './utils/viewportMetrics';
 import { ViewErrorBoundary } from './components/GlobalErrorBoundary';
+import { downloadManagerService } from './services/downloadManagerService';
 
 const ExploreView = lazyWithRetry(() => import('./views/ExploreView'), 'ExploreView');
 const CommunityView = lazyWithRetry(() => import('./views/CommunityView'), 'CommunityView');
@@ -48,6 +49,9 @@ const AiChatView = lazyWithRetry(() => import('./views/AiChatView'), 'AiChatView
 const AdSupportView = lazyWithRetry(() => import('./views/AdSupportView'), 'AdSupportView');
 const SupportPortalView = lazyWithRetry(() => import('./views/SupportPortalView'), 'SupportPortalView');
 const OtakuArenaHubView = lazyWithRetry(() => import('./views/OtakuArenaHubView'), 'OtakuArenaHubView');
+const MangaHubView = lazyWithRetry(() => import('./views/MangaHubView'), 'MangaHubView');
+const MangaDetailsView = lazyWithRetry(() => import('./views/MangaDetailsView'), 'MangaDetailsView');
+const MangaReaderView = lazyWithRetry(() => import('./views/MangaReaderView'), 'MangaReaderView');
 
 import { MascotLoadingScreen, MascotOfflineScreen } from './components/MascotScreens';
 import PermissionPromptModal from './components/PermissionPromptModal';
@@ -556,9 +560,22 @@ export default function App() {
   const renderView = () => {
     switch (currentView.name) {
       case 'home':
-        return <HomeView onAnimeClick={(id, epNum) => navigateTo('anime_details', { id, autoplayEpisode: epNum })} onSearchCategory={(cat) => { setActiveTab('watch'); navigateTo('watch', { initialQuery: cat }); }} onNavigateToSchedule={(day) => navigateTo('schedule', { initialDay: day })} onNavigateToRecent={() => navigateTo('recent_episodes')} onNavigateToSeason={() => navigateTo('current_season')} onNavigateToMovies={() => navigateTo('anime_movies')} onNavigateToTopAnime={() => navigateTo('top_anime')} />;
+        return (
+          <HomeView
+            onAnimeClick={(id, epNum) => navigateTo('anime_details', { id, autoplayEpisode: epNum })}
+            onMangaClick={(id) => navigateTo('manga_details', { id })}
+            onNavigateToMangaHub={() => navigateTo('manga_hub')}
+            onReadMangaChapter={(params) => navigateTo('manga_reader', params)}
+            onSearchCategory={(cat) => { setActiveTab('watch'); navigateTo('watch', { initialQuery: cat }); }}
+            onNavigateToSchedule={(day) => navigateTo('schedule', { initialDay: day })}
+            onNavigateToRecent={() => navigateTo('recent_episodes')}
+            onNavigateToSeason={() => navigateTo('current_season')}
+            onNavigateToMovies={() => navigateTo('anime_movies')}
+            onNavigateToTopAnime={() => navigateTo('top_anime')}
+          />
+        );
       case 'watch': 
-        return <ExploreView onAnimeClick={(id) => navigateTo('anime_details', { id })} initialQuery={currentView.props?.initialQuery} onNavigate={navigateTo} />;
+        return <ExploreView onAnimeClick={(id) => navigateTo('anime_details', { id })} onMangaClick={(id) => navigateTo('manga_details', { id })} initialQuery={currentView.props?.initialQuery} onNavigate={navigateTo} />;
       case 'community':
         return (
           <CommunityView
@@ -569,9 +586,49 @@ export default function App() {
           />
         );
       case 'lists':
-        return <MyListsView onAnimeClick={(id) => navigateTo('anime_details', { id })} />;
+        return <MyListsView onAnimeClick={(id) => navigateTo('anime_details', { id })} onMangaClick={(id) => navigateTo('manga_details', { id })} />;
       case 'more':
         return <MoreView onNavigate={navigateTo} />;
+      case 'manga_hub':
+        return <MangaHubView onBack={goBack} onMangaClick={(id) => navigateTo('manga_details', { id })} />;
+      case 'manga_details':
+        return (
+          <MangaDetailsView
+            key={currentView.props?.id}
+            mangaId={currentView.props?.id}
+            onBack={goBack}
+            onMangaClick={(id) => navigateTo('manga_details', { id })}
+            onAnimeClick={(id) => navigateTo('anime_details', { id })}
+            onReadChapter={(params) => navigateTo('manga_reader', params)}
+            onNavigateDownloads={() => navigateTo('downloads')}
+            onUserClick={(userId) => navigateTo('other_profile', { userId })}
+          />
+        );
+      case 'manga_reader':
+        return (
+          <MangaReaderView
+            key={`${currentView.props?.manga?._id || ''}-${currentView.props?.chapter?.id || ''}`}
+            manga={currentView.props?.manga}
+            chapter={currentView.props?.chapter}
+            chapters={currentView.props?.chapters || []}
+            initialPage={currentView.props?.initialPage}
+            offlineItemId={currentView.props?.offlineItemId}
+            onBack={goBack}
+            onSelectChapter={(ch) =>
+              navigateTo(
+                'manga_reader',
+                {
+                  ...currentView.props,
+                  chapter: ch,
+                  initialPage: 1,
+                  offlineItemId: undefined,
+                },
+                { replaceTop: true },
+              )
+            }
+            onUserClick={(userId) => navigateTo('other_profile', { userId })}
+          />
+        );
       case 'profile':
         return (
           <ProfileView
@@ -612,7 +669,7 @@ export default function App() {
           />
         );
       case 'anime_details':
-        return <AnimeDetailsView key={currentView.props?.t || currentView.props?.id} id={currentView.props?.id} showComments={currentView.props?.showComments} focusCommentId={currentView.props?.focusCommentId} autoplayEpisode={currentView.props?.autoplayEpisode} onBack={goBack} onHome={() => handleTabChange('home')} onWatch={(ep, anime) => navigateTo('watch_episode', { episode: ep, anime })} onAnimeClick={(id, epNum) => navigateTo('anime_details', id === 'random' ? { id: 'random', t: Date.now() } : { id, autoplayEpisode: epNum }, id === 'random' ? { replaceTop: true } : undefined)} onNavigate={navigateTo} />;
+        return <AnimeDetailsView key={currentView.props?.t || currentView.props?.id} id={currentView.props?.id} showComments={currentView.props?.showComments} focusCommentId={currentView.props?.focusCommentId} autoplayEpisode={currentView.props?.autoplayEpisode} onBack={goBack} onHome={() => handleTabChange('home')} onWatch={(ep, anime) => navigateTo('watch_episode', { episode: ep, anime })} onAnimeClick={(id, epNum) => navigateTo('anime_details', id === 'random' ? { id: 'random', t: Date.now() } : { id, autoplayEpisode: epNum }, id === 'random' ? { replaceTop: true } : undefined)} onMangaClick={(id) => navigateTo('manga_details', { id })} onNavigate={navigateTo} />;
       case 'anime_comments':
         return <AnimeCommentsView animeId={currentView.props?.animeId} focusCommentId={currentView.props?.focusCommentId} onBack={goBack} onAnimeClick={(id) => navigateTo('anime_details', { id })} onUserClick={(userId) => navigateTo('other_profile', { userId })} />;
       case 'watch_episode':
@@ -696,6 +753,48 @@ export default function App() {
               setViewStack([{ name: 'watch' }]);
             }}
             onOpenAnime={(id) => navigateTo('anime_details', { id })}
+            onOpenManga={(id) => navigateTo('manga_details', { id })}
+            onOpenOfflineChapter={(item) => {
+              const targetMangaId = String(item.mangaId || item.animeId || '');
+              const siblingOfflineChapters = downloadManagerService
+                .getSnapshot()
+                .filter(
+                  (q) =>
+                    q.itemType === 'chapter' &&
+                    q.status === 'completed' &&
+                    q.hasOfflineFile &&
+                    String(q.mangaId || q.animeId || '') === targetMangaId,
+                )
+                .map((q) => ({
+                  id: q.chapterId || q.episodeUrl,
+                  num: q.chapterNum || q.episodeNum,
+                  chapterNumber: Number(q.chapterNum || q.episodeNum || 1),
+                  title: q.chapterTitle || q.episodeTitle,
+                }))
+                .sort((a, b) => a.chapterNumber - b.chapterNumber);
+
+              navigateTo('manga_reader', {
+                manga: {
+                  _id: targetMangaId,
+                  mangadexId: item.mangadexId,
+                  title: item.animeTitle,
+                  posterUrl: item.posterUrl,
+                  mediaFormat: item.mediaFormat,
+                  defaultReadingMode:
+                    item.mediaFormat === 'manhwa' || item.mediaFormat === 'manhua'
+                      ? 'webtoon'
+                      : 'paged',
+                },
+                chapter: {
+                  id: item.chapterId || item.episodeUrl,
+                  num: item.chapterNum || item.episodeNum,
+                  chapterNumber: Number(item.chapterNum || item.episodeNum || 1),
+                  title: item.chapterTitle || item.episodeTitle,
+                },
+                chapters: siblingOfflineChapters,
+                offlineItemId: item.id,
+              });
+            }}
           />
         );
       case 'level_perks':
@@ -711,7 +810,7 @@ export default function App() {
       case 'diagnostics':
         return <DiagnosticsView onBack={goBack} initialTab={currentView.props?.initialTab} />;
       case 'ai_chat':
-        return <AiChatView onBack={goBack} onNavigate={navigateTo} />;
+        return <AiChatView onBack={goBack} onNavigate={navigateTo} onMangaClick={(id) => navigateTo('manga_details', { id })} />;
       case 'ad_support':
         return <SupportPortalView onBack={goBack} initialTab="rewards" />;
       case 'support_help':
@@ -725,12 +824,24 @@ export default function App() {
       case 'support_news':
         return <SupportPortalView onBack={goBack} initialTab="news" />;
       default:
-        return <HomeView onAnimeClick={(id) => navigateTo('anime_details', { id })} onNavigateToSchedule={(day) => navigateTo('schedule', { initialDay: day })} onNavigateToRecent={() => navigateTo('recent_episodes')} onNavigateToSeason={() => navigateTo('current_season')} onNavigateToMovies={() => navigateTo('anime_movies')} onNavigateToTopAnime={() => navigateTo('top_anime')} />;
+        return (
+          <HomeView
+            onAnimeClick={(id) => navigateTo('anime_details', { id })}
+            onMangaClick={(id) => navigateTo('manga_details', { id })}
+            onNavigateToMangaHub={() => navigateTo('manga_hub')}
+            onReadMangaChapter={(params) => navigateTo('manga_reader', params)}
+            onNavigateToSchedule={(day) => navigateTo('schedule', { initialDay: day })}
+            onNavigateToRecent={() => navigateTo('recent_episodes')}
+            onNavigateToSeason={() => navigateTo('current_season')}
+            onNavigateToMovies={() => navigateTo('anime_movies')}
+            onNavigateToTopAnime={() => navigateTo('top_anime')}
+          />
+        );
     }
   };
 
   // Do not show AppLayout (top/bottom navs) if we are in fullscreen views like details or watch
-  const isFullScreenView = currentView.name === 'account_settings' || currentView.name === 'profile_appearance' || currentView.name === 'diagnostics' || currentView.name === 'suggestions_hub' || currentView.name === 'ai_chat' || currentView.name === 'level_perks' || currentView.name === 'anime_details' || currentView.name === 'anime_comments' || currentView.name === 'watch_episode' || currentView.name === 'admin' || currentView.name === 'games' || currentView.name === 'leaderboard' || currentView.name === 'store' || currentView.name === 'schedule' || currentView.name === 'tournaments' || currentView.name === 'recent_episodes' || currentView.name === 'current_season' || currentView.name === 'anime_movies' || currentView.name === 'top_anime' || currentView.name === 'downloads' || currentView.name === 'rewards' || currentView.name === 'other_profile' || currentView.name === 'favorites' || currentView.name === 'notifications' || currentView.name === 'ad_support' || currentView.name === 'support_help' || currentView.name === 'support_suggestions' || currentView.name === 'support_donate' || currentView.name === 'support_chat' || currentView.name === 'support_news';
+  const isFullScreenView = currentView.name === 'account_settings' || currentView.name === 'profile_appearance' || currentView.name === 'diagnostics' || currentView.name === 'suggestions_hub' || currentView.name === 'ai_chat' || currentView.name === 'level_perks' || currentView.name === 'anime_details' || currentView.name === 'anime_comments' || currentView.name === 'watch_episode' || currentView.name === 'manga_hub' || currentView.name === 'manga_details' || currentView.name === 'manga_reader' || currentView.name === 'admin' || currentView.name === 'games' || currentView.name === 'leaderboard' || currentView.name === 'store' || currentView.name === 'schedule' || currentView.name === 'tournaments' || currentView.name === 'recent_episodes' || currentView.name === 'current_season' || currentView.name === 'anime_movies' || currentView.name === 'top_anime' || currentView.name === 'downloads' || currentView.name === 'rewards' || currentView.name === 'other_profile' || currentView.name === 'favorites' || currentView.name === 'notifications' || currentView.name === 'ad_support' || currentView.name === 'support_help' || currentView.name === 'support_suggestions' || currentView.name === 'support_donate' || currentView.name === 'support_chat' || currentView.name === 'support_news';
 
   return (
     <>
@@ -902,13 +1013,13 @@ export default function App() {
 
       {isFullScreenView ? (
         <motion.div
-          key={`${currentView.name}-${viewStack.length}-${currentView.props?.id || currentView.props?.animeId || currentView.props?.userId || currentView.props?.episode?.id || currentView.props?.episode?.num || currentView.props?.t || ''}`}
+          key={`${currentView.name}-${viewStack.length}-${currentView.props?.id || currentView.props?.animeId || currentView.props?.userId || currentView.props?.episode?.id || currentView.props?.episode?.num || currentView.props?.chapter?.id || currentView.props?.t || ''}`}
           initial={{ opacity: 0.7 }}
           animate={{ opacity: 1 }}
           transition={{ duration: 0.12, ease: 'easeOut' }}
           style={{
             paddingTop:
-              currentView.name === 'anime_details' || currentView.name === 'watch_episode'
+              currentView.name === 'anime_details' || currentView.name === 'watch_episode' || currentView.name === 'manga_details' || currentView.name === 'manga_reader'
                 ? '0px'
                 : 'var(--safe-top, 0px)',
             paddingBottom: 'var(--safe-bottom, 0px)',
