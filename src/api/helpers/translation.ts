@@ -52,6 +52,16 @@ export async function translateToArabicFree(text: string): Promise<string> {
   return text;
 }
 
+export function needsArabicTranslation(text: string): boolean {
+  if (!text || !text.trim()) return false;
+  const clean = text.replace(/https?:\/\/\S+/gi, " ").trim();
+  const arabicCount = (clean.match(/[\u0600-\u06FF]/g) || []).length;
+  const latinWords = clean.match(/[a-zA-Z]{3,}/g) || [];
+  if (latinWords.length < 4) return false;
+  if (arabicCount >= 20 && latinWords.length < 12) return false;
+  return arabicCount < latinWords.join("").length * 0.45;
+}
+
 export async function translateToArabic(text: string): Promise<string> {
   if (!text || !text.trim()) return text;
 
@@ -307,7 +317,7 @@ export function translateDescriptionInBackground(id: string, description: string
   translateToArabic(description)
     .then(async (translated) => {
       if (translated && translated !== description) {
-        const cacheKey = `anime-details-v8-${id}`;
+        const cacheKey = `anime-details-v9-${id}`;
         const cached = await serverCache.get<any>(cacheKey);
         if (cached) {
           cached.description = translated;

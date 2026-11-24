@@ -4,6 +4,8 @@ import { useAuth } from '../contexts/AuthContext';
 import { AnimeEntry, listService } from '../services/listService';
 import { clientCache } from '../utils/clientCache';
 import PullToRefresh from '../components/PullToRefresh';
+import { LongPressCopy } from '../components/LongPressCopy';
+import { FALLBACK_POSTER_DATA_URL } from '../utils/posterFallback';
 
 export default function FavoritesView({ onBack, onAnimeClick }: { onBack: () => void; onAnimeClick: (id: string) => void }) {
   const { user } = useAuth();
@@ -91,17 +93,19 @@ export default function FavoritesView({ onBack, onAnimeClick }: { onBack: () => 
                   >
                     <div className="theme-keep-dark aspect-[3/4] rounded-xl overflow-hidden bg-[#121212] border border-neutral-800 group-hover:border-[#FF1744] transition-colors relative">
                       <img
-                        src={anime.posterUrl || 'https://via.placeholder.com/300x400?text=Anime'}
+                        src={anime.posterUrl || FALLBACK_POSTER_DATA_URL}
                         alt={anime.title}
                         referrerPolicy="no-referrer"
                         onError={(e) => {
-                          e.currentTarget.src = 'https://via.placeholder.com/300x400?text=Anime';
+                          if (e.currentTarget.src !== FALLBACK_POSTER_DATA_URL) {
+                            e.currentTarget.src = FALLBACK_POSTER_DATA_URL;
+                          }
                         }}
                         className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300"
                       />
                       <div className="absolute inset-0 bg-gradient-to-t from-black/85 to-transparent" />
                       <div className="absolute bottom-2 left-2 right-2 text-center text-[10px] sm:text-xs font-bold text-white line-clamp-2">
-                        {anime.title}
+                        <LongPressCopy text={anime.title}>{anime.title}</LongPressCopy>
                       </div>
                     </div>
                   </div>

@@ -75,6 +75,14 @@ export const updateCommentInteraction = async (commentId: string, data: Partial<
   }
 };
 
+const normalizeRecKey = (title?: string | null): string =>
+  String(title || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
 export const getApprovedRecommendations = async (animeId: string): Promise<Recommendation[]> => {
   try {
     const q1 = query(
@@ -102,12 +110,27 @@ export const getApprovedRecommendations = async (animeId: string): Promise<Recom
       map.set(docSnap.id, { id: docSnap.id, ...docSnap.data() } as Recommendation);
     });
     
-    const recs = Array.from(map.values());
-    recs.sort((a,b) => {
+    const sorted = Array.from(map.values()).sort((a, b) => {
       const aTime = a.createdAt?.toMillis ? a.createdAt.toMillis() : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
       const bTime = b.createdAt?.toMillis ? b.createdAt.toMillis() : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
       return bTime - aTime;
     });
+
+    // Deduplicate recommendations pointing to the same anime (ignoring older duplicates)
+    const seenTargets = new Set<string>();
+    const seenTitles = new Set<string>();
+    const recs: Recommendation[] = [];
+    for (const r of sorted) {
+      const isSource = String(r.animeId) === String(animeId);
+      const otherId = String(isSource ? r.targetAnimeId : r.animeId).trim();
+      const otherTitleNorm = normalizeRecKey(isSource ? r.targetAnimeTitle : r.animeTitle);
+      if ((otherId && seenTargets.has(otherId)) || (otherTitleNorm && seenTitles.has(otherTitleNorm))) {
+        continue;
+      }
+      if (otherId) seenTargets.add(otherId);
+      if (otherTitleNorm) seenTitles.add(otherTitleNorm);
+      recs.push(r);
+    }
 
     // Resolve any missing animeTitle or posterUrls cleanly (capped to first 6 items to avoid burst load)
     const missingItems = recs
@@ -147,11 +170,52 @@ export const getApprovedRecommendations = async (animeId: string): Promise<Recom
   }
 };
 
-export const addRecommendation = async (rec: Omit<Recommendation, 'id' | 'createdAt' | 'status'>) => {
+export const addRecommendation = async (
+  rec: Omit<Recommendation, 'id' | 'createdAt' | 'status'>
+): Promise<{ added: boolean; duplicate?: boolean }> => {
   try {
+    const srcId = String(rec.animeId || '').trim();
+    const tgtId = String(rec.targetAnimeId || '').trim();
+    const tgtTitleNorm = normalizeRecKey(rec.targetAnimeTitle);
+    if (!srcId || !tgtId || srcId === tgtId) {
+      return { added: false, duplicate: true };
+    }
+
+    // Ignore any recommendation that already exists (pending or approved) in either direction
+    try {
+      const qFromSource = query(collection(db, 'recommendations'), where('animeId', '==', srcId), limit(60));
+      const qToSource = query(collection(db, 'recommendations'), where('targetAnimeId', '==', srcId), limit(60));
+      const [snapFrom, snapTo] = await Promise.all([getDocs(qFromSource), getDocs(qToSource)]);
+
+      const duplicateExists = [...snapFrom.docs, ...snapTo.docs].some((d) => {
+        const data = d.data() || {};
+        const st = String(data.status || 'approved');
+        if (st === 'rejected') return false;
+        const dAnimeId = String(data.animeId || '').trim();
+        const dTargetId = String(data.targetAnimeId || '').trim();
+        if (
+          (dAnimeId === srcId && dTargetId === tgtId) ||
+          (dAnimeId === tgtId && dTargetId === srcId)
+        ) {
+          return true;
+        }
+        if (tgtTitleNorm) {
+          const otherTitle = dAnimeId === srcId ? data.targetAnimeTitle : data.animeTitle;
+          if (normalizeRecKey(otherTitle) === tgtTitleNorm) return true;
+        }
+        return false;
+      });
+
+      if (duplicateExists) {
+        return { added: false, duplicate: true };
+      }
+    } catch {
+      // Proceed gracefully if duplicate pre-check query is temporarily unavailable
+    }
+
     const cleanRec: any = {
-      animeId: String(rec.animeId),
-      targetAnimeId: String(rec.targetAnimeId),
+      animeId: srcId,
+      targetAnimeId: tgtId,
       targetAnimeTitle: String(rec.targetAnimeTitle),
       reason: String(rec.reason),
       userId: String(rec.userId),
@@ -167,8 +231,6 @@ export const addRecommendation = async (rec: Omit<Recommendation, 'id' | 'create
       cleanRec.targetAnimePosterUrl = String(rec.targetAnimePosterUrl);
     }
 
-    console.log("Saving recommendation payload:", cleanRec);
-
     await addDoc(collection(db, 'recommendations'), {
       ...cleanRec,
       status: 'pending',
@@ -178,8 +240,10 @@ export const addRecommendation = async (rec: Omit<Recommendation, 'id' | 'create
     });
     const { incrementInteraction } = await import('./gamificationService');
     await incrementInteraction(rec.userId, 'recommendation');
+    return { added: true };
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, 'recommendations');
+    throw error;
   }
 };
 

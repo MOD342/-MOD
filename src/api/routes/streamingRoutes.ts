@@ -11,8 +11,36 @@ import {
   type PreferredQuality,
   type ResolvedDownloadTarget,
 } from "../helpers/downloadResolver";
+import {
+  isSafePublicHttpUrl,
+  parseSafePublicHttpUrl,
+  validateSafePublicHttpUrl,
+} from "../helpers/urlSafety";
 
 const router = Router();
+const recentBypassTimestamps = new Map<number, number>();
+const RECENT_BYPASS_COOLDOWN_MS = 60_000;
+
+function unwrapSafeCandidateUrl(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  if (trimmed.startsWith("/api/anime/download") || trimmed.includes("/api/anime/download?")) {
+    try {
+      const dummyParsed = new URL(trimmed, "https://app.local");
+      const inner = dummyParsed.searchParams.get("url") || "";
+      if (isSafePublicHttpUrl(inner)) {
+        return trimmed;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  return isSafePublicHttpUrl(trimmed) ? trimmed : null;
+}
 
 router.get(
   "/anime/schedule",
@@ -61,25 +89,17 @@ router.get(
 router.get(
   "/anime/recent",
   handleAsync(async (req: Request, res: Response) => {
-    const bypass = req.query.bypass === "true";
+    const rawBypass = req.query.bypass === "true";
     const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
+    const nowMs = Date.now();
+    const lastBypassAt = recentBypassTimestamps.get(page) || 0;
+    const bypass = rawBypass && nowMs - lastBypassAt >= RECENT_BYPASS_COOLDOWN_MS;
 
     if (bypass) {
+      recentBypassTimestamps.set(page, nowMs);
       await serverCache.delete("recent_episodes");
       await serverCache.delete(`recent_episodes_okanime_primary_v1_page_${page}`);
       await serverCache.delete(`recent_episodes_animedar_isolated_v3_page_${page}`);
-      await serverCache.delete("https://api.jikan.moe/v4/seasons/now?limit=25");
-      const days = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
-      const seasons = ["auto", "winter", "spring", "summer", "fall"];
-      const sliderModes = ["best_season", "trending_season", "all_time_best", "classic_historical", "custom"];
-      for (const d of days) {
-        for (const s of seasons) {
-          await serverCache.delete(`dashboard-${d}-${s}`);
-          for (const m of sliderModes) {
-            await serverCache.delete(`dashboard-v5-${d}-${s}-${m}`);
-          }
-        }
-      }
     }
     const rawData = await scraper.getRecentEpisodes(bypass, page);
 
@@ -161,17 +181,20 @@ router.get(
   handleAsync(async (req: Request, res: Response) => {
     const rawUrl = (req.query.url as string) || "";
     const referer = (req.query.referer as string) || "";
-    if (!rawUrl || !rawUrl.startsWith("http")) {
-      return res.status(400).send("Invalid stream URL");
+    const safeInitialUrl = await validateSafePublicHttpUrl(rawUrl);
+    if (!safeInitialUrl) {
+      return res.status(400).send("Invalid or unsafe stream URL");
     }
+
+    const safeReferer = referer && isSafePublicHttpUrl(referer) ? referer : "";
 
     const proxyHeaders: Record<string, string> = {
       "User-Agent": STREAM_UA,
       Accept: "*/*",
     };
 
-    if (referer) {
-      proxyHeaders["Referer"] = referer;
+    if (safeReferer) {
+      proxyHeaders["Referer"] = safeReferer;
     }
 
     if (req.headers.range) {
@@ -179,44 +202,60 @@ router.get(
     }
 
     try {
-      let finalUpstreamUrl = rawUrl;
-      let upstream = await fetch(rawUrl, {
-        headers: proxyHeaders,
-        redirect: "manual",
-        signal: AbortSignal.timeout(25_000),
-      });
+      let currentUrl = safeInitialUrl.toString();
+      let upstream: globalThis.Response | null = null;
 
-      if (
-        (upstream.status === 301 ||
-          upstream.status === 302 ||
-          upstream.status === 303 ||
-          upstream.status === 307 ||
-          upstream.status === 308) &&
-        upstream.headers.get("location")
-      ) {
-        const nextUrl = new URL(
-          upstream.headers.get("location")!,
-          rawUrl
-        ).href;
-        finalUpstreamUrl = nextUrl;
-        const nextHeaders: Record<string, string> = {
+      for (let hop = 0; hop <= 5; hop += 1) {
+        const hopSafe = await validateSafePublicHttpUrl(currentUrl);
+        if (!hopSafe) {
+          return res.status(400).send("Blocked redirect to unsafe host");
+        }
+        const hopHeaders: Record<string, string> = {
           "User-Agent": proxyHeaders["User-Agent"],
           Accept: "*/*",
         };
         if (req.headers.range) {
-          nextHeaders["Range"] = req.headers.range as string;
+          hopHeaders["Range"] = req.headers.range as string;
         }
-        if (referer && !nextUrl.includes("vidcache.net")) {
-          nextHeaders["Referer"] = referer;
+        if (safeReferer && !hopSafe.hostname.includes("vidcache.net")) {
+          hopHeaders["Referer"] = safeReferer;
         }
-        upstream = await fetch(nextUrl, {
-          headers: nextHeaders,
-          redirect: "follow",
+
+        const resp = await fetch(hopSafe.toString(), {
+          headers: hopHeaders,
+          redirect: "manual",
           signal: AbortSignal.timeout(25_000),
         });
-        if (upstream.url) finalUpstreamUrl = upstream.url;
+
+        if (
+          (resp.status === 301 ||
+            resp.status === 302 ||
+            resp.status === 303 ||
+            resp.status === 307 ||
+            resp.status === 308) &&
+          resp.headers.get("location")
+        ) {
+          try {
+            await resp.body?.cancel();
+          } catch {}
+          currentUrl = new URL(resp.headers.get("location")!, hopSafe.toString()).href;
+          continue;
+        }
+
+        upstream = resp;
+        if (resp.url && isSafePublicHttpUrl(resp.url)) {
+          currentUrl = resp.url;
+        } else {
+          currentUrl = hopSafe.toString();
+        }
+        break;
       }
 
+      if (!upstream) {
+        return res.status(502).send("Too many redirects");
+      }
+
+      const finalUpstreamUrl = currentUrl;
       const upstreamCt = (upstream.headers.get("content-type") || "").toLowerCase();
       const isM3u8 =
         upstream.ok &&
@@ -229,8 +268,9 @@ router.get(
           const toProxied = (refTarget: string) => {
             try {
               const abs = new URL(refTarget.trim(), finalUpstreamUrl).href;
+              if (!parseSafePublicHttpUrl(abs)) return "";
               return `/api/anime/stream-proxy?url=${encodeURIComponent(abs)}${
-                referer ? `&referer=${encodeURIComponent(referer)}` : ""
+                safeReferer ? `&referer=${encodeURIComponent(safeReferer)}` : ""
               }`;
             } catch {
               return refTarget;
@@ -324,9 +364,10 @@ router.post(
     if (Array.isArray(serverCandidates)) {
       for (const item of serverCandidates) {
         if (item && typeof item.url === "string" && item.url.trim()) {
-          const cleanUrl = item.url.trim();
-          candidateFromObjects.push(cleanUrl);
-          serverMetaMap[cleanUrl] = {
+          const safeCandidate = unwrapSafeCandidateUrl(item.url);
+          if (!safeCandidate) continue;
+          candidateFromObjects.push(safeCandidate);
+          serverMetaMap[safeCandidate] = {
             quality: typeof item.quality === "string" ? item.quality : undefined,
             serverName: typeof item.serverName === "string" ? item.serverName : undefined,
           };
@@ -335,13 +376,17 @@ router.post(
     }
 
     const candidates: string[] = [
-      ...(typeof url === "string" ? [url] : []),
-      ...(Array.isArray(fallbackUrls) ? fallbackUrls.filter((u: any) => typeof u === "string") : []),
+      ...(unwrapSafeCandidateUrl(url) ? [unwrapSafeCandidateUrl(url)!] : []),
+      ...(Array.isArray(fallbackUrls)
+        ? fallbackUrls
+            .map((u: any) => unwrapSafeCandidateUrl(u))
+            .filter((u): u is string => Boolean(u))
+        : []),
       ...candidateFromObjects,
     ];
 
     if (candidates.length === 0) {
-      return res.status(400).json({ success: false, message: "لا توجد روابط سيرفرات للتحميل." });
+      return res.status(400).json({ success: false, message: "لا توجد روابط سيرفرات عامة صالحة للتحميل." });
     }
 
     const normalizedPref: PreferredQuality =
@@ -410,9 +455,10 @@ router.post(
     if (Array.isArray(serverCandidates)) {
       for (const item of serverCandidates) {
         if (item && typeof item.url === "string" && item.url.trim()) {
-          const cleanUrl = item.url.trim();
-          candidateFromObjects.push(cleanUrl);
-          serverMetaMap[cleanUrl] = {
+          const safeCandidate = unwrapSafeCandidateUrl(item.url);
+          if (!safeCandidate) continue;
+          candidateFromObjects.push(safeCandidate);
+          serverMetaMap[safeCandidate] = {
             quality: typeof item.quality === "string" ? item.quality : undefined,
             serverName: typeof item.serverName === "string" ? item.serverName : undefined,
           };
@@ -421,13 +467,17 @@ router.post(
     }
 
     const candidates: string[] = [
-      ...(typeof url === "string" ? [url] : []),
-      ...(Array.isArray(fallbackUrls) ? fallbackUrls.filter((u: any) => typeof u === "string") : []),
+      ...(unwrapSafeCandidateUrl(url) ? [unwrapSafeCandidateUrl(url)!] : []),
+      ...(Array.isArray(fallbackUrls)
+        ? fallbackUrls
+            .map((u: any) => unwrapSafeCandidateUrl(u))
+            .filter((u): u is string => Boolean(u))
+        : []),
       ...candidateFromObjects,
     ];
 
     if (candidates.length === 0) {
-      return res.status(400).json({ success: false, message: "لا توجد روابط للتشغيل الخارجي." });
+      return res.status(400).json({ success: false, message: "لا توجد روابط عامة صالحة للتشغيل الخارجي." });
     }
 
     const normalizedPref: PreferredQuality =
@@ -533,8 +583,8 @@ router.get(
     const title = (req.query.title as string) || "Anime";
     const ep = (req.query.ep as string) || "1";
 
-    if (!rawUrl || !rawUrl.startsWith("http")) {
-      return res.status(400).send("رابط التحميل غير صالح");
+    if (!rawUrl || !(await validateSafePublicHttpUrl(rawUrl))) {
+      return res.status(400).send("رابط التحميل غير صالح أو غير مسموح");
     }
 
     const { primary: resolved } = await resolveBestDownloadTarget([rawUrl], title, ep, false);
@@ -552,8 +602,8 @@ router.post(
   "/anime/extract",
   handleAsync(async (req: Request, res: Response) => {
     const { url } = req.body;
-    if (!url) {
-      return res.status(400).json({ success: false, message: "الرابط مطلوب" });
+    if (!url || typeof url !== "string" || !(await validateSafePublicHttpUrl(url))) {
+      return res.status(400).json({ success: false, message: "رابط غير صالح أو غير مسموح" });
     }
 
     const extractKey = `extract_stream_v6:${url}`;

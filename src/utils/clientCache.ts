@@ -225,17 +225,9 @@ class ClientCacheManager {
     } catch {}
   }
 
-  prefetchDetails(id: string | number): void {
-    if (!id || id === 'random' || id === 'unknown') return;
-    const strId = String(id);
-    if (this.inFlight.has(`prefetch:${strId}`)) return;
-    const p = cloudCatalogService
-      .getAnimeDetailsWithCloud(strId)
-      .catch(() => null)
-      .finally(() => {
-        this.inFlight.delete(`prefetch:${strId}`);
-      });
-    this.inFlight.set(`prefetch:${strId}`, p);
+  prefetchDetails(_id: string | number): void {
+    // Disabled network hover-prefetch to prevent cursor/scroll request storms on server & upstream sources.
+    return;
   }
 
   clearPrefix(prefix: string): void {
@@ -320,6 +312,9 @@ class ClientCacheManager {
 
     if (cached !== null) {
       onSuccess(cached);
+      if (!forceRefresh) {
+        return cached;
+      }
     } else {
       this.misses++;
     }
@@ -358,12 +353,6 @@ class ClientCacheManager {
           if (freshData && this.isMeaningfulData(freshData)) onSuccess(freshData);
         })
         .catch(() => {});
-    }
-
-    // في حال توفر بيانات مخزنة مسبقاً ولم يُطلب تحديث قسري، نعيدها فوراً دون حجب الواجهة بينما تتحدث البيانات بالخلفية
-    if (cached !== null && !forceRefresh) {
-      void fetchPromise;
-      return cached;
     }
 
     const result = await fetchPromise;

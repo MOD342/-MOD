@@ -5,6 +5,7 @@ import * as cheerio from "cheerio";
 import { serverCache } from "../../services/cacheService";
 import { fetchWithTimeout } from "./jikanClient";
 import { extractDirectStream, extractVideaDirectSources, STREAM_UA } from "./streamExtractors";
+import { sanitizeHeaderFilename, validateSafePublicHttpUrl } from "./urlSafety";
 
 export interface ResolvedDownloadTarget {
   streamUrl: string;
@@ -168,55 +169,57 @@ async function fetchUpstreamFollowRedirect(
   rangeHeader?: string,
   timeoutMs = 8000,
 ): Promise<globalThis.Response> {
-  const headers: Record<string, string> = {
-    "User-Agent": STREAM_UA,
-    Accept: "*/*",
-  };
-  if (referer) {
-    headers["Referer"] = referer;
-    try {
-      const refObj = new URL(referer);
-      headers["Origin"] = `${refObj.protocol}//${refObj.host}`;
-    } catch (_) {}
-  }
-  if (rangeHeader) {
-    headers["Range"] = rangeHeader;
-  }
-
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    let upstream = await fetch(targetUrl, {
-      headers,
-      redirect: "manual",
-      signal: controller.signal,
-    });
+  let currentUrl = targetUrl;
 
-    if (
-      (upstream.status === 301 ||
-        upstream.status === 302 ||
-        upstream.status === 303 ||
-        upstream.status === 307 ||
-        upstream.status === 308) &&
-      upstream.headers.get("location")
-    ) {
-      const nextUrl = new URL(upstream.headers.get("location")!, targetUrl).href;
-      const nextHeaders: Record<string, string> = {
+  try {
+    for (let hop = 0; hop <= 5; hop += 1) {
+      const safeTarget = await validateSafePublicHttpUrl(currentUrl);
+      if (!safeTarget) {
+        throw new Error("Blocked unsafe upstream URL");
+      }
+
+      const hopHeaders: Record<string, string> = {
         "User-Agent": STREAM_UA,
         Accept: "*/*",
       };
-      if (rangeHeader) nextHeaders["Range"] = rangeHeader;
-      if (referer && !nextUrl.includes("vidcache.net")) {
-        nextHeaders["Referer"] = referer;
+      if (rangeHeader) {
+        hopHeaders["Range"] = rangeHeader;
       }
-      upstream = await fetch(nextUrl, {
-        headers: nextHeaders,
-        redirect: "follow",
+      if (referer && !safeTarget.hostname.includes("vidcache.net")) {
+        hopHeaders["Referer"] = referer;
+        try {
+          const refObj = new URL(referer);
+          hopHeaders["Origin"] = `${refObj.protocol}//${refObj.host}`;
+        } catch (_) {}
+      }
+
+      const upstream = await fetch(safeTarget.toString(), {
+        headers: hopHeaders,
+        redirect: "manual",
         signal: controller.signal,
       });
+
+      if (
+        (upstream.status === 301 ||
+          upstream.status === 302 ||
+          upstream.status === 303 ||
+          upstream.status === 307 ||
+          upstream.status === 308) &&
+        upstream.headers.get("location")
+      ) {
+        try {
+          await upstream.body?.cancel();
+        } catch (_) {}
+        currentUrl = new URL(upstream.headers.get("location")!, safeTarget.toString()).href;
+        continue;
+      }
+
+      return upstream;
     }
 
-    return upstream;
+    throw new Error("Too many redirects");
   } finally {
     clearTimeout(timer);
   }
@@ -811,10 +814,11 @@ function sendVideoHeaders(
   asAttachment: boolean,
   contentLength?: string | number | null,
 ) {
-  const asciiFallback = filename.replace(/[^\x20-\x7E]/g, "_").replace(/"/g, "") || "episode.mp4";
+  const cleanName = sanitizeHeaderFilename(filename, "episode.mp4");
+  const asciiFallback = cleanName.replace(/[^\x20-\x7E]/g, "_").replace(/["\\;\r\n]/g, "") || "episode.mp4";
   res.setHeader(
     "Content-Disposition",
-    `${asAttachment ? "attachment" : "inline"}; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+    `${asAttachment ? "attachment" : "inline"}; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(cleanName)}`,
   );
   res.setHeader("Content-Type", contentType || "video/mp4");
   res.setHeader("Access-Control-Allow-Origin", "*");

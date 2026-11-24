@@ -920,7 +920,7 @@ export default function DiagnosticsView({
 
   const generateDiagnosticReport = () => {
     let report = `====================================================\n`;
-    report += `📱 تقرير الفحص الشامل والأخطاء - أنمي MOD\n`;
+    report += `📱 تقرير الفحص الشامل والأخطاء - أوتاكو MOD\n`;
     report += `الوقت: ${new Date().toLocaleString('ar-EG')}\n`;
     report += `البيئة: ${envInfo.platformLabelAr} (${envInfo.origin})\n`;
     report += `====================================================\n\n`;

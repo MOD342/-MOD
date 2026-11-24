@@ -1,66 +1,54 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useMemo } from 'react';
 
 interface AdScriptRunnerProps {
   scriptCode: string;
   compact?: boolean;
 }
 
+/**
+ * Renders sponsor HTML/script snippets strictly inside an isolated sandboxed iframe
+ * (without allow-same-origin) so third-party ad markup cannot access the parent DOM,
+ * authentication tokens, localStorage, or window.AndroidNativeBridge.
+ */
 export default function AdScriptRunner({ scriptCode, compact = false }: AdScriptRunnerProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container || !scriptCode) return;
-
-    container.innerHTML = '';
-
-    try {
-      const range = document.createRange();
-      const fragment = range.createContextualFragment(scriptCode);
-
-      const childNodes = Array.from(fragment.childNodes);
-
-      // Append nodes in exact source order so container divs (e.g. NativeBanner) & scripts stay paired
-      childNodes.forEach(node => {
-        if (node.nodeName === 'SCRIPT') {
-          const oldScript = node as HTMLScriptElement;
-          const newScript = document.createElement('script');
-
-          Array.from(oldScript.attributes).forEach(attr => {
-            newScript.setAttribute(attr.name, attr.value);
-          });
-
-          // Preserve strict execution order for atOptions + invoke.js bundles
-          if (!oldScript.hasAttribute('async')) {
-            newScript.async = false;
-          }
-
-          if (oldScript.textContent) {
-            newScript.textContent = oldScript.textContent;
-          }
-
-          container.appendChild(newScript);
-        } else {
-          container.appendChild(node.cloneNode(true));
-        }
-      });
-    } catch (e) {
-      console.error('Failed to dynamically evaluate ad script code:', e);
-      container.innerHTML = scriptCode;
+  const safeSrcDoc = useMemo(() => {
+    const raw = String(scriptCode || '').trim();
+    if (!raw) return '';
+    return `<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 4px;
+      background: transparent;
+      color: #f4f4f5;
+      font-family: system-ui, -apple-system, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100%;
+      overflow: hidden;
     }
-
-    return () => {
-      if (container) {
-        container.innerHTML = '';
-      }
-    };
+  </style>
+</head>
+<body>${raw}</body>
+</html>`;
   }, [scriptCode]);
 
+  if (!safeSrcDoc) return null;
+
   return (
-    <div
-      ref={containerRef}
-      className={`w-full flex flex-col items-center justify-center overflow-x-hidden overflow-y-auto text-zinc-100 mx-auto rounded-xl ${
-        compact ? 'min-h-[50px] max-w-[320px]' : 'min-h-[160px] max-w-3xl'
+    <iframe
+      title="Sponsored Content Frame"
+      srcDoc={safeSrcDoc}
+      sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
+      referrerPolicy="no-referrer"
+      className={`w-full border-0 mx-auto rounded-xl bg-transparent ${
+        compact ? 'min-h-[60px] max-w-[320px]' : 'min-h-[240px] max-w-3xl'
       }`}
       id="dynamic_ad_script_container"
     />

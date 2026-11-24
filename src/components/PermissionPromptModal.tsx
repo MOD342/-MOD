@@ -8,8 +8,6 @@ import {
   ShieldCheck,
   Check,
   ChevronRight,
-  Mic,
-  Camera,
   Smartphone,
   ExternalLink,
   AlertTriangle,
@@ -19,7 +17,6 @@ import {
   UnifiedPermissionStatus,
   checkSystemPermissionsStatus,
   openSystemAppSettings,
-  requestSystemMediaPermission,
   requestSystemNotificationsPermission,
   requestSystemStoragePermission,
 } from '../utils/systemPermissions';
@@ -32,7 +29,6 @@ interface PermissionPromptModalProps {
 export default function PermissionPromptModal({ onComplete, forceOpen = false }: PermissionPromptModalProps) {
   const [notificationState, setNotificationState] = useState<UnifiedPermissionStatus>('default');
   const [storageState, setStorageState] = useState<UnifiedPermissionStatus>('default');
-  const [mediaState, setMediaState] = useState<UnifiedPermissionStatus>('default');
   const [step, setStep] = useState<number>(0);
   const [isOpen, setIsOpen] = useState(false);
   const [isRequesting, setIsRequesting] = useState(false);
@@ -42,7 +38,6 @@ export default function PermissionPromptModal({ onComplete, forceOpen = false }:
     const summary = await checkSystemPermissionsStatus();
     setNotificationState(summary.notifications);
     setStorageState(summary.storage);
-    setMediaState(summary.media);
   }, []);
 
   useEffect(() => {
@@ -110,20 +105,16 @@ export default function PermissionPromptModal({ onComplete, forceOpen = false }:
     }
   };
 
-  const handleRequestStorageAndMedia = async () => {
+  const handleRequestStorage = async () => {
     setIsRequesting(true);
     setRedirectNotice('');
     try {
-      const [storageStatus, mediaStatus] = await Promise.all([
-        requestSystemStoragePermission(),
-        requestSystemMediaPermission(),
-      ]);
+      const storageStatus = await requestSystemStoragePermission();
       setStorageState(storageStatus);
-      setMediaState(mediaStatus);
       if (storageStatus === 'denied') {
-        setRedirectNotice('يحتاج النظام لتأكيد إذن التخزين من صفحة أذونات التطبيق في الإعدادات.');
+        setRedirectNotice('يحتاج النظام لتأكيد إذن التخزين في الأجهزة الأقدم من إعدادات التطبيق.');
       }
-      return { storageStatus, mediaStatus };
+      return storageStatus;
     } finally {
       setIsRequesting(false);
     }
@@ -142,7 +133,7 @@ export default function PermissionPromptModal({ onComplete, forceOpen = false }:
         setStep(1);
       }
     } else if (step === 1) {
-      await handleRequestStorageAndMedia();
+      await handleRequestStorage();
       setRedirectNotice('');
       setStep(2);
     } else {
@@ -157,7 +148,7 @@ export default function PermissionPromptModal({ onComplete, forceOpen = false }:
   const handleOpenSettings = (target: 'app' | 'notifications' | 'storage') => {
     const redirected = openSystemAppSettings(target);
     if (!redirected) {
-      setRedirectNotice('افتح إعدادات الهاتف > التطبيقات > أنمي MOD > الأذونات لتفعيل الصلاحية يدوياً.');
+      setRedirectNotice('افتح إعدادات الهاتف > التطبيقات > أوتاكو MOD > الأذونات لتفعيل الصلاحية يدوياً.');
     } else {
       setRedirectNotice('تم تحويلك إلى إعدادات النظام؛ بعد تفعيل الإذن ارجع للتطبيق ليتم التحديث تلقائياً.');
     }
@@ -293,24 +284,18 @@ export default function PermissionPromptModal({ onComplete, forceOpen = false }:
                 className="space-y-4"
               >
                 <div className="flex items-center gap-3">
-                  <div className="w-14 h-14 rounded-2xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400 shadow-lg shadow-blue-500/5">
-                    <HardDrive size={26} />
-                  </div>
-                  <div className="w-14 h-14 rounded-2xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shadow-lg shadow-purple-500/5">
-                    <Mic size={26} />
-                  </div>
-                  <div className="w-14 h-14 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 shadow-lg shadow-emerald-500/5">
-                    <Camera size={26} />
+                  <div className="w-16 h-16 rounded-2xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400 shadow-lg shadow-blue-500/5">
+                    <HardDrive size={28} />
                   </div>
                 </div>
 
                 <div className="space-y-2">
                   <span className="text-[10px] font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-sky-500 uppercase tracking-widest">
-                    صلاحيات التخزين والوسائط والبحث الصوتي
+                    صلاحية حفظ التنزيلات والبيانات المحلية
                   </span>
-                  <h2 className="text-xl font-black text-white leading-tight">تخزين مستقر وتنزيل مباشر!</h2>
+                  <h2 className="text-xl font-black text-white leading-tight">تنزيل مباشر وتخزين مستقر!</h2>
                   <p className="text-xs text-neutral-400 leading-relaxed font-medium">
-                    يتيح هذا الإذن حفظ الحلقات والصور على ذاكرة الهاتف، ورفع الصور الشخصية، وتشغيل البحث الصوتي بالميكروفون.
+                    يُستخدم هذا الإذن فقط لحفظ الحلقات والفصول عبر مدير التنزيلات الرسمي في النظام وفق معايير الخصوصية الحديثة بدون الوصول لملفاتك الخاصة.
                   </p>
                 </div>
 
@@ -383,16 +368,7 @@ export default function PermissionPromptModal({ onComplete, forceOpen = false }:
                         : 'bg-amber-500/10 border-amber-500/20 text-amber-300'
                     }`}
                   >
-                    <Check size={11} /> التخزين ({storageState === 'granted' ? 'مفعّل' : 'مقيّد'})
-                  </span>
-                  <span
-                    className={`text-[10px] font-black px-3 py-1 rounded-full flex items-center gap-1 border ${
-                      mediaState === 'granted'
-                        ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
-                        : 'bg-neutral-800 border-white/10 text-neutral-300'
-                    }`}
-                  >
-                    <Check size={11} /> الصوت والوسائط ({mediaState === 'granted' ? 'مفعّل' : 'اختياري'})
+                    <Check size={11} /> التخزين والتنزيلات ({storageState === 'granted' ? 'مفعّل' : 'مقيّد'})
                   </span>
                 </div>
 
@@ -432,7 +408,7 @@ export default function PermissionPromptModal({ onComplete, forceOpen = false }:
               ? 'دخول التطبيق والبدء ⚔️'
               : step === 0
               ? 'طلب إذن الإشعارات من النظام'
-              : 'طلب إذن التخزين والوسائط من النظام'}
+              : 'تأكيد صلاحية التخزين والتنزيلات'}
             <ChevronRight size={16} className="rotate-180" />
           </button>
         </motion.div>

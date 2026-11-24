@@ -15,11 +15,10 @@ import {
   Loader2,
   Shuffle,
   Film,
-  Crown,
-  BookOpen
+  Crown
 } from 'lucide-react';
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { motion, AnimatePresence, useMotionValue, animate } from 'motion/react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { clientCache } from '../utils/clientCache';
 import { cloudCatalogService, recentEpisodesLocal } from '../services/cloudCatalogService';
 import { db } from '../firebase';
@@ -28,9 +27,17 @@ import { handleFirestoreError, OperationType } from '../firebaseUtils';
 import { cleanAnimeTitle } from '../utils/animeTitleCleaner';
 import PullToRefresh from '../components/PullToRefresh';
 import { useAuth } from '../contexts/AuthContext';
-import { listService } from '../services/listService';
-import { mangaListService, type ReadingHistoryItem } from '../services/mangaListService';
+import { listService, watchHistoryService } from '../services/listService';
 import { useDeviceDisplay } from '../hooks/useDeviceDisplay';
+import CinematicHeroBanner from '../components/CinematicHeroBanner';
+import { LongPressCopy } from '../components/LongPressCopy';
+import {
+  DEFAULT_DUAL_HOME_CONFIG,
+  normalizeDualHomeConfig,
+  type BannerStyle,
+  type DualHomeConfig,
+} from '../types/platformConfig';
+import { FALLBACK_POSTER_DATA_URL } from '../utils/posterFallback';
 
 interface HomeViewProps {
   onAnimeClick?: (animeId: string, epNum?: string) => void;
@@ -132,7 +139,7 @@ export default function HomeView({
   onNavigateToMovies,
   onNavigateToTopAnime
 }: HomeViewProps) {
-  const { user } = useAuth();
+  const { user, userData } = useAuth();
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshingRecent, setRefreshingRecent] = useState(false);
   const [recentDeviceState, setRecentDeviceState] = useState<{ items: any[]; fetchedAt: number }>(() => {
@@ -141,13 +148,6 @@ export default function HomeView({
   });
   const [dashboardError, setDashboardError] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
-  const [readingHistory, setReadingHistory] = useState<ReadingHistoryItem[]>(() =>
-    mangaListService.getReadingHistory(user?.id)
-  );
-  const [latestManga, setLatestManga] = useState<any[]>(() => {
-    const cached = clientCache.get<any>('client_home_manga_hub_v1');
-    return cached?.latest || cached?.trending || [];
-  });
 
   // Selected schedule day on Home View (defaults to today)
   const todayKey = WEEK_DAYS[new Date().getDay()].key;
@@ -181,18 +181,9 @@ export default function HomeView({
     topAnime: any[];
   }>(() => getFallbackDashboard());
 
-  const watchHistoryKey = `local_watch_history_${user?.id || 'guest'}`;
-
-  const [history, setHistory] = useState<any[]>(() => {
-    try {
-      if (typeof localStorage !== 'undefined') {
-        const raw = localStorage.getItem(`local_watch_history_${user?.id || 'guest'}`);
-        const parsed = raw ? JSON.parse(raw) : [];
-        return Array.isArray(parsed) ? parsed : [];
-      }
-    } catch {}
-    return [];
-  });
+  const [history, setHistory] = useState<any[]>(() =>
+    watchHistoryService.getLocalHistory(user?.id, userData?.privacySettings)
+  );
   const [animeCuration, setAnimeCuration] = useState<{
     pinnedAnime: any[];
     hiddenAnime: any[];
@@ -202,24 +193,21 @@ export default function HomeView({
     limit: number;
     season: string;
     sliderMode: string;
+    animeBannerStyle: BannerStyle;
     customAnime: any[];
     speed: number;
     globalAnnouncement: string;
+    dualHomeConfig: DualHomeConfig;
   }>({
     limit: 5,
     season: 'auto',
     sliderMode: 'best_season',
+    animeBannerStyle: 'classic',
     customAnime: [],
-    speed: 3,
-    globalAnnouncement: ''
+    speed: 4,
+    globalAnnouncement: '',
+    dualHomeConfig: DEFAULT_DUAL_HOME_CONFIG,
   });
-
-  // Hero Slider Live Drag-Follow & Snap State
-  const sliderContainerRef = useRef<HTMLDivElement>(null);
-  const [currentSlide, setCurrentSlide] = useState(0);
-  const [isDraggingSlider, setIsDraggingSlider] = useState(false);
-  const dragPreventClickRef = useRef(false);
-  const sliderX = useMotionValue(0);
 
   const displayTop5 =
     sliderSettings.sliderMode === 'custom' &&
@@ -229,32 +217,8 @@ export default function HomeView({
       : dashboard.top5 && dashboard.top5.length > 0
       ? dashboard.top5
       : [];
-  const clampedAdminLimit = Math.min(10, Math.max(3, Number(sliderSettings.limit) || 5));
-  const topVisibleLimit = Math.min(displayTop5.length || 1, clampedAdminLimit);
-
-  // Sync sliderX smoothly with currentSlide & container resize
-  useEffect(() => {
-    const syncSliderPosition = (instant = false) => {
-      const width = sliderContainerRef.current?.offsetWidth || window.innerWidth;
-      const targetX = -currentSlide * width;
-      if (instant) {
-        sliderX.set(targetX);
-      } else {
-        animate(sliderX, targetX, {
-          type: 'spring',
-          stiffness: 280,
-          damping: 30,
-          mass: 0.85
-        });
-      }
-    };
-
-    syncSliderPosition(false);
-
-    const handleResize = () => syncSliderPosition(true);
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, [currentSlide, topVisibleLimit, sliderX]);
+  const clampedAdminLimit = Math.min(10, Math.max(1, Number(sliderSettings.limit) || 5));
+  const animeSec = sliderSettings.dualHomeConfig.animeSections;
 
   const fetchDashboard = async (customSeason?: string, customSliderMode?: string, forceBypass = false) => {
     setIsRefreshing(true);
@@ -263,7 +227,7 @@ export default function HomeView({
       const clientDay = daysMap[new Date().getDay()];
       const activeSeason = customSeason || sliderSettings.season || 'auto';
       const activeMode = customSliderMode || sliderSettings.sliderMode || 'best_season';
-      const bundleId = `dash_${clientDay}_${activeSeason}_${activeMode}`;
+      const bundleId = `dash_v8_${clientDay}_${activeSeason}_${activeMode}`;
 
       const applyDashboardData = (data: any) => {
         if (!data) return;
@@ -283,8 +247,8 @@ export default function HomeView({
       const freshData = await cloudCatalogService.getBundleWithCloud<any>({
         bundleId,
         kind: 'dashboard',
-        freshTtlMs: 4 * 60 * 60 * 1000,
-        staleTtlMs: 24 * 60 * 60 * 1000,
+        freshTtlMs: 6 * 60 * 60 * 1000,
+        staleTtlMs: 36 * 60 * 60 * 1000,
         forceRefresh: forceBypass,
         countItems: (d) =>
           (Array.isArray(d?.top5) ? d.top5.length : 0) +
@@ -341,27 +305,12 @@ export default function HomeView({
     ]);
   };
 
-  // Load Continue Watching from scoped localStorage and cloud entries when signed in
+  // Load Continue Watching from scoped localStorage and cloud entries when signed in (respecting cleared/dismissed ledger)
   useEffect(() => {
     let active = true;
+    const cloudPrivacy = userData?.privacySettings;
     const syncHistory = async () => {
-      let localList: any[] = [];
-      try {
-        if (typeof localStorage !== 'undefined') {
-          let raw = localStorage.getItem(watchHistoryKey);
-          // Migrate legacy unscoped watch history once for guest session only
-          if (!raw && !user?.id) {
-            const legacy = localStorage.getItem('local_watch_history');
-            if (legacy) {
-              localStorage.setItem(watchHistoryKey, legacy);
-              localStorage.removeItem('local_watch_history');
-              raw = legacy;
-            }
-          }
-          const parsed = raw ? JSON.parse(raw) : [];
-          if (Array.isArray(parsed)) localList = parsed;
-        }
-      } catch {}
+      const localList = watchHistoryService.getLocalHistory(user?.id, cloudPrivacy);
 
       if (active) setHistory(localList);
 
@@ -388,15 +337,17 @@ export default function HomeView({
               };
             });
 
+          const filteredCloud = watchHistoryService.filterItems(cloudItems, user.id, cloudPrivacy);
           const mergedMap = new Map<string, any>();
-          [...cloudItems, ...localList].forEach((item) => {
+          [...filteredCloud, ...localList].forEach((item) => {
             const key = String(item.id);
             const prev = mergedMap.get(key);
             if (!prev || (item.updatedAt || 0) > (prev.updatedAt || 0)) {
               mergedMap.set(key, item);
             }
           });
-          const merged = Array.from(mergedMap.values())
+          const merged = watchHistoryService
+            .filterItems(Array.from(mergedMap.values()), user.id, cloudPrivacy)
             .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
             .slice(0, 20);
           if (active) setHistory(merged);
@@ -411,64 +362,7 @@ export default function HomeView({
     return () => {
       active = false;
     };
-  }, [user?.id, watchHistoryKey]);
-
-  useEffect(() => {
-    const syncReading = () => {
-      setReadingHistory(mangaListService.getReadingHistory(user?.id));
-    };
-    syncReading();
-    window.addEventListener('manga-history-updated', syncReading);
-    return () => window.removeEventListener('manga-history-updated', syncReading);
-  }, [user?.id]);
-
-  useEffect(() => {
-    void cloudCatalogService.getBundleWithCloud<any>({
-      bundleId: 'manga_hub_ALL_p1',
-      kind: 'manga_hub',
-      freshTtlMs: 3 * 60 * 60 * 1000,
-      staleTtlMs: 24 * 60 * 60 * 1000,
-      countItems: (d) => (d?.trending?.length || 0) + (d?.latest?.length || 0),
-      fetchLive: async () => {
-        const res = await fetch('/api/manga/hub?origin=ALL&page=1');
-        if (!res.ok) return null;
-        const json = await res.json();
-        return json?.success && json?.data ? json.data : null;
-      },
-      onData: (data) => {
-        const items = [...(data?.trending || []), ...(data?.latest || [])];
-        const uniqueMap = new Map<string, any>();
-        items.forEach((m: any) => {
-          if (m?._id && !uniqueMap.has(String(m._id))) uniqueMap.set(String(m._id), m);
-        });
-        const merged = Array.from(uniqueMap.values()).slice(0, 14);
-        if (merged.length > 0) {
-          setLatestManga(merged);
-          clientCache.set('client_home_manga_hub_v1', data, 3 * 60 * 60 * 1000);
-        }
-      },
-    });
-  }, []);
-
-  const handleRemoveReadingHistoryItem = (e: React.MouseEvent, mangaId: string) => {
-    e.stopPropagation();
-    const uid = user?.id || 'guest';
-    const next = readingHistory.filter((h) => String(h.mangaId) !== String(mangaId));
-    setReadingHistory(next);
-    try {
-      localStorage.setItem(`local_reading_history_${uid}`, JSON.stringify(next));
-      window.dispatchEvent(new CustomEvent('manga-history-updated'));
-    } catch {}
-  };
-
-  const handleClearReadingHistory = () => {
-    const uid = user?.id || 'guest';
-    setReadingHistory([]);
-    try {
-      localStorage.removeItem(`local_reading_history_${uid}`);
-      window.dispatchEvent(new CustomEvent('manga-history-updated'));
-    } catch {}
-  };
+  }, [user?.id, userData?.privacySettings]);
 
   // Load schedule for a specific day when user clicks a day chip in HomeView (cloud-backed)
   const handleSelectScheduleDay = async (dayKey: string) => {
@@ -502,20 +396,15 @@ export default function HomeView({
 
   const handleRemoveHistoryItem = (e: React.MouseEvent, itemId: string | number) => {
     e.stopPropagation();
-    setHistory((prev) => {
-      const next = prev.filter((h) => String(h.id) !== String(itemId));
-      try {
-        localStorage.setItem(watchHistoryKey, JSON.stringify(next));
-      } catch {}
-      return next;
-    });
+    const target = history.find((h) => String(h.id) === String(itemId));
+    setHistory((prev) => prev.filter((h) => String(h.id) !== String(itemId)));
+    watchHistoryService.removeItem(user?.id, itemId, target?.updatedAt, userData?.privacySettings);
   };
 
   const handleClearAllHistory = () => {
+    const snapshot = history;
     setHistory([]);
-    try {
-      localStorage.removeItem(watchHistoryKey);
-    } catch {}
+    watchHistoryService.clearAll(user?.id, snapshot);
   };
 
   useEffect(() => {
@@ -534,7 +423,12 @@ export default function HomeView({
       (snap) => {
         if (snap.exists()) {
           const fireConfigs = snap.data() as any;
-          setSliderSettings((prev) => ({ ...prev, ...fireConfigs }));
+          setSliderSettings((prev) => ({
+            ...prev,
+            ...fireConfigs,
+            animeBannerStyle: fireConfigs.animeBannerStyle || prev.animeBannerStyle || 'classic',
+            dualHomeConfig: normalizeDualHomeConfig(fireConfigs.dualHomeConfig),
+          }));
           const nextSeason = fireConfigs.season || 'auto';
           const nextMode = fireConfigs.sliderMode || 'best_season';
           const nextKey = `${nextSeason}|${nextMode}`;
@@ -572,18 +466,6 @@ export default function HomeView({
       unsubCuration();
     };
   }, []);
-
-  // Slider auto-scroll logic (pauses while user is actively dragging)
-  useEffect(() => {
-    if (topVisibleLimit <= 1 || isDraggingSlider) return;
-
-    const intervalTime = (sliderSettings.speed || 3) * 1000;
-    const interval = setInterval(() => {
-      setCurrentSlide((prev) => (prev + 1) % topVisibleLimit);
-    }, intervalTime);
-
-    return () => clearInterval(interval);
-  }, [topVisibleLimit, sliderSettings.speed, isDraggingSlider]);
 
   const categories = [
     'أكشن',
@@ -703,163 +585,45 @@ export default function HomeView({
 
       {/* Global alert banner if configured by admins */}
       {sliderSettings.globalAnnouncement && (
-        <motion.div
-          initial={{ opacity: 0, y: -20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="mx-3 sm:mx-4 md:mx-8 p-3 bg-gradient-to-r from-purple-500/10 via-pink-500/10 to-purple-500/10 border border-purple-500/15 rounded-2xl flex items-center gap-2.5 text-xs text-purple-200 justify-center font-bold text-center leading-relaxed"
-        >
-          <Sparkles size={14} className="text-pink-400 shrink-0" />
-          <span>{sliderSettings.globalAnnouncement}</span>
-        </motion.div>
+        <div className="pt-[calc(var(--safe-top,0px)+4.1rem)] md:pt-3 px-3 sm:px-4 md:px-8 max-w-7xl mx-auto">
+          <motion.div
+            initial={{ opacity: 0, y: -12 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="p-3 bg-gradient-to-r from-purple-500/10 via-pink-500/10 to-purple-500/10 border border-purple-500/15 rounded-2xl flex items-center gap-2.5 text-xs text-purple-200 justify-center font-bold text-center leading-relaxed"
+          >
+            <Sparkles size={14} className="text-pink-400 shrink-0" />
+            <span>{sliderSettings.globalAnnouncement}</span>
+          </motion.div>
+        </div>
       )}
 
-      {/* 1. Top Banner Slider — Kept exactly as designed, with 1:1 live drag tracking & immediate release snap */}
+      {/* 1. Multi-Style Top Banner Slider */}
       {displayTop5 && displayTop5.length > 0 ? (
-        <section
-          ref={sliderContainerRef}
-          className="relative overflow-hidden w-full select-none touch-pan-y"
-          id="home_hero_slider"
-        >
-          <motion.div
-            drag="x"
-            style={{ x: sliderX }}
-            dragConstraints={{
-              left: -(
-                (topVisibleLimit - 1) *
-                (sliderContainerRef.current?.offsetWidth ||
-                  (typeof window !== 'undefined' ? window.innerWidth : 1000))
-              ),
-              right: 0
-            }}
-            dragElastic={0.14}
-            dragMomentum={false}
-            onDragStart={() => {
-              setIsDraggingSlider(true);
-              dragPreventClickRef.current = false;
-            }}
-            onDrag={(_, info) => {
-              if (Math.abs(info.offset.x) > 8) {
-                dragPreventClickRef.current = true;
-              }
-            }}
-            onDragEnd={(_, info) => {
-              setIsDraggingSlider(false);
-              const width = sliderContainerRef.current?.offsetWidth || window.innerWidth;
-              const currentX = sliderX.get();
-              // Combine actual dragged position with velocity so it snaps naturally the moment you release
-              const projectedX = currentX + info.velocity.x * 0.16;
-              let targetIndex = Math.round(-projectedX / width);
-
-              // Also allow a quick flick or drag threshold to advance at least 1 slide
-              if (targetIndex === currentSlide) {
-                const dragThreshold = Math.min(width * 0.14, 65);
-                if (info.offset.x < -dragThreshold || info.velocity.x < -280) {
-                  targetIndex = currentSlide + 1;
-                } else if (info.offset.x > dragThreshold || info.velocity.x > 280) {
-                  targetIndex = currentSlide - 1;
-                }
-              }
-
-              const clampedIndex = Math.max(0, Math.min(topVisibleLimit - 1, targetIndex));
-              if (clampedIndex !== currentSlide) {
-                setCurrentSlide(clampedIndex);
-              } else {
-                animate(sliderX, -clampedIndex * width, {
-                  type: 'spring',
-                  stiffness: 280,
-                  damping: 30,
-                  mass: 0.85
-                });
-              }
-
-              setTimeout(() => {
-                dragPreventClickRef.current = false;
-              }, 60);
-            }}
-            className="flex w-full cursor-grab active:cursor-grabbing will-change-transform"
-            dir="ltr"
-          >
-            {displayTop5.slice(0, topVisibleLimit).map((anime: any, idx: number) => (
-              <div
-                key={`top5-${anime._id}-${idx}`}
-                onClick={() => {
-                  if (dragPreventClickRef.current) return;
-                  onAnimeClick?.(anime._id);
-                }}
-                className={`theme-keep-dark w-full flex-[0_0_100%] cursor-pointer relative group ${
-                  display.isCoverScreen
-                    ? 'aspect-[3/4] max-h-[58vh]'
-                    : display.isLandscape && display.isPhone
-                    ? 'aspect-[21/9] max-h-[75vh]'
-                    : 'aspect-[4/5] sm:aspect-[16/9] md:aspect-[21/9] max-h-[560px]'
-                }`}
-                dir="rtl"
-              >
-                <img
-                  src={
-                    anime.posterUrl ||
-                    'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=1200&auto=format&fit=crop'
-                  }
-                  referrerPolicy="no-referrer"
-                  draggable={false}
-                  className="w-full h-full object-cover pointer-events-none select-none"
-                  alt={anime.title}
-                />
-                <div className={`absolute inset-0 bg-gradient-to-t from-black via-black/40 to-transparent flex flex-col justify-end pointer-events-none ${
-                  display.isCoverScreen ? 'p-4 pb-9' : 'p-6 md:p-12 pb-10'
-                }`}>
-                  <div className="w-full max-w-5xl mx-auto flex flex-col gap-2 sm:gap-3">
-                    <span className="self-start bg-yellow-500 text-black text-[11px] sm:text-xs md:text-sm font-black px-2.5 sm:px-3 py-1 rounded-full shadow-lg border border-yellow-400">
-                      #{idx + 1}{' '}
-                      {sliderSettings.sliderMode === 'custom'
-                        ? 'مختارات السلايدر'
-                        : sliderSettings.sliderMode === 'trending_season'
-                        ? 'الرائج هذا الموسم'
-                        : sliderSettings.sliderMode === 'all_time_best'
-                        ? 'الأفضل على الإطلاق'
-                        : sliderSettings.sliderMode === 'classic_historical'
-                        ? 'الأنميات التاريخية'
-                        : 'الأفضل هذا الموسم'}
-                    </span>
-                    <h4 className={`${display.isCoverScreen ? 'text-xl leading-tight' : 'text-2xl sm:text-3xl md:text-5xl'} text-white font-black drop-shadow-lg truncate`}>
-                      {anime.title}
-                    </h4>
-                    <div className="flex items-center gap-2.5 sm:gap-3">
-                      <span className="text-xs sm:text-sm bg-black/50 backdrop-blur text-yellow-400 px-2 py-1 rounded-lg font-bold flex items-center gap-1 tabular-nums">
-                        <Star size={14} fill="currentColor" /> {anime.rating || 0}
-                      </span>
-                      <span className="text-xs sm:text-sm text-neutral-200 drop-shadow-md font-bold truncate">
-                        {anime.genres?.[0] || 'أنمي'}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </motion.div>
-
-          {/* Dots indicators */}
-          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex gap-1.5 z-40">
-            {displayTop5.slice(0, topVisibleLimit).map((_, idx) => (
-              <button
-                key={idx}
-                id={`slider_dot_${idx}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setCurrentSlide(idx);
-                }}
-                className={`w-2 h-2 rounded-full transition-all duration-300 cursor-pointer ${
-                  currentSlide === idx
-                    ? 'bg-purple-500 w-5 md:w-6'
-                    : 'bg-white/40 hover:bg-white/70'
-                }`}
-              />
-            ))}
-          </div>
-        </section>
+        <div id="home_hero_slider">
+          <CinematicHeroBanner
+            items={displayTop5}
+            bannerStyle={sliderSettings.animeBannerStyle || 'classic'}
+            accent="anime"
+            limit={clampedAdminLimit}
+            speedSeconds={sliderSettings.speed || 5}
+            isHomeMode={!sliderSettings.globalAnnouncement}
+            modeLabel={
+              sliderSettings.sliderMode === 'custom'
+                ? 'مختارات السلايدر'
+                : sliderSettings.sliderMode === 'trending_season'
+                ? 'الرائج هذا الموسم'
+                : sliderSettings.sliderMode === 'all_time_best'
+                ? 'الأفضل على الإطلاق'
+                : sliderSettings.sliderMode === 'classic_historical'
+                ? 'الأنميات التاريخية'
+                : 'الأفضل هذا الموسم'
+            }
+            onItemClick={(item) => onAnimeClick?.(String(item._id))}
+          />
+        </div>
       ) : initialLoading ? (
-        <div className="pt-4 px-4 md:px-8">
-          <div className="aspect-[3/4] md:aspect-[21/9] rounded-2xl bg-neutral-900 animate-pulse border border-neutral-800 w-full"></div>
+        <div className="pt-[calc(var(--safe-top,0px)+4.35rem)] md:pt-4 px-4 md:px-8 max-w-7xl mx-auto">
+          <div className="h-[260px] sm:h-[340px] md:h-[400px] rounded-[24px] sm:rounded-[28px] bg-neutral-900 animate-pulse border border-white/10 w-full"></div>
         </div>
       ) : (
         <div className="pt-4 px-4 md:px-8">
@@ -909,7 +673,7 @@ export default function HomeView({
 
       {/* 3. History (Continue Watching) with Progress Bar & Quick Delete */}
       <AnimatePresence>
-        {history.length > 0 && (
+        {animeSec.continueWatching && history.length > 0 && (
           <motion.section
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
@@ -949,7 +713,7 @@ export default function HomeView({
                     className={`theme-keep-dark cursor-pointer ${display.isCoverScreen ? 'w-[155px]' : 'w-[175px] md:w-[230px] lg:w-[260px]'} flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 transition-all duration-300 aspect-[16/9] bg-neutral-900 gpu-accelerated shadow-lg`}
                   >
                     <img
-                      src={item.posterUrl || 'https://via.placeholder.com/300x168?text=Anime'}
+                      src={item.posterUrl || FALLBACK_POSTER_DATA_URL}
                       referrerPolicy="no-referrer"
                       loading="lazy"
                       className="w-full h-full object-cover opacity-80 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500"
@@ -959,10 +723,12 @@ export default function HomeView({
                     <button
                       type="button"
                       onClick={(e) => handleRemoveHistoryItem(e, item.id)}
+                      onPointerDown={(e) => e.stopPropagation()}
                       title="إزالة من متابعة المشاهدة"
-                      className="absolute top-2 left-2 z-20 w-6 h-6 rounded-full bg-black/70 hover:bg-red-600 text-neutral-300 hover:text-white border border-white/15 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all cursor-pointer"
+                      aria-label="إزالة من متابعة المشاهدة"
+                      className="absolute top-2 left-2 z-20 w-7 h-7 rounded-full bg-black/75 hover:bg-red-600 text-neutral-200 hover:text-white border border-white/20 flex items-center justify-center opacity-90 sm:opacity-0 sm:group-hover:opacity-100 transition-all cursor-pointer"
                     >
-                      <X size={12} />
+                      <X size={13} strokeWidth={2.5} />
                     </button>
 
                     <div className="absolute inset-0 bg-gradient-to-t from-black via-black/45 to-transparent flex flex-col justify-end p-3">
@@ -981,7 +747,7 @@ export default function HomeView({
                         </span>
                       </div>
                       <h5 className="font-bold text-xs md:text-sm text-white truncate drop-shadow mb-2">
-                        {item.title}
+                        <LongPressCopy text={item.title}>{item.title}</LongPressCopy>
                       </h5>
                       {/* Visual Episode Progress Bar */}
                       <div className="w-full h-1 bg-white/15 rounded-full overflow-hidden">
@@ -999,150 +765,39 @@ export default function HomeView({
         )}
       </AnimatePresence>
 
-      {/* 3.5. Continue Reading Strip */}
-      <AnimatePresence>
-        {readingHistory.length > 0 && (
-          <motion.section
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, height: 0 }}
-            className="px-4 md:px-8"
-          >
-            <div className="flex justify-between items-end mb-3 max-w-7xl mx-auto">
-              <div className="flex items-center gap-2">
-                <h3 className="text-white font-black text-lg border-r-4 border-amber-500 pr-2 flex items-center gap-2">
-                  <span>استمر في القراءة</span>
-                  <span className="text-[11px] bg-amber-500/15 text-amber-400 border border-amber-500/30 px-2 py-0.5 rounded-full font-mono tabular-nums">
-                    {readingHistory.length}
-                  </span>
-                </h3>
-              </div>
-              <button
-                type="button"
-                onClick={handleClearReadingHistory}
-                className="text-[11px] text-neutral-400 hover:text-red-400 flex items-center gap-1 transition cursor-pointer"
-              >
-                <Trash2 size={12} />
-                <span>مسح السجل</span>
-              </button>
-            </div>
-            <div className="flex gap-3.5 overflow-x-auto pb-4 hide-scrollbar max-w-7xl mx-auto">
-              {readingHistory.map((item, idx) => {
-                const progressPct = item.totalPages > 0
-                  ? Math.min(100, Math.max(8, Math.round((item.pageIndex / item.totalPages) * 100)))
-                  : 20;
-                return (
-                  <motion.div
-                    key={`reading-history-${item.mangaId}-${idx}`}
-                    onClick={() => {
-                      if (onReadMangaChapter && item.chapterId) {
-                        onReadMangaChapter({
-                          manga: {
-                            _id: item.mangaId,
-                            mangadexId: item.mangadexId,
-                            title: item.title,
-                            posterUrl: item.posterUrl,
-                            mediaFormat: item.mediaFormat,
-                            originLabel: item.originLabel,
-                            defaultReadingMode:
-                              item.mediaFormat === 'manhwa' || item.mediaFormat === 'manhua'
-                                ? 'webtoon'
-                                : 'paged',
-                          },
-                          chapter: {
-                            id: item.chapterId,
-                            num: item.chapterNum,
-                            chapterNumber: Number(item.chapterNum || 1),
-                            title: item.chapterTitle || `الفصل ${item.chapterNum}`,
-                          },
-                          chapters: [],
-                          initialPage: item.pageIndex || 1,
-                        });
-                      } else {
-                        onMangaClick?.(item.mangaId);
-                      }
-                    }}
-                    whileHover={{ y: -6, scale: 1.02, borderColor: '#f59e0b' }}
-                    whileTap={{ scale: 0.98 }}
-                    className={`theme-keep-dark cursor-pointer ${display.isCoverScreen ? 'w-[155px]' : 'w-[175px] md:w-[230px] lg:w-[260px]'} flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 transition-all duration-300 aspect-[16/9] bg-neutral-900 gpu-accelerated shadow-lg`}
-                  >
-                    <img
-                      src={item.posterUrl || 'https://via.placeholder.com/300x168?text=Manga'}
-                      referrerPolicy="no-referrer"
-                      loading="lazy"
-                      className="w-full h-full object-cover opacity-80 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500"
-                      alt={item.title}
-                    />
-                    <button
-                      type="button"
-                      onClick={(e) => handleRemoveReadingHistoryItem(e, item.mangaId)}
-                      title="إزالة من استمر في القراءة"
-                      className="absolute top-2 left-2 z-20 w-6 h-6 rounded-full bg-black/70 hover:bg-red-600 text-neutral-300 hover:text-white border border-white/15 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all cursor-pointer"
-                    >
-                      <X size={12} />
-                    </button>
-
-                    <div className="absolute inset-0 bg-gradient-to-t from-black via-black/45 to-transparent flex flex-col justify-end p-3">
-                      <div className="flex items-center justify-between gap-2 mb-1">
-                        <div className="flex items-center gap-1.5">
-                          <div className="w-6 h-6 rounded-full bg-amber-500 text-black shadow-md shadow-amber-500/30 flex items-center justify-center">
-                            <BookOpen size={11} />
-                          </div>
-                          <span className="text-amber-300 text-[11px] font-black tabular-nums">
-                            الفصل {item.chapterNum || 1}
-                          </span>
-                        </div>
-                        <span className="text-[10px] text-neutral-300 font-mono tabular-nums">
-                          {item.pageIndex}/{item.totalPages || '?'}
-                        </span>
-                      </div>
-                      <h5 className="font-bold text-xs md:text-sm text-white truncate drop-shadow mb-2">
-                        {item.title}
-                      </h5>
-                      <div className="w-full h-1 bg-white/15 rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-gradient-to-r from-amber-500 to-yellow-300 rounded-full transition-all duration-500"
-                          style={{ width: `${progressPct}%` }}
-                        />
-                      </div>
-                    </div>
-                  </motion.div>
-                );
-              })}
-            </div>
-          </motion.section>
-        )}
-      </AnimatePresence>
-
       {/* 4. Latest Episodes (Device-Only + Manual Refresh) */}
+      {animeSec.latestEpisodes && (
       <section className="px-4 md:px-8">
-        <div className="flex flex-wrap justify-between items-center gap-2 mb-3 max-w-7xl mx-auto">
-          <div className="flex items-center gap-2.5">
-            <h3 className="text-white font-black text-lg border-r-4 border-red-500 pr-2">
+        <div className="flex flex-nowrap justify-between items-center gap-2 mb-3 max-w-7xl mx-auto">
+          <div className="flex items-center gap-2 min-w-0">
+            <h3 className="text-white font-black text-base sm:text-lg border-r-4 border-red-500 pr-2 whitespace-nowrap">
               أحدث الحلقات
             </h3>
             {recentDeviceState.fetchedAt > 0 && (
-              <span className="text-[11px] font-bold text-neutral-400">
-                آخر تحديث: {recentEpisodesLocal.formatRelativeTimeAr(recentDeviceState.fetchedAt)}
+              <span className="text-[11px] font-bold text-neutral-400 whitespace-nowrap truncate">
+                {recentEpisodesLocal.formatRelativeTimeAr(recentDeviceState.fetchedAt)}
               </span>
             )}
           </div>
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1 shrink-0">
             <button
               type="button"
               onClick={handleRefreshRecentOnly}
               disabled={refreshingRecent}
+              title="تحديث أحدث الحلقات"
               aria-label="تحديث أحدث الحلقات"
-              className="min-h-[44px] px-3 py-1.5 rounded-xl bg-neutral-900/90 hover:bg-neutral-800 border border-neutral-800 text-xs font-black text-neutral-200 hover:text-white flex items-center gap-1.5 transition active:scale-95 disabled:opacity-60 cursor-pointer"
+              className="p-1.5 rounded-full bg-transparent border-0 hover:bg-white/5 text-red-400 hover:text-red-300 flex items-center justify-center transition active:scale-90 disabled:opacity-50 cursor-pointer"
             >
-              <RefreshCw size={13} className={refreshingRecent ? 'animate-spin text-red-400' : 'text-red-400'} />
-              <span>{refreshingRecent ? 'جاري التحديث' : 'تحديث'}</span>
+              <RefreshCw size={19} strokeWidth={2.35} className={refreshingRecent ? 'animate-spin text-red-400' : 'text-red-400'} />
             </button>
             <button
+              type="button"
               onClick={onNavigateToRecent}
-              className="min-h-[44px] px-2.5 text-[11px] md:text-xs font-bold text-neutral-400 hover:text-white flex items-center gap-1 group cursor-pointer"
+              title="عرض الكل"
+              aria-label="عرض كل أحدث الحلقات"
+              className="p-1.5 rounded-full bg-transparent border-0 hover:bg-white/5 text-neutral-300 hover:text-white flex items-center justify-center transition active:scale-90 group cursor-pointer"
             >
-              عرض الكل <ChevronLeft size={14} className="transition-transform group-hover:-translate-x-1" />
+              <ChevronLeft size={23} strokeWidth={2.4} className="transition-transform group-hover:-translate-x-0.5" />
             </button>
           </div>
         </div>
@@ -1162,7 +817,7 @@ export default function HomeView({
               ep.posterUrl ||
               ep.thumbnailUrl ||
               ep.animeId?.thumbnailUrl ||
-              'https://via.placeholder.com/200x300?text=Anime';
+              FALLBACK_POSTER_DATA_URL;
             const epNumber =
               ep.episodeNumber || (ep.title && ep.title.match(/الحلقة\s*(\d+)/)?.[1]) || '1';
 
@@ -1202,7 +857,7 @@ export default function HomeView({
                     className="font-bold text-xs md:text-sm text-neutral-200 group-hover:text-red-400 transition-colors line-clamp-1 truncate"
                     dir="ltr"
                   >
-                    {cleanTitle}
+                    <LongPressCopy text={cleanTitle}>{cleanTitle}</LongPressCopy>
                   </h5>
                 </div>
               </motion.div>
@@ -1210,8 +865,10 @@ export default function HomeView({
           })}
         </div>
       </section>
+      )}
 
       {/* 5. Daily Trending Today — رائج اليوم */}
+      {animeSec.trending && (
       <section className="px-4 md:px-8">
         <div className="flex justify-between items-end mb-3 max-w-7xl mx-auto">
           <div className="flex items-center gap-2">
@@ -1235,7 +892,7 @@ export default function HomeView({
                 className={`theme-keep-dark cursor-pointer ${display.isCoverScreen ? 'w-[122px]' : 'w-[140px] md:w-[185px] lg:w-[215px]'} flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 transition-all duration-300 aspect-[3/4] bg-neutral-900 gpu-accelerated shadow-lg`}
               >
                 <img
-                  src={anime.posterUrl || 'https://via.placeholder.com/200x300?text=Anime'}
+                  src={anime.posterUrl || FALLBACK_POSTER_DATA_URL}
                   referrerPolicy="no-referrer"
                   loading="lazy"
                   className="w-full h-full object-cover opacity-95 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500"
@@ -1280,8 +937,8 @@ export default function HomeView({
                 </span>
 
                 <div className="absolute inset-0 bg-gradient-to-t from-black via-black/35 to-transparent flex flex-col justify-end p-3 pointer-events-none">
-                  <h5 className="font-bold text-xs md:text-sm text-white truncate drop-shadow text-right">
-                    {anime.title}
+                  <h5 className="pointer-events-auto font-bold text-xs md:text-sm text-white truncate drop-shadow text-right">
+                    <LongPressCopy text={anime.title}>{anime.title}</LongPressCopy>
                   </h5>
                 </div>
               </motion.div>
@@ -1289,18 +946,23 @@ export default function HomeView({
           })}
         </div>
       </section>
+      )}
 
       {/* 7. Current Season */}
+      {animeSec.currentSeason && (
       <section className="px-4 md:px-8">
-        <div className="flex justify-between items-end mb-3 max-w-7xl mx-auto">
+        <div className="flex justify-between items-center mb-3 max-w-7xl mx-auto">
           <h3 className="text-white font-black text-lg border-r-4 border-purple-500 pr-2">
             انميات الموسم الحالي
           </h3>
           <button
+            type="button"
             onClick={onNavigateToSeason}
-            className="text-[10px] md:text-xs font-bold text-neutral-400 hover:text-white flex items-center gap-1 group cursor-pointer"
+            title="عرض الكل"
+            aria-label="عرض كل انميات الموسم الحالي"
+            className="p-1.5 rounded-full bg-transparent border-0 hover:bg-white/5 text-neutral-300 hover:text-white flex items-center justify-center transition active:scale-90 group cursor-pointer"
           >
-            عرض الكل <ChevronLeft size={14} className="transition-transform group-hover:-translate-x-1" />
+            <ChevronLeft size={23} strokeWidth={2.4} className="transition-transform group-hover:-translate-x-0.5" />
           </button>
         </div>
         <div className="flex gap-3 overflow-x-auto pb-4 hide-scrollbar max-w-7xl mx-auto">
@@ -1314,7 +976,7 @@ export default function HomeView({
               className={`theme-keep-dark cursor-pointer ${display.isCoverScreen ? 'w-[118px]' : 'w-[130px] md:w-[180px] lg:w-[220px]'} flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 transition-all duration-300 aspect-[3/4] bg-neutral-900 gpu-accelerated`}
             >
               <img
-                src={anime.posterUrl || 'https://via.placeholder.com/200x300?text=Anime'}
+                src={anime.posterUrl || FALLBACK_POSTER_DATA_URL}
                 referrerPolicy="no-referrer"
                 loading="lazy"
                 className="w-full h-full object-cover opacity-95 group-hover:opacity-100 group-hover:scale-[1.03] transition-all duration-500"
@@ -1327,28 +989,32 @@ export default function HomeView({
                 <span className="absolute top-2 left-2 bg-purple-600 text-white px-2 py-0.5 rounded text-[10px] font-bold shadow-lg flex items-center gap-1">
                   <Tv size={10} /> جديد
                 </span>
-                <h5 className="font-bold text-xs md:text-sm text-white drop-shadow line-clamp-2 text-right dir-rtl">
-                  {anime.title}
+                <h5 className="pointer-events-auto font-bold text-xs md:text-sm text-white drop-shadow line-clamp-2 text-right dir-rtl">
+                  <LongPressCopy text={anime.title}>{anime.title}</LongPressCopy>
                 </h5>
               </div>
             </motion.div>
           ))}
         </div>
       </section>
+      )}
 
       {/* 7.5. Top Anime Section */}
-      {displayTopAnime.length > 0 && (
+      {animeSec.topAnime && displayTopAnime.length > 0 && (
         <section className="px-4 md:px-8">
-          <div className="flex justify-between items-end mb-3 max-w-7xl mx-auto">
+          <div className="flex justify-between items-center mb-3 max-w-7xl mx-auto">
             <h3 className="text-white font-black text-lg border-r-4 border-amber-500 pr-2 flex items-center gap-2">
               <Crown size={18} className="text-amber-400" />
               <span>أفضل الأنميات</span>
             </h3>
             <button
+              type="button"
               onClick={onNavigateToTopAnime}
-              className="text-[10px] md:text-xs font-bold text-neutral-400 hover:text-white flex items-center gap-1 group cursor-pointer"
+              title="عرض الكل"
+              aria-label="عرض كل أفضل الأنميات"
+              className="p-1.5 rounded-full bg-transparent border-0 hover:bg-white/5 text-neutral-300 hover:text-white flex items-center justify-center transition active:scale-90 group cursor-pointer"
             >
-              عرض الكل <ChevronLeft size={14} className="transition-transform group-hover:-translate-x-1" />
+              <ChevronLeft size={23} strokeWidth={2.4} className="transition-transform group-hover:-translate-x-0.5" />
             </button>
           </div>
           <div className="flex gap-3 overflow-x-auto pb-4 hide-scrollbar max-w-7xl mx-auto">
@@ -1364,7 +1030,7 @@ export default function HomeView({
                   className={`theme-keep-dark cursor-pointer ${display.isCoverScreen ? 'w-[118px]' : 'w-[130px] md:w-[180px] lg:w-[220px]'} flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 transition-all duration-300 aspect-[3/4] bg-neutral-900 gpu-accelerated`}
                 >
                   <img
-                    src={anime.posterUrl || 'https://via.placeholder.com/200x300?text=Anime'}
+                    src={anime.posterUrl || FALLBACK_POSTER_DATA_URL}
                     referrerPolicy="no-referrer"
                     loading="lazy"
                     className="w-full h-full object-cover opacity-95 group-hover:opacity-100 group-hover:scale-[1.03] transition-all duration-500"
@@ -1379,8 +1045,8 @@ export default function HomeView({
                         {anime.episodesCount} حلقة
                       </span>
                     )}
-                    <h5 className="font-bold text-xs md:text-sm text-white drop-shadow line-clamp-2 text-right dir-rtl">
-                      {anime.title}
+                    <h5 className="pointer-events-auto font-bold text-xs md:text-sm text-white drop-shadow line-clamp-2 text-right dir-rtl">
+                      <LongPressCopy text={anime.title}>{anime.title}</LongPressCopy>
                     </h5>
                   </div>
                 </motion.div>
@@ -1391,18 +1057,21 @@ export default function HomeView({
       )}
 
       {/* 7.6. Anime Movies Section */}
-      {displayMovies.length > 0 && (
+      {animeSec.movies && displayMovies.length > 0 && (
         <section className="px-4 md:px-8">
-          <div className="flex justify-between items-end mb-3 max-w-7xl mx-auto">
+          <div className="flex justify-between items-center mb-3 max-w-7xl mx-auto">
             <h3 className="text-white font-black text-lg border-r-4 border-rose-500 pr-2 flex items-center gap-2">
               <Film size={18} className="text-rose-400" />
               <span>أفلام الأنمي</span>
             </h3>
             <button
+              type="button"
               onClick={onNavigateToMovies}
-              className="text-[10px] md:text-xs font-bold text-neutral-400 hover:text-white flex items-center gap-1 group cursor-pointer"
+              title="عرض الكل"
+              aria-label="عرض كل أفلام الأنمي"
+              className="p-1.5 rounded-full bg-transparent border-0 hover:bg-white/5 text-neutral-300 hover:text-white flex items-center justify-center transition active:scale-90 group cursor-pointer"
             >
-              عرض الكل <ChevronLeft size={14} className="transition-transform group-hover:-translate-x-1" />
+              <ChevronLeft size={23} strokeWidth={2.4} className="transition-transform group-hover:-translate-x-0.5" />
             </button>
           </div>
           <div className="flex gap-3 overflow-x-auto pb-4 hide-scrollbar max-w-7xl mx-auto">
@@ -1418,7 +1087,7 @@ export default function HomeView({
                   className={`theme-keep-dark cursor-pointer ${display.isCoverScreen ? 'w-[118px]' : 'w-[130px] md:w-[180px] lg:w-[220px]'} flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 transition-all duration-300 aspect-[3/4] bg-neutral-900 gpu-accelerated`}
                 >
                   <img
-                    src={anime.posterUrl || 'https://via.placeholder.com/200x300?text=Anime'}
+                    src={anime.posterUrl || FALLBACK_POSTER_DATA_URL}
                     referrerPolicy="no-referrer"
                     loading="lazy"
                     className="w-full h-full object-cover opacity-95 group-hover:opacity-100 group-hover:scale-[1.03] transition-all duration-500"
@@ -1428,63 +1097,8 @@ export default function HomeView({
                     <span className="absolute top-2 left-2 bg-rose-600 text-white px-2 py-0.5 rounded text-[10px] font-black shadow-lg">
                       فيلم
                     </span>
-                    <h5 className="font-bold text-xs md:text-sm text-white drop-shadow line-clamp-2 text-right dir-rtl">
-                      {anime.title}
-                    </h5>
-                  </div>
-                </motion.div>
-              );
-            })}
-          </div>
-        </section>
-      )}
-
-      {/* 7.8. Latest Manga & Manhwa Section */}
-      {latestManga.length > 0 && (
-        <section className="px-4 md:px-8">
-          <div className="flex justify-between items-end mb-3 max-w-7xl mx-auto">
-            <h3 className="text-white font-black text-lg border-r-4 border-amber-500 pr-2 flex items-center gap-2">
-              <BookOpen size={18} className="text-amber-400" />
-              <span>أحدث المانجا والمانهوا</span>
-            </h3>
-            <button
-              type="button"
-              onClick={onNavigateToMangaHub}
-              className="text-[10px] md:text-xs font-bold text-neutral-400 hover:text-white flex items-center gap-1 group cursor-pointer"
-            >
-              عرض الكل <ChevronLeft size={14} className="transition-transform group-hover:-translate-x-1" />
-            </button>
-          </div>
-          <div className="flex gap-3 overflow-x-auto pb-4 hide-scrollbar max-w-7xl mx-auto">
-            {latestManga.map((manga: any, idx: number) => {
-              const targetId = String(manga._id || manga.anilistId);
-              return (
-                <motion.div
-                  key={`home-manga-${targetId}-${idx}`}
-                  onClick={() => onMangaClick?.(targetId)}
-                  whileHover={{ y: -6, scale: 1.02, borderColor: '#f59e0b' }}
-                  whileTap={{ scale: 0.98 }}
-                  className={`theme-keep-dark cursor-pointer ${display.isCoverScreen ? 'w-[118px]' : 'w-[130px] md:w-[180px] lg:w-[220px]'} flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 transition-all duration-300 aspect-[3/4] bg-neutral-900 gpu-accelerated`}
-                >
-                  <img
-                    src={manga.posterUrl || 'https://via.placeholder.com/200x300?text=Manga'}
-                    referrerPolicy="no-referrer"
-                    loading="lazy"
-                    className="w-full h-full object-cover opacity-95 group-hover:opacity-100 group-hover:scale-[1.03] transition-all duration-500"
-                    alt={manga.title}
-                  />
-                  <div className="absolute inset-0 bg-gradient-to-t from-black via-black/25 to-transparent flex flex-col justify-end p-3 pointer-events-none">
-                    <span className="absolute top-2 right-2 bg-black/75 backdrop-blur-md text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded text-[10px] font-black shadow">
-                      {manga.originLabel || 'مانجا'}
-                    </span>
-                    {manga.rating > 0 && (
-                      <span className="absolute top-2 left-2 bg-black/70 backdrop-blur-md text-white px-2 py-0.5 rounded text-[10px] font-bold border border-white/10 flex items-center gap-1 tabular-nums">
-                        <Star size={10} className="text-yellow-400" fill="currentColor" />
-                        {Number(manga.rating).toFixed(1)}
-                      </span>
-                    )}
-                    <h5 className="font-bold text-xs md:text-sm text-white drop-shadow line-clamp-2 text-right">
-                      {manga.title}
+                    <h5 className="pointer-events-auto font-bold text-xs md:text-sm text-white drop-shadow line-clamp-2 text-right dir-rtl">
+                      <LongPressCopy text={anime.title}>{anime.title}</LongPressCopy>
                     </h5>
                   </div>
                 </motion.div>
@@ -1495,6 +1109,7 @@ export default function HomeView({
       )}
 
       {/* 8. Interactive Broadcast Schedule with Instant Day Switcher */}
+      {animeSec.schedule && (
       <section className="px-4 md:px-8">
         <div className="max-w-7xl mx-auto space-y-3">
           <div className="flex flex-wrap justify-between items-center gap-2 border-b border-white/5 pb-2.5">
@@ -1515,10 +1130,13 @@ export default function HomeView({
               </h3>
             </div>
             <button
+              type="button"
               onClick={() => onNavigateToSchedule?.(selectedScheduleDay)}
-              className="text-[10px] md:text-xs font-bold text-blue-400 hover:text-blue-300 transition-colors flex items-center gap-1 bg-blue-500/10 hover:bg-blue-500/20 px-3 py-1.5 rounded-lg border border-blue-500/20 cursor-pointer"
+              title="عرض الجدول الكامل"
+              aria-label="عرض الجدول الكامل"
+              className="w-9 h-9 rounded-full bg-blue-500/15 hover:bg-blue-500/25 border border-blue-500/30 text-blue-400 hover:text-blue-300 flex items-center justify-center transition active:scale-90 group cursor-pointer shrink-0"
             >
-              عرض الجدول الكامل <ChevronLeft size={14} />
+              <ChevronLeft size={21} strokeWidth={2.5} className="transition-transform group-hover:-translate-x-0.5" />
             </button>
           </div>
 
@@ -1571,7 +1189,7 @@ export default function HomeView({
                     className={`theme-keep-dark cursor-pointer ${display.isCoverScreen ? 'w-[118px]' : 'w-[130px] md:w-[180px] lg:w-[220px]'} flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 transition-all duration-300 aspect-[3/4] bg-neutral-900 gpu-accelerated`}
                   >
                     <img
-                      src={anime.posterUrl || 'https://via.placeholder.com/200x300?text=Anime'}
+                      src={anime.posterUrl || FALLBACK_POSTER_DATA_URL}
                       referrerPolicy="no-referrer"
                       loading="lazy"
                       className="w-full h-full object-cover opacity-95 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500"
@@ -1584,8 +1202,8 @@ export default function HomeView({
                           <span>{anime.broadcast.time}</span>
                         </span>
                       )}
-                      <h5 className="font-bold text-xs md:text-sm text-white truncate drop-shadow text-center">
-                        {anime.title}
+                      <h5 className="pointer-events-auto font-bold text-xs md:text-sm text-white truncate drop-shadow text-center">
+                        <LongPressCopy text={anime.title}>{anime.title}</LongPressCopy>
                       </h5>
                     </div>
                   </motion.div>
@@ -1595,6 +1213,7 @@ export default function HomeView({
           </div>
         </div>
       </section>
+      )}
 
       {/* Community Banner */}
       <section className="px-4 md:px-8 max-w-7xl mx-auto" id="social_indicator_banner">
@@ -1611,6 +1230,7 @@ export default function HomeView({
       </section>
 
       {/* 10. Dynamic Legendary Anime Quotes Engine */}
+      {animeSec.quotes && (
       <section className="px-4 md:px-8 pb-4">
         <div className="bg-gradient-to-br from-neutral-900 via-neutral-950 to-black border border-neutral-800 hover:border-purple-500/40 rounded-3xl p-6 md:p-8 relative overflow-hidden transition-all duration-300 shadow-xl max-w-5xl mx-auto">
           <Quote
@@ -1675,6 +1295,7 @@ export default function HomeView({
           </div>
         </div>
       </section>
+      )}
     </div>
     </PullToRefresh>
   );

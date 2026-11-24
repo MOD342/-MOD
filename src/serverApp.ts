@@ -4,6 +4,12 @@ import dns from 'dns';
 import fs from 'fs';
 import path from 'path';
 import apiRoutes from './api/index';
+import {
+  getPrivacyPolicyHtml,
+  getTermsOfServiceHtml,
+  getAccountDeletionHtml,
+  getAboutAppHtml,
+} from './api/helpers/legalPages';
 
 // Direct DNS queries through clean resolvers on dedicated hosts (skip in Vercel Lambda VPC)
 if (!process.env.VERCEL) {
@@ -62,6 +68,16 @@ export function createApiExpressApp(): express.Express {
       'Access-Control-Allow-Headers',
       'Content-Type, Authorization, X-Requested-With, Cache-Control, Pragma'
     );
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader(
+      'Permissions-Policy',
+      'camera=(), microphone=(), geolocation=(), payment=(), usb=()'
+    );
+    res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
+    if (req.path.startsWith('/api')) {
+      res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    }
     if (req.method === 'OPTIONS') {
       res.sendStatus(200);
     } else {
@@ -136,9 +152,55 @@ export function createApiExpressApp(): express.Express {
       });
     }
 
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-    res.setHeader('Pragma', 'no-cache');
-    res.setHeader('Expires', '0');
+    if (
+      !req.path.includes('manga/image-proxy') &&
+      !req.path.includes('download-stream') &&
+      !req.path.includes('play-stream') &&
+      !req.path.includes('stream-proxy')
+    ) {
+      const q = req.query as Record<string, any>;
+      const wantsBypass = q?.bypass === 'true' || q?.refresh === '1' || q?.refresh === 'true';
+      const isPublicLongCache =
+        req.method === 'GET' &&
+        !wantsBypass &&
+        req.path !== '/anime/details/random' &&
+        (req.path === '/anime/genres' ||
+          req.path === '/manga/genres' ||
+          req.path.startsWith('/anime/poster/') ||
+          req.path.startsWith('/anime/pictures/') ||
+          req.path === '/store/seasonal' ||
+          req.path === '/anime/season' ||
+          req.path === '/anime/schedule' ||
+          req.path === '/anime/movies' ||
+          req.path === '/anime/top' ||
+          req.path.startsWith('/anime/details/') ||
+          req.path.startsWith('/manga/details/') ||
+          req.path === '/anime/characters' ||
+          req.path === '/anime/jikan-schedule');
+
+      const isPublicShortCache =
+        req.method === 'GET' &&
+        !wantsBypass &&
+        (req.path === '/dashboard' ||
+          req.path === '/anime/recent' ||
+          req.path === '/manga/hub' ||
+          req.path === '/manga/trending' ||
+          req.path === '/manga/latest' ||
+          req.path === '/anime/search' ||
+          req.path === '/manga/search' ||
+          req.path === '/manga/chapters' ||
+          req.path === '/manga/pages');
+
+      if (isPublicLongCache) {
+        res.setHeader('Cache-Control', 'public, max-age=300, stale-while-revalidate=1800');
+      } else if (isPublicShortCache) {
+        res.setHeader('Cache-Control', 'public, max-age=120, stale-while-revalidate=600');
+      } else {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+      }
+    }
     next();
   });
 
@@ -147,9 +209,9 @@ export function createApiExpressApp(): express.Express {
   app.get('/manifest.json', (req: Request, res: Response) => {
     res.setHeader('Content-Type', 'application/json');
     res.send({
-      name: 'أنمي MOD - Otaku Hub',
-      short_name: 'أنمي MOD',
-      description: 'منصة أوتاكو وبوابة الأنمي لتقييم ومناقشة ومتابعة مواسم الأنمي المختلفة',
+      name: 'أوتاكو MOD - Otaku Hub',
+      short_name: 'أوتاكو MOD',
+      description: 'منصة أوتاكو MOD المتكاملة لمتابعة الأنمي والمانجا والمانهوا والمنافسات اليومية',
       start_url: '/',
       display: 'standalone',
       background_color: '#0a0a0c',
@@ -202,6 +264,34 @@ self.addEventListener('activate', (event) => {
     return res.status(404).end();
   });
 
+  app.get(['/privacy-policy', '/privacy'], (_req: Request, res: Response) => {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    return res.status(200).send(getPrivacyPolicyHtml());
+  });
+
+  app.get(['/terms', '/terms-of-use'], (_req: Request, res: Response) => {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    return res.status(200).send(getTermsOfServiceHtml());
+  });
+
+  app.get('/account-deletion', (_req: Request, res: Response) => {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    return res.status(200).send(getAccountDeletionHtml());
+  });
+
+  app.get('/about', (_req: Request, res: Response) => {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    return res.status(200).send(getAboutAppHtml());
+  });
+
   // Global API error handler
   app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
     console.error('API Error:', err);
@@ -209,7 +299,7 @@ self.addEventListener('activate', (event) => {
       res.status(500).json({
         success: false,
         message: 'حدث خطأ داخلي في الخادم',
-        error: err.message,
+        ...(process.env.NODE_ENV !== 'production' ? { error: err.message } : {}),
       });
     } else {
       next(err);

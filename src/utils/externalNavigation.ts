@@ -85,12 +85,7 @@ export async function openExternalUrl(rawUrl: string): Promise<boolean> {
     }
   }
 
-  // 5. Standard web browser
-  try {
-    const win = window.open(trimmed, '_blank', 'noopener,noreferrer');
-    if (win) return true;
-  } catch {}
-
+  // 5. Standard web browser (prefer declarative <a target="_blank" rel="noopener noreferrer"> without window.open)
   try {
     const anchor = document.createElement('a');
     anchor.href = trimmed;

@@ -3,6 +3,11 @@ import { serverCache } from "../../services/cacheService";
 import { schedulerService } from "../../services/schedulerService";
 import { requireServerAdminAuth } from "../adminAuth";
 import { handleAsync } from "../helpers/shared";
+import {
+  fetchWithSafeRedirects,
+  isSafePublicHttpUrl,
+  validateSafePublicHttpUrl,
+} from "../helpers/urlSafety";
 
 const router = Router();
 
@@ -202,31 +207,6 @@ router.post(
   }),
 );
 
-// -------------------------------------------------------------
-// محلل إعلانات الفيديو داخل التطبيق (VAST XML Resolver)
-// -------------------------------------------------------------
-function isSafePublicHttpUrl(rawUrl: string): boolean {
-  try {
-    const parsed = new URL(rawUrl);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
-    const host = parsed.hostname.toLowerCase();
-    if (
-      host === "localhost" ||
-      host === "127.0.0.1" ||
-      host === "::1" ||
-      host.startsWith("10.") ||
-      host.startsWith("192.168.") ||
-      host.startsWith("169.254.") ||
-      /^172\.(1[6-9]|2\d|3[0-1])\./.test(host)
-    ) {
-      return false;
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 async function resolveVastXmlRecursive(
   vastUrl: string,
   depth = 0,
@@ -237,14 +217,14 @@ async function resolveVastXmlRecursive(
   title: string;
   impressions: string[];
 }> {
-  if (depth > 2 || !isSafePublicHttpUrl(vastUrl)) {
+  if (depth > 2 || !(await validateSafePublicHttpUrl(vastUrl))) {
     throw new Error("Invalid or unsupported VAST URL");
   }
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 7000);
   try {
-    const resp = await fetch(vastUrl, {
+    const resp = await fetchWithSafeRedirects(vastUrl, {
       signal: controller.signal,
       headers: {
         "User-Agent": "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/124.0 Mobile Safari/537.36",

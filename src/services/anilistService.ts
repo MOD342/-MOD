@@ -1,5 +1,6 @@
 import { serverCache } from "./cacheService";
 import { cleanAnimeTitle } from "../utils/animeTitleCleaner";
+import { splitAniListGenresAndTags } from "../utils/genreTaxonomy";
 
 const ANILIST_ENDPOINT = "https://graphql.anilist.co";
 const inFlightAniList = new Map<string, Promise<any>>();
@@ -164,7 +165,7 @@ export function mapAniListToJikan(media: any): any {
         image_url: media.coverImage?.large || media.coverImage?.extraLarge || "",
       },
     },
-    bannerUrl: media.bannerImage || media.coverImage?.extraLarge || "",
+    bannerUrl: media.bannerImage || "",
     synopsis: synopsisClean || "قصة هذا الأنمي متوفرة ومحدثة.",
     score,
     status: statusMap[media.status] || "Currently Airing",
@@ -205,7 +206,7 @@ export const anilistService = {
         }
       }
     `;
-    const data = await queryAniList(q, { perPage: limit }, 6 * 60 * 60 * 1000);
+    const data = await queryAniList(q, { perPage: limit }, 12 * 60 * 60 * 1000);
     return (data?.Page?.media || []).map(mapAniListToJikan).filter(Boolean);
   },
 
@@ -235,7 +236,7 @@ export const anilistService = {
       `;
 
     const vars = isSpecific ? { season: upperSeason, year: Number(year), perPage: limit } : { perPage: limit };
-    const data = await queryAniList(q, vars, 3 * 60 * 60 * 1000);
+    const data = await queryAniList(q, vars, 6 * 60 * 60 * 1000);
     return (data?.Page?.media || []).map(mapAniListToJikan).filter(Boolean);
   },
 
@@ -304,7 +305,7 @@ export const anilistService = {
 
     let mediaList: any[] = [];
     try {
-      const data = await queryAniList(q, { season: targetSeason, year: curYear }, 3 * 60 * 60 * 1000);
+      const data = await queryAniList(q, { season: targetSeason, year: curYear }, 24 * 60 * 60 * 1000);
       mediaList = data?.Page?.media || [];
     } catch {}
 
@@ -352,7 +353,7 @@ export const anilistService = {
         }
       `;
       try {
-        const fbData = await queryAniList(fallbackQ, {}, 3 * 60 * 60 * 1000);
+        const fbData = await queryAniList(fallbackQ, {}, 12 * 60 * 60 * 1000);
         mediaList = fbData?.Page?.media || [];
       } catch {}
     }
@@ -416,7 +417,7 @@ export const anilistService = {
     };
   },
 
-  async getSliderByMode(mode: string, limit = 10): Promise<any[]> {
+  async getSliderByMode(mode: string, limit = 10, seasonParam?: string, yearParam?: number): Promise<any[]> {
     const normalizedMode = (mode || "best_season").toLowerCase();
 
     if (normalizedMode === "all_time_best") {
@@ -447,32 +448,71 @@ export const anilistService = {
       return (data?.Page?.media || []).map(mapAniListToJikan).filter(Boolean);
     }
 
+    // Strict Seasonal Resolution for best_season & trending_season
+    const now = new Date();
+    const curYear = yearParam || now.getFullYear();
+    const month = now.getMonth() + 1;
+    const autoSeason =
+      month <= 3 ? "WINTER" : month <= 6 ? "SPRING" : month <= 9 ? "SUMMER" : "FALL";
+    const validSeasons = ["WINTER", "SPRING", "SUMMER", "FALL"];
+    const upperReq = seasonParam ? seasonParam.toUpperCase() : "";
+    const targetSeason = validSeasons.includes(upperReq) ? upperReq : autoSeason;
+
     if (normalizedMode === "trending_season") {
       const q = `
-        query ($perPage: Int) {
+        query ($season: MediaSeason, $year: Int, $perPage: Int) {
           Page(page: 1, perPage: $perPage) {
-            media(type: ANIME, status: RELEASING, sort: [TRENDING_DESC, POPULARITY_DESC], isAdult: false) {
+            media(type: ANIME, season: $season, seasonYear: $year, sort: [TRENDING_DESC, POPULARITY_DESC], isAdult: false) {
               ${MEDIA_FRAGMENT}
             }
           }
         }
       `;
-      const data = await queryAniList(q, { perPage: limit }, 2 * 60 * 60 * 1000);
+      const data = await queryAniList(
+        q,
+        { season: targetSeason, year: curYear, perPage: limit },
+        2 * 60 * 60 * 1000,
+      );
       return (data?.Page?.media || []).map(mapAniListToJikan).filter(Boolean);
     }
 
-    // Default: best_season (الأفضل هذا الموسم)
+    // Default: best_season (الأفضل هذا الموسم — strictly current/selected season & year only)
     const q = `
-      query ($perPage: Int) {
+      query ($season: MediaSeason, $year: Int, $perPage: Int) {
         Page(page: 1, perPage: $perPage) {
-          media(type: ANIME, status: RELEASING, sort: [SCORE_DESC, POPULARITY_DESC], isAdult: false) {
+          media(type: ANIME, season: $season, seasonYear: $year, sort: [SCORE_DESC, POPULARITY_DESC], isAdult: false) {
             ${MEDIA_FRAGMENT}
           }
         }
       }
     `;
-    const data = await queryAniList(q, { perPage: limit }, 2 * 60 * 60 * 1000);
-    return (data?.Page?.media || []).map(mapAniListToJikan).filter(Boolean);
+    const data = await queryAniList(
+      q,
+      { season: targetSeason, year: curYear, perPage: limit },
+      2 * 60 * 60 * 1000,
+    );
+    const items = (data?.Page?.media || []).map(mapAniListToJikan).filter(Boolean);
+
+    // If very early in the season and most entries lack averageScore yet, sort within the SAME season+year by popularity & score
+    if (items.length < 3) {
+      const popQ = `
+        query ($season: MediaSeason, $year: Int, $perPage: Int) {
+          Page(page: 1, perPage: $perPage) {
+            media(type: ANIME, season: $season, seasonYear: $year, sort: [POPULARITY_DESC, SCORE_DESC], isAdult: false) {
+              ${MEDIA_FRAGMENT}
+            }
+          }
+        }
+      `;
+      const popData = await queryAniList(
+        popQ,
+        { season: targetSeason, year: curYear, perPage: limit },
+        2 * 60 * 60 * 1000,
+      );
+      return (popData?.Page?.media || []).map(mapAniListToJikan).filter(Boolean);
+    }
+
+    return items;
   },
 
   async getScheduleByDay(dayName: string): Promise<any[]> {
@@ -505,6 +545,7 @@ export const anilistService = {
   async searchAnime(params: {
     q?: string;
     genres?: string[];
+    tags?: string[];
     minScore?: number;
     status?: string;
     year?: number;
@@ -526,6 +567,11 @@ export const anilistService = {
     else if (params.status === "complete") statusVal = "FINISHED";
     else if (params.status === "upcoming") statusVal = "NOT_YET_RELEASED";
 
+    const split = splitAniListGenresAndTags([
+      ...(params.genres || []),
+      ...(params.tags || []),
+    ]);
+
     const variables: Record<string, any> = {
       page,
       perPage: 24,
@@ -533,7 +579,8 @@ export const anilistService = {
     };
 
     if (params.q && params.q.trim()) variables.search = params.q.trim();
-    if (params.genres && params.genres.length > 0) variables.genre_in = params.genres;
+    if (split.genreIn.length > 0) variables.genre_in = split.genreIn;
+    if (split.tagIn.length > 0) variables.tag_in = split.tagIn;
     if (params.minScore && params.minScore > 0) variables.averageScore_greater = Math.round(params.minScore * 10);
     if (statusVal) variables.status = statusVal;
     if (params.year && !isNaN(Number(params.year))) variables.seasonYear = Number(params.year);
@@ -544,6 +591,7 @@ export const anilistService = {
         $perPage: Int,
         $search: String,
         $genre_in: [String],
+        $tag_in: [String],
         $averageScore_greater: Int,
         $status: MediaStatus,
         $seasonYear: Int,
@@ -559,6 +607,7 @@ export const anilistService = {
             isAdult: false,
             search: $search,
             genre_in: $genre_in,
+            tag_in: $tag_in,
             averageScore_greater: $averageScore_greater,
             status: $status,
             seasonYear: $seasonYear,
@@ -620,12 +669,6 @@ export const anilistService = {
         ${characterEdgeFields}
       }
       charactersPage2: characters(sort: [ROLE, RELEVANCE], page: 2, perPage: 25) {
-        ${characterEdgeFields}
-      }
-      charactersPage3: characters(sort: [ROLE, RELEVANCE], page: 3, perPage: 25) {
-        ${characterEdgeFields}
-      }
-      charactersPage4: characters(sort: [ROLE, RELEVANCE], page: 4, perPage: 25) {
         ${characterEdgeFields}
       }
       streamingEpisodes {
@@ -731,8 +774,6 @@ export const anilistService = {
     const allCharacterEdges = [
       ...(media.charactersPage1?.edges || []),
       ...(media.charactersPage2?.edges || []),
-      ...(media.charactersPage3?.edges || []),
-      ...(media.charactersPage4?.edges || []),
       ...(media.characters?.edges || []),
     ];
     const seenCharIds = new Set<string | number>();
@@ -802,16 +843,13 @@ export const anilistService = {
 
     const isCrossoverNoise = (node: any, relType: string): boolean => {
       if (!node || node.type !== "ANIME") return true;
-      // استبعاد علاقات الشخصيات والتجارية والمانجا تماماً
       if (relType === "CHARACTER" || relType === "ADAPTATION") return true;
 
       const fullTitle = `${node.title?.english || ""} ${node.title?.romaji || ""}`.toLowerCase();
-      // استبعاد حلقات الكروس أوفر المشتركة مع سلاسل أخرى مثل Toriko x One Piece x Dragon Ball
-      if (/\bx\b|crossover|dream 9|kyutai panic|nisshin|cup noodle|hungry days/i.test(fullTitle)) {
+      if (/\bx\b|crossover|dream 9|kyutai panic|nisshin|cup noodle|hungry days|toriko/i.test(fullTitle)) {
         return true;
       }
 
-      // إذا كانت العلاقة OTHER أو SPIN_OFF أو ALTERNATIVE أو SIDE_STORY، يجب أن تشترك في اسم السلسلة إذا كانت العلاقة غير مباشرة أو عامة
       if (relType === "OTHER" && !sharesFranchiseKeyword(node)) {
         return true;
       }
@@ -820,17 +858,28 @@ export const anilistService = {
     };
 
     const seenRelIds = new Set<number>();
-    const currentIdMal = Number(media.idMal || media.id);
+    const currentIdMal = Number(media.idMal || 0);
+    const currentAniId = Number(media.id || 0);
     if (currentIdMal) seenRelIds.add(currentIdMal);
+    if (currentAniId) seenRelIds.add(currentAniId);
+
+    const expandedAniIds = new Set<number>();
+    if (currentAniId) expandedAniIds.add(currentAniId);
 
     const related: any[] = [];
-    const addRelationEdge = (edge: any, overrideRelation?: string) => {
+    const addRelationEdge = (edge: any, overrideRelation?: string): boolean => {
       const relType = String(edge?.relationType || "").toUpperCase();
-      if (!edge?.node || isCrossoverNoise(edge.node, relType)) return;
+      if (!edge?.node || isCrossoverNoise(edge.node, relType)) return false;
 
-      const relId = Number(edge.node.idMal || edge.node.id);
-      if (!relId || seenRelIds.has(relId)) return;
-      seenRelIds.add(relId);
+      const aniId = Number(edge.node.id || 0);
+      const malId = Number(edge.node.idMal || 0);
+      const relId = malId || aniId;
+      if (!relId) return false;
+      if ((malId && seenRelIds.has(malId)) || (aniId && seenRelIds.has(aniId))) {
+        return false;
+      }
+      if (malId) seenRelIds.add(malId);
+      if (aniId) seenRelIds.add(aniId);
 
       related.push({
         relation: overrideRelation || relationFormatMap[relType] || relType || "Related",
@@ -838,57 +887,176 @@ export const anilistService = {
         romajiTitle: edge.node.title?.romaji || "",
         englishTitle: edge.node.title?.english || "",
         mal_id: relId,
+        anilistId: aniId || undefined,
         type: edge.node.format || "TV",
         format: edge.node.format || "TV",
         episodes: edge.node.episodes || 12,
         posterUrl: edge.node.coverImage?.extraLarge || edge.node.coverImage?.large || "",
         year: edge.node.seasonYear || "",
       });
+      return true;
+    };
+
+    const EXPANDABLE_MAIN_RELS = new Set([
+      "PREQUEL",
+      "SEQUEL",
+      "PARENT",
+      "FULL_STORY",
+      "ALTERNATIVE",
+      "SIDE_STORY",
+      "SPIN_OFF",
+    ]);
+    const STRICT_TIMELINE_RELS = new Set(["PREQUEL", "SEQUEL", "PARENT", "FULL_STORY"]);
+
+    // Queue of AniList IDs whose direct relations still need to be fetched in batched rounds
+    const frontierMap = new Map<number, "Prequel" | "Sequel" | "Related">();
+    const enqueueFrontier = (
+      nodeId: number,
+      relType: string,
+      parentDir: "Prequel" | "Sequel" | "Related"
+    ) => {
+      if (!nodeId || expandedAniIds.has(nodeId) || frontierMap.has(nodeId)) return;
+      if (!EXPANDABLE_MAIN_RELS.has(relType)) return;
+      // Only follow timeline edges if we already branched via side story / spin-off / alternative
+      if (parentDir === "Related" && !STRICT_TIMELINE_RELS.has(relType)) return;
+
+      let nextDir: "Prequel" | "Sequel" | "Related" = "Related";
+      if (
+        (parentDir === "Prequel" && (relType === "PREQUEL" || relType === "PARENT")) ||
+        (parentDir === "Related" && (relType === "PREQUEL" || relType === "PARENT"))
+      ) {
+        nextDir = "Prequel";
+      } else if (
+        (parentDir === "Sequel" && relType === "SEQUEL") ||
+        (parentDir === "Related" && relType === "SEQUEL")
+      ) {
+        nextDir = "Sequel";
+      }
+      frontierMap.set(nodeId, nextDir);
     };
 
     // المستوى الأول: العلاقات المباشرة للأنمي المفتوح
     const firstHopEdges = media.relations?.edges || [];
     firstHopEdges.forEach((edge: any) => {
+      const relType = String(edge?.relationType || "").toUpperCase();
+      if (!edge?.node || isCrossoverNoise(edge.node, relType)) return;
       addRelationEdge(edge);
-    });
 
-    // المستوى الثاني: نتتبع فقط سلسلة المواسم المباشرة (PREQUEL / SEQUEL / PARENT) التي تنتمي لنفس الأنمي
-    firstHopEdges.forEach((edge: any) => {
-      const firstRelType = String(edge?.relationType || "").toUpperCase();
-      if (
-        firstRelType !== "PREQUEL" &&
-        firstRelType !== "SEQUEL" &&
-        firstRelType !== "PARENT"
-      ) {
-        return;
+      const hop1AniId = Number(edge.node.id || 0);
+      if (hop1AniId) {
+        // Hop 2 edges were already fetched inline for Hop 1 nodes
+        expandedAniIds.add(hop1AniId);
       }
-      if (!edge?.node || !sharesFranchiseKeyword(edge.node)) {
-        return;
-      }
+
+      if (!EXPANDABLE_MAIN_RELS.has(relType)) return;
+
+      const hop1Dir: "Prequel" | "Sequel" | "Related" =
+        relType === "PREQUEL" || relType === "PARENT"
+          ? "Prequel"
+          : relType === "SEQUEL"
+          ? "Sequel"
+          : "Related";
 
       (edge.node.relations?.edges || []).forEach((subEdge: any) => {
         const subRelType = String(subEdge?.relationType || "").toUpperCase();
-        if (
-          subRelType !== "PREQUEL" &&
-          subRelType !== "SEQUEL" &&
-          subRelType !== "PARENT" &&
-          subRelType !== "SIDE_STORY"
-        ) {
+        if (!subEdge?.node || isCrossoverNoise(subEdge.node, subRelType)) return;
+        // For indirect branches (SIDE_STORY / SPIN_OFF / ALTERNATIVE), keep expansion focused on main relations
+        if (hop1Dir === "Related" && !STRICT_TIMELINE_RELS.has(subRelType) && subRelType !== "SIDE_STORY" && subRelType !== "SPIN_OFF") {
           return;
         }
-        if (!subEdge?.node || !sharesFranchiseKeyword(subEdge.node)) {
-          return;
-        }
-        // الحفاظ على اتجاه العلاقة الزمنية بالنسبة للأنمي المفتوح
+
         let inheritedRelation = relationFormatMap[subRelType] || "Related";
-        if (firstRelType === "PREQUEL" && (subRelType === "PREQUEL" || subRelType === "PARENT")) {
+        if (hop1Dir === "Prequel" && (subRelType === "PREQUEL" || subRelType === "PARENT")) {
           inheritedRelation = "Prequel";
-        } else if (firstRelType === "SEQUEL" && subRelType === "SEQUEL") {
+        } else if (hop1Dir === "Sequel" && subRelType === "SEQUEL") {
           inheritedRelation = "Sequel";
         }
         addRelationEdge(subEdge, inheritedRelation);
+
+        const hop2AniId = Number(subEdge.node.id || 0);
+        if (hop2AniId && !expandedAniIds.has(hop2AniId)) {
+          enqueueFrontier(hop2AniId, subRelType, hop1Dir);
+        }
       });
     });
+
+    // المستويات العميقة (Hop 3 - Hop 6): استكمال السلسلة الطويلة عبر استعلامات مجمعة خفيفة
+    const traversalStart = Date.now();
+    const BATCH_RELATIONS_QUERY = `
+      query ($ids: [Int]) {
+        Page(page: 1, perPage: 50) {
+          media(id_in: $ids, type: ANIME) {
+            id
+            relations {
+              edges {
+                relationType(version: 2)
+                node {
+                  id
+                  idMal
+                  type
+                  format
+                  status
+                  episodes
+                  title {
+                    english
+                    romaji
+                  }
+                  coverImage {
+                    large
+                    extraLarge
+                  }
+                  seasonYear
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    for (let round = 0; round < 2 && frontierMap.size > 0; round++) {
+      if (Date.now() - traversalStart > 2000 || related.length >= 40) break;
+
+      const batchEntries = Array.from(frontierMap.entries()).slice(0, 30);
+      const batchIds = batchEntries.map(([fid]) => fid);
+      const dirByAniId = new Map<number, "Prequel" | "Sequel" | "Related">(batchEntries);
+      batchIds.forEach((fid) => {
+        frontierMap.delete(fid);
+        expandedAniIds.add(fid);
+      });
+
+      try {
+        const batchData = await queryAniList(
+          BATCH_RELATIONS_QUERY,
+          { ids: batchIds },
+          12 * 60 * 60 * 1000
+        );
+        const batchMedia = batchData?.Page?.media || [];
+        for (const mNode of batchMedia) {
+          const parentDir = dirByAniId.get(Number(mNode?.id)) || "Related";
+          for (const nextEdge of mNode?.relations?.edges || []) {
+            const nextRelType = String(nextEdge?.relationType || "").toUpperCase();
+            if (!nextEdge?.node || isCrossoverNoise(nextEdge.node, nextRelType)) continue;
+            if (nextRelType === "OTHER") continue;
+
+            let inheritedRelation = relationFormatMap[nextRelType] || "Related";
+            if (parentDir === "Prequel" && (nextRelType === "PREQUEL" || nextRelType === "PARENT")) {
+              inheritedRelation = "Prequel";
+            } else if (parentDir === "Sequel" && nextRelType === "SEQUEL") {
+              inheritedRelation = "Sequel";
+            }
+            addRelationEdge(nextEdge, inheritedRelation);
+
+            const nextAniId = Number(nextEdge.node.id || 0);
+            if (nextAniId && !expandedAniIds.has(nextAniId) && related.length < 40) {
+              enqueueFrontier(nextAniId, nextRelType, parentDir);
+            }
+          }
+        }
+      } catch {
+        break;
+      }
+    }
 
     const recommendations = (media.recommendations?.nodes || [])
       .map((n: any) => n.mediaRecommendation)

@@ -34,7 +34,10 @@ import {
   Bot,
   Film,
   FolderDown,
-  BookOpen
+  BookOpen,
+  ShieldCheck,
+  FileText,
+  Info
 } from 'lucide-react';
 import ViewportPortal from '../components/ViewportPortal';
 import { motion, AnimatePresence } from 'motion/react';
@@ -189,7 +192,7 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
       title: 'الترفيه والمتجر',
       items: [
         { id: 'manga_hub', label: 'المانجا والمانهوا', icon: BookOpen, color: 'text-amber-400', bg: 'bg-amber-500/10' },
-        { id: 'ai_chat', label: 'صديقك الأوتاكو', icon: Bot, color: 'text-rose-400', bg: 'bg-rose-500/10' },
+        { id: 'ai_chat', label: 'مود (MOD)', icon: Bot, color: 'text-rose-400', bg: 'bg-rose-500/10' },
         { id: 'games', label: 'حلبة الأوتاكو', icon: Swords, color: 'text-purple-400', bg: 'bg-purple-500/10' },
         { id: 'store', label: 'المتجر', icon: ShoppingCart, color: 'text-orange-400', bg: 'bg-orange-500/10' },
         { id: 'schedule', label: 'المواعيد', icon: CalendarDays, color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
@@ -202,6 +205,9 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
       items: [
         { id: 'ad_support', label: 'ادعم التطبيق', icon: HeartHandshake, color: 'text-amber-400', bg: 'bg-amber-500/10' },
         { id: 'support_help', label: 'مركز الدعم', icon: HelpCircle, color: 'text-red-400', bg: 'bg-[#FF1744]/15' },
+        { id: 'legal_privacy', label: 'الخصوصية', icon: ShieldCheck, color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
+        { id: 'legal_terms', label: 'الاستخدام', icon: FileText, color: 'text-sky-400', bg: 'bg-sky-500/10' },
+        { id: 'legal_about', label: 'عن التطبيق', icon: Info, color: 'text-purple-400', bg: 'bg-purple-500/10' },
         { id: 'diagnostics', label: 'فحص الأخطاء', icon: LayoutGrid, color: 'text-amber-400', bg: 'bg-amber-500/10' },
         { id: 'app_permissions', label: 'الأذونات', icon: Bell, color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
         { id: 'pwa_install', label: 'تثبيت التطبيق', icon: Smartphone, color: 'text-violet-400', bg: 'bg-violet-500/10' },
@@ -241,7 +247,8 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
             initial={{ opacity: 0, y: 8 }} 
             animate={{ opacity: 1, y: 0 }} 
             exit={{ opacity: 0, y: -8 }}
-            className="bg-[#111115] border border-white/5 rounded-2xl p-3.5 flex flex-col gap-3 shadow-lg"
+            onClick={() => onNavigate('profile')}
+            className="bg-[#111115] hover:bg-[#16161c] border border-white/5 hover:border-white/15 rounded-2xl p-3.5 flex flex-col gap-3 shadow-lg cursor-pointer transition-colors"
             id="user_authenticated_profile"
           >
             <div className="flex items-center justify-between gap-3">
@@ -476,10 +483,10 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
 
               <div className="flex flex-col items-center text-center gap-4 mb-6">
                 <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-[#FF1744]/15 to-red-600/5 border border-[#FF1744]/20 flex items-center justify-center p-0.5 shadow-lg">
-                  <img src="/app_icon.png" className="w-14 h-14 rounded-xl object-cover" alt="أنمي MOD" referrerPolicy="no-referrer" />
+                  <img src="/app_icon.png" className="w-14 h-14 rounded-xl object-cover" alt="أوتاكو MOD" referrerPolicy="no-referrer" />
                 </div>
                 <div>
-                  <h3 className="text-white font-black text-lg">تثبيت منصة أنمي MOD</h3>
+                  <h3 className="text-white font-black text-lg">تثبيت منصة أوتاكو MOD</h3>
                   <p className="text-xs text-neutral-400 font-sans mt-0.5">تطبيق فوري فائق الخفة - بدون تكلفة وبدون متجر تطبيقات</p>
                 </div>
               </div>
@@ -503,7 +510,7 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
                 /* iOS Safari instructions */
                 <div className="space-y-5" id="ios_safari_instructions">
                   <p className="text-xs text-[#FF1744] font-black border border-[#FF1744]/20 bg-[#FF1744]/5 p-3 rounded-xl leading-relaxed text-right font-sans">
-                    لأنك تستخدم متصفح Safari على نظام iOS، اتبع الإرشادات السريعة التالية لتثبيت منصة أنمي MOD:
+                    لأنك تستخدم متصفح Safari على نظام iOS، اتبع الإرشادات السريعة التالية لتثبيت منصة أوتاكو MOD:
                   </p>
 
                   <div className="space-y-3.5 pr-2.5 border-r border-neutral-900">
@@ -524,7 +531,7 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
                     <div className="flex gap-3 text-right">
                       <span className="w-5 h-5 rounded-full bg-neutral-900 border border-neutral-800 text-[#FF1744] text-[10px] font-black flex items-center justify-center shrink-0">٣</span>
                       <p className="text-xs text-neutral-400 font-sans leading-relaxed flex-1">
-                        اكتب الاسم "أنمي MOD" ثم اضغط على زر <span className="text-[#FF1744] font-black">"إضافة"</span> أو <span className="text-[#FF1744] font-black">Add</span> بالزاوية العلوية اليسرى.
+                        اكتب الاسم "أوتاكو MOD" ثم اضغط على زر <span className="text-[#FF1744] font-black">"إضافة"</span> أو <span className="text-[#FF1744] font-black">Add</span> بالزاوية العلوية اليسرى.
                       </p>
                     </div>
                   </div>

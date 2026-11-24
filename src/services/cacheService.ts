@@ -116,11 +116,11 @@ class CacheService {
       return;
     }
 
-    // Cap fresh TTL at 6 hours; retain stale fallback window up to 24 hours for instant SWR
-    const safeTtlMs = Math.min(ttlMs, 6 * 60 * 60 * 1000);
+    // Cap fresh TTL at 24 hours; retain stale fallback window up to 72 hours for instant SWR
+    const safeTtlMs = Math.min(ttlMs, 24 * 60 * 60 * 1000);
     const safeStaleMs = Math.min(
       Math.max(staleWindowMs ?? Math.max(safeTtlMs * 4, 10 * 60 * 1000), safeTtlMs),
-      24 * 60 * 60 * 1000
+      72 * 60 * 60 * 1000
     );
 
     if (this.ramStore.has(key)) {

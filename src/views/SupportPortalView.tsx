@@ -165,9 +165,9 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
   const [cooldownError, setCooldownError] = useState<number | null>(null);
 
   const [monetization, setMonetization] = useState<MonetizationConfig>({
-    mode: 'hybrid',
-    directLinkUrl: 'https://uplcm.com/4/11992531',
-    backupDirectLinkUrl: 'https://www.profitableratecpmnetwork.com/xw38hehu?key=f928ec53ec71574a775e118d9d0b4f38',
+    mode: 'simulation',
+    directLinkUrl: '',
+    backupDirectLinkUrl: '',
     videoAdUrl: '',
     vastTagUrl: '',
     admobRewardedId: '',
@@ -201,16 +201,13 @@ export default function SupportPortalView({ onBack, initialTab = 'tickets' }: Su
         const monetizationDoc = await getDoc(doc(db, 'globalSettings', 'monetization'));
         if (monetizationDoc.exists()) {
           const data = monetizationDoc.data();
-          const savedPrimary =
-            data.directLinkUrl && !data.directLinkUrl.includes('effectivecpmnetwork.com')
-              ? data.directLinkUrl
-              : 'https://uplcm.com/4/11992531';
-          const savedSecondary =
-            data.backupDirectLinkUrl ||
-            'https://www.profitableratecpmnetwork.com/xw38hehu?key=f928ec53ec71574a775e118d9d0b4f38';
+          const rawPrimary = String(data.directLinkUrl || '').trim();
+          const savedPrimary = /^https:\/\//i.test(rawPrimary) ? rawPrimary : '';
+          const rawSecondary = String(data.backupDirectLinkUrl || '').trim();
+          const savedSecondary = /^https:\/\//i.test(rawSecondary) ? rawSecondary : '';
 
           setMonetization({
-            mode: data.mode ?? 'hybrid',
+            mode: data.mode ?? 'simulation',
             directLinkUrl: savedPrimary,
             backupDirectLinkUrl: savedSecondary,
             videoAdUrl: data.videoAdUrl ?? '',

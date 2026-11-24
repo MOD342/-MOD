@@ -16,6 +16,7 @@ import {
   getCuratedAnimeById
 } from '../data/curatedAnimeDatabase';
 import { cleanAnimeTitle } from './animeTitleCleaner';
+import { GENRE_TAXONOMY, splitAniListGenresAndTags } from './genreTaxonomy';
 
 const nativeFetch = typeof window !== 'undefined' ? window.fetch.bind(window) : fetch;
 
@@ -165,7 +166,7 @@ function mapMediaToCard(m: any) {
     posterUrl,
     imageUrl: posterUrl,
     thumbnailUrl: posterUrl,
-    bannerUrl: m.bannerImage || posterUrl,
+    bannerUrl: m.bannerImage || '',
     rating,
     score: rating,
     popularity: m.popularity || 50000,
@@ -756,16 +757,34 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
       const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
       const qDay = (urlObj.searchParams.get('day') || '').toLowerCase();
       const currentDay = days.includes(qDay) ? qDay : days[new Date().getDay()];
+      const reqSeason = (urlObj.searchParams.get('season') || 'auto').toLowerCase();
+      const reqMode = (urlObj.searchParams.get('sliderMode') || 'best_season').toLowerCase();
+      const nowD = new Date();
+      const curYear = nowD.getFullYear();
+      const mNum = nowD.getMonth() + 1;
+      const autoSeason = mNum <= 3 ? 'WINTER' : mNum <= 6 ? 'SPRING' : mNum <= 9 ? 'SUMMER' : 'FALL';
+      const validSeasons = ['winter', 'spring', 'summer', 'fall'];
+      const seasonUpper = validSeasons.includes(reqSeason) ? reqSeason.toUpperCase() : autoSeason;
+
+      let top5Criteria = `season: ${seasonUpper}, seasonYear: ${curYear}, sort: [SCORE_DESC, POPULARITY_DESC]`;
+      if (reqMode === 'trending_season') {
+        top5Criteria = `season: ${seasonUpper}, seasonYear: ${curYear}, sort: [TRENDING_DESC, POPULARITY_DESC]`;
+      } else if (reqMode === 'all_time_best') {
+        top5Criteria = `sort: SCORE_DESC`;
+      } else if (reqMode === 'classic_historical') {
+        top5Criteria = `endDate_lesser: 20160101, sort: [POPULARITY_DESC, SCORE_DESC]`;
+      }
+
       try {
         const gql = `
           query {
-            trending: Page(page: 1, perPage: 8) {
-              media(type: ANIME, sort: TRENDING_DESC, isAdult: false) {
+            trending: Page(page: 1, perPage: 12) {
+              media(type: ANIME, ${top5Criteria}, isAdult: false) {
                 ${ANILIST_CARD_FRAGMENT}
               }
             }
             releasing: Page(page: 1, perPage: 20) {
-              media(type: ANIME, status: RELEASING, sort: POPULARITY_DESC, isAdult: false) {
+              media(type: ANIME, season: ${seasonUpper}, seasonYear: ${curYear}, sort: [POPULARITY_DESC, SCORE_DESC], isAdult: false) {
                 ${ANILIST_CARD_FRAGMENT}
               }
             }
@@ -984,12 +1003,10 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
       const sortParam = (urlObj.searchParams.get('sort') || 'desc').toLowerCase();
       const pageParam = Math.max(1, Number(urlObj.searchParams.get('page')) || 1);
 
-      const selectedGenreIds = genresParam
-        ? genresParam.split(',').map(Number).filter(Boolean)
+      const genreTokens = genresParam
+        ? genresParam.split(',').map((t) => t.trim()).filter(Boolean)
         : [];
-      const selectedGenreNamesEn = selectedGenreIds
-        .map((gid) => CURATED_GENRES_LIST.find((g) => g.mal_id === gid)?.name)
-        .filter(Boolean) as string[];
+      const splitGenres = splitAniListGenresAndTags(genreTokens);
 
       try {
         const isAsc = sortParam === 'asc';
@@ -997,7 +1014,7 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
         if (orderByParam === 'score') sortVal = isAsc ? 'SCORE' : 'SCORE_DESC';
         else if (orderByParam === 'title') sortVal = isAsc ? 'TITLE_ENGLISH' : 'TITLE_ENGLISH_DESC';
         else if (orderByParam === 'start_date') sortVal = isAsc ? 'START_DATE' : 'START_DATE_DESC';
-        else if (orderByParam === 'popularity') sortVal = 'POPULARITY_DESC';
+        else if (orderByParam === 'popularity') sortVal = isAsc ? 'POPULARITY' : 'POPULARITY_DESC';
 
         const gql = `
           query (
@@ -1006,6 +1023,7 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
             $status: MediaStatus,
             $seasonYear: Int,
             $genre_in: [String],
+            $tag_in: [String],
             $averageScore_greater: Int,
             $sort: [MediaSort]
           ) {
@@ -1020,6 +1038,7 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
                 status: $status,
                 seasonYear: $seasonYear,
                 genre_in: $genre_in,
+                tag_in: $tag_in,
                 averageScore_greater: $averageScore_greater,
                 sort: $sort,
                 isAdult: false
@@ -1038,7 +1057,8 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
         else if (statusParam === 'complete') vars.status = 'FINISHED';
         else if (statusParam === 'upcoming') vars.status = 'NOT_YET_RELEASED';
         if (yearParam && !isNaN(Number(yearParam))) vars.seasonYear = Number(yearParam);
-        if (selectedGenreNamesEn.length > 0) vars.genre_in = selectedGenreNamesEn;
+        if (splitGenres.genreIn.length > 0) vars.genre_in = splitGenres.genreIn;
+        if (splitGenres.tagIn.length > 0) vars.tag_in = splitGenres.tagIn;
         if (minScoreParam > 0) vars.averageScore_greater = Math.round(minScoreParam * 10);
 
         const data = await queryAniListDirect(gql, vars);
@@ -1090,11 +1110,25 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
         let gql = '';
         let vars: Record<string, any> = {};
 
-        if (isPureNum && numId > 0) {
-          gql = `
-            query ($idMal: Int) {
-              Media(idMal: $idMal, type: ANIME) {
-                ${ANILIST_CARD_FRAGMENT}
+        const relationsSubFragment = `
+          relations {
+            edges {
+              relationType(version: 2)
+              node {
+                id
+                idMal
+                type
+                format
+                title {
+                  romaji
+                  english
+                }
+                coverImage {
+                  large
+                  extraLarge
+                }
+                episodes
+                seasonYear
                 relations {
                   edges {
                     relationType(version: 2)
@@ -1109,12 +1143,24 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
                       }
                       coverImage {
                         large
+                        extraLarge
                       }
                       episodes
                       seasonYear
                     }
                   }
                 }
+              }
+            }
+          }
+        `;
+
+        if (isPureNum && numId > 0) {
+          gql = `
+            query ($idMal: Int) {
+              Media(idMal: $idMal, type: ANIME) {
+                ${ANILIST_CARD_FRAGMENT}
+                ${relationsSubFragment}
                 charactersPage1: characters(sort: [ROLE, RELEVANCE], page: 1, perPage: 25) {
                   edges {
                     role
@@ -1169,26 +1215,7 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
             query ($search: String) {
               Media(search: $search, type: ANIME, isAdult: false) {
                 ${ANILIST_CARD_FRAGMENT}
-                relations {
-                  edges {
-                    relationType(version: 2)
-                    node {
-                      id
-                      idMal
-                      type
-                      format
-                      title {
-                        romaji
-                        english
-                      }
-                      coverImage {
-                        large
-                      }
-                      episodes
-                      seasonYear
-                    }
-                  }
-                }
+                ${relationsSubFragment}
                 charactersPage1: characters(sort: [ROLE, RELEVANCE], page: 1, perPage: 25) {
                   edges {
                     role
@@ -1259,22 +1286,126 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
 
           const arabicDesc = await translateTextToArabicClient(media.description || '');
 
-          const related = (media.relations?.edges || [])
-            .filter((e: any) => {
-              if (!e?.node || e.node.type !== 'ANIME') return false;
-              const rt = String(e.relationType || '').toUpperCase();
-              if (rt === 'CHARACTER' || rt === 'ADAPTATION') return false;
-              return true;
-            })
-            .map((e: any) => ({
-              relation: e.relationType ? e.relationType.replace(/_/g, ' ') : 'Sequel',
+          const relFormatMap: Record<string, string> = {
+            PREQUEL: 'Prequel',
+            SEQUEL: 'Sequel',
+            PARENT: 'Parent story',
+            SIDE_STORY: 'Side story',
+            SPIN_OFF: 'Spin-off',
+            ALTERNATIVE: 'Alternative version',
+            SUMMARY: 'Summary',
+            FULL_STORY: 'Full story',
+            OTHER: 'Other',
+          };
+          const seenRel = new Set<number>();
+          if (media.idMal) seenRel.add(Number(media.idMal));
+          if (media.id) seenRel.add(Number(media.id));
+          const expandedIds = new Set<number>();
+          if (media.id) expandedIds.add(Number(media.id));
+          const frontier = new Map<number, 'Prequel' | 'Sequel' | 'Related'>();
+          const related: any[] = [];
+          const isNoiseEdge = (node: any, rt: string): boolean => {
+            if (!node || node.type !== 'ANIME') return true;
+            if (rt === 'CHARACTER' || rt === 'ADAPTATION') return true;
+            const fullT = `${node.title?.english || ''} ${node.title?.romaji || ''}`.toLowerCase();
+            if (/\bx\b|crossover|dream 9|kyutai panic|nisshin|cup noodle|hungry days|toriko/i.test(fullT)) return true;
+            return false;
+          };
+          const pushRelEdge = (e: any, overrideRel?: string) => {
+            const rt = String(e?.relationType || '').toUpperCase();
+            if (!e?.node || isNoiseEdge(e.node, rt)) return;
+            const aniId = Number(e.node.id || 0);
+            const malId = Number(e.node.idMal || 0);
+            const relId = malId || aniId;
+            if (!relId || (malId && seenRel.has(malId)) || (aniId && seenRel.has(aniId))) return;
+            if (malId) seenRel.add(malId);
+            if (aniId) seenRel.add(aniId);
+            related.push({
+              relation: overrideRel || relFormatMap[rt] || rt.replace(/_/g, ' ') || 'Related',
               name: e.node.title?.english || e.node.title?.romaji || 'Anime',
-              mal_id: e.node.idMal || e.node.id,
+              romajiTitle: e.node.title?.romaji || '',
+              englishTitle: e.node.title?.english || '',
+              mal_id: relId,
+              anilistId: aniId || undefined,
               type: e.node.format || 'TV',
               format: e.node.format || 'TV',
+              episodes: e.node.episodes || 12,
               year: e.node.seasonYear || '',
-              posterUrl: e.node.coverImage?.large || posterUrl
-            }));
+              posterUrl: e.node.coverImage?.extraLarge || e.node.coverImage?.large || posterUrl
+            });
+          };
+          const EXPAND_SET = new Set(['PREQUEL', 'SEQUEL', 'PARENT', 'FULL_STORY', 'ALTERNATIVE', 'SIDE_STORY', 'SPIN_OFF']);
+          const TIMELINE_SET = new Set(['PREQUEL', 'SEQUEL', 'PARENT', 'FULL_STORY']);
+
+          (media.relations?.edges || []).forEach((e: any) => {
+            const rt = String(e?.relationType || '').toUpperCase();
+            if (!e?.node || isNoiseEdge(e.node, rt)) return;
+            pushRelEdge(e);
+            const h1Id = Number(e.node.id || 0);
+            if (h1Id) expandedIds.add(h1Id);
+            if (!EXPAND_SET.has(rt)) return;
+            const h1Dir: 'Prequel' | 'Sequel' | 'Related' =
+              rt === 'PREQUEL' || rt === 'PARENT' ? 'Prequel' : rt === 'SEQUEL' ? 'Sequel' : 'Related';
+            (e.node.relations?.edges || []).forEach((sub: any) => {
+              const srt = String(sub?.relationType || '').toUpperCase();
+              if (!sub?.node || isNoiseEdge(sub.node, srt)) return;
+              if (h1Dir === 'Related' && !TIMELINE_SET.has(srt) && srt !== 'SIDE_STORY' && srt !== 'SPIN_OFF') return;
+              let inh = relFormatMap[srt] || 'Related';
+              if (h1Dir === 'Prequel' && (srt === 'PREQUEL' || srt === 'PARENT')) inh = 'Prequel';
+              else if (h1Dir === 'Sequel' && srt === 'SEQUEL') inh = 'Sequel';
+              pushRelEdge(sub, inh);
+              const h2Id = Number(sub.node.id || 0);
+              if (h2Id && !expandedIds.has(h2Id) && EXPAND_SET.has(srt) && (h1Dir !== 'Related' || TIMELINE_SET.has(srt))) {
+                frontier.set(h2Id, h1Dir === 'Prequel' && (srt === 'PREQUEL' || srt === 'PARENT') ? 'Prequel' : h1Dir === 'Sequel' && srt === 'SEQUEL' ? 'Sequel' : 'Related');
+              }
+            });
+          });
+
+          const batchQ = `
+            query ($ids: [Int]) {
+              Page(page: 1, perPage: 50) {
+                media(id_in: $ids, type: ANIME) {
+                  id
+                  relations {
+                    edges {
+                      relationType(version: 2)
+                      node {
+                        id idMal type format episodes seasonYear
+                        title { english romaji }
+                        coverImage { large extraLarge }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          `;
+          for (let r = 0; r < 3 && frontier.size > 0 && related.length < 60; r++) {
+            const entries = Array.from(frontier.entries()).slice(0, 30);
+            const ids = entries.map(([k]) => k);
+            const dirMap = new Map(entries);
+            ids.forEach((k) => { frontier.delete(k); expandedIds.add(k); });
+            try {
+              const bd = await queryAniListDirect(batchQ, { ids });
+              for (const mNode of bd?.Page?.media || []) {
+                const pDir = dirMap.get(Number(mNode?.id)) || 'Related';
+                for (const ne of mNode?.relations?.edges || []) {
+                  const nrt = String(ne?.relationType || '').toUpperCase();
+                  if (!ne?.node || isNoiseEdge(ne.node, nrt) || nrt === 'OTHER') continue;
+                  let inh = relFormatMap[nrt] || 'Related';
+                  if (pDir === 'Prequel' && (nrt === 'PREQUEL' || nrt === 'PARENT')) inh = 'Prequel';
+                  else if (pDir === 'Sequel' && nrt === 'SEQUEL') inh = 'Sequel';
+                  pushRelEdge(ne, inh);
+                  const nid = Number(ne.node.id || 0);
+                  if (nid && !expandedIds.has(nid) && EXPAND_SET.has(nrt) && (pDir !== 'Related' || TIMELINE_SET.has(nrt))) {
+                    frontier.set(nid, pDir === 'Prequel' && (nrt === 'PREQUEL' || nrt === 'PARENT') ? 'Prequel' : pDir === 'Sequel' && nrt === 'SEQUEL' ? 'Sequel' : 'Related');
+                  }
+                }
+              }
+            } catch {
+              break;
+            }
+          }
 
           const allCharEdges = [...(media.charactersPage1?.edges || [])];
           const seenCharIds = new Set<any>();
@@ -1349,6 +1480,7 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
               season: `${media.season || 'WINTER'} ${media.seasonYear || 2025}`,
               characters,
               related,
+              relatedGraphVersion: 2,
               jikanRecommendations,
               pictures: mediaPictures
             }
@@ -2193,7 +2325,7 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
       if (cleanPath === '/api/manga/genres') {
         return createSimulatedResponse({
           success: true,
-          data: Object.entries(GENRE_MAP_AR).map(([name, nameAr]) => ({ id: name, name, nameAr })),
+          data: GENRE_TAXONOMY.map((g) => ({ id: g.id, name: g.name, nameAr: g.nameAr })),
         });
       }
 
@@ -2238,20 +2370,69 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
         const q = (urlObj.searchParams.get('q') || '').trim();
         const page = Number(urlObj.searchParams.get('page') || 1);
         const genresRaw = (urlObj.searchParams.get('genres') || '').trim();
-        const genre_in = genresRaw ? genresRaw.split(',').filter(Boolean) : undefined;
-        const status = urlObj.searchParams.get('status') || '';
-        const statusVal = status === 'complete' || status === 'finished' ? 'FINISHED' : status === 'airing' || status === 'releasing' ? 'RELEASING' : undefined;
-        const gql = `query ($page: Int, $search: String, $country: CountryCode, $genre_in: [String], $status: MediaStatus) {
+        const genreTokens = genresRaw ? genresRaw.split(',').map((t) => t.trim()).filter(Boolean) : [];
+        const splitGenres = splitAniListGenresAndTags(genreTokens);
+        const status = (urlObj.searchParams.get('status') || '').trim().toLowerCase();
+        const statusVal =
+          status === 'complete' || status === 'finished'
+            ? 'FINISHED'
+            : status === 'airing' || status === 'releasing'
+            ? 'RELEASING'
+            : status === 'hiatus'
+            ? 'HIATUS'
+            : undefined;
+        const yearParam = Number(urlObj.searchParams.get('year') || 0);
+        const minScoreParam = parseFloat(urlObj.searchParams.get('min_score') || '0');
+        const orderByParam = (urlObj.searchParams.get('order_by') || '').toLowerCase();
+        const sortParam = (urlObj.searchParams.get('sort') || 'desc').toLowerCase();
+        const isAsc = sortParam === 'asc';
+        let sortVal = 'POPULARITY_DESC';
+        if (orderByParam === 'score') sortVal = isAsc ? 'SCORE' : 'SCORE_DESC';
+        else if (orderByParam === 'title') sortVal = isAsc ? 'TITLE_ENGLISH' : 'TITLE_ENGLISH_DESC';
+        else if (orderByParam === 'start_date') sortVal = isAsc ? 'START_DATE' : 'START_DATE_DESC';
+        else if (orderByParam === 'popularity') sortVal = isAsc ? 'POPULARITY' : 'POPULARITY_DESC';
+
+        const gql = `query (
+          $page: Int,
+          $search: String,
+          $country: CountryCode,
+          $genre_in: [String],
+          $tag_in: [String],
+          $status: MediaStatus,
+          $averageScore_greater: Int,
+          $startDate_greater: FuzzyDateInt,
+          $startDate_lesser: FuzzyDateInt,
+          $sort: [MediaSort]
+        ) {
           Page(page: $page, perPage: 24) {
             pageInfo { hasNextPage currentPage }
-            media(type: MANGA, format_in: [MANGA, ONE_SHOT], search: $search, countryOfOrigin: $country, genre_in: $genre_in, status: $status, sort: [POPULARITY_DESC], isAdult: false) { ${gqlFragments} }
+            media(
+              type: MANGA,
+              format_in: [MANGA, ONE_SHOT],
+              search: $search,
+              countryOfOrigin: $country,
+              genre_in: $genre_in,
+              tag_in: $tag_in,
+              status: $status,
+              averageScore_greater: $averageScore_greater,
+              startDate_greater: $startDate_greater,
+              startDate_lesser: $startDate_lesser,
+              sort: $sort,
+              isAdult: false
+            ) { ${gqlFragments} }
           }
         }`;
-        const vars: any = { page };
+        const vars: any = { page, sort: [sortVal] };
         if (q) vars.search = q;
         if (countryVar) vars.country = countryVar;
-        if (genre_in) vars.genre_in = genre_in;
+        if (splitGenres.genreIn.length > 0) vars.genre_in = splitGenres.genreIn;
+        if (splitGenres.tagIn.length > 0) vars.tag_in = splitGenres.tagIn;
         if (statusVal) vars.status = statusVal;
+        if (minScoreParam > 0) vars.averageScore_greater = Math.round(minScoreParam * 10);
+        if (yearParam > 1950) {
+          vars.startDate_greater = yearParam * 10000;
+          vars.startDate_lesser = (yearParam + 1) * 10000;
+        }
         const res = await nativeFetch('https://graphql.anilist.co', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -2353,28 +2534,48 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
                   }
                 });
                 if (!bestSlug) return;
+                const parseOlDoc = (doc: Document) => {
+                  doc.querySelectorAll('.chapter-card').forEach((card) => {
+                    const link = card.querySelector('a.chapter-link, a');
+                    const href = (link?.getAttribute('href') || '').trim();
+                    const cm = href.match(/\/series\/[^/]+\/(\d+(?:\.\d+)?)\/?$/);
+                    if (!cm || href === '#') return;
+                    const numStr = cm[1];
+                    if (!arabicChapters.some((c) => c.num === numStr)) {
+                      arabicChapters.push({
+                        id: `olympus::${bestSlug}::${numStr}`,
+                        num: numStr,
+                        chapterNumber: parseFloat(numStr) || 0,
+                        title: `الفصل ${numStr}`,
+                        language: 'ar',
+                        languageLabel: 'عربي',
+                        pagesCount: 20,
+                        publishAt: new Date().toISOString(),
+                      });
+                    }
+                  });
+                };
+
                 const sHtml = await fetchTextDirectInClient(`https://olympustaff.com/series/${bestSlug}`, 500);
                 if (!sHtml) return;
                 const sDoc = new DOMParser().parseFromString(sHtml, 'text/html');
-                sDoc.querySelectorAll('.chapter-card').forEach((card) => {
-                  const link = card.querySelector('a.chapter-link, a');
-                  const href = (link?.getAttribute('href') || '').trim();
-                  const cm = href.match(/\/series\/[^/]+\/(\d+(?:\.\d+)?)\/?$/);
-                  if (!cm || href === '#') return;
-                  const numStr = cm[1];
-                  if (!arabicChapters.some((c) => c.num === numStr)) {
-                    arabicChapters.push({
-                      id: `olympus::${bestSlug}::${numStr}`,
-                      num: numStr,
-                      chapterNumber: parseFloat(numStr) || 0,
-                      title: `الفصل ${numStr}`,
-                      language: 'ar',
-                      languageLabel: 'عربي',
-                      pagesCount: 20,
-                      publishAt: new Date().toISOString(),
-                    });
-                  }
+                parseOlDoc(sDoc);
+                let maxPage = 1;
+                sDoc.querySelectorAll("a[href*='?page=']").forEach((el) => {
+                  const pm = (el.getAttribute('href') || '').match(/[?&]page=(\d+)/);
+                  if (pm) maxPage = Math.max(maxPage, Number(pm[1]));
                 });
+                const cap = Math.min(maxPage, 16);
+                for (let startP = 2; startP <= cap; startP += 4) {
+                  const batch: number[] = [];
+                  for (let p = startP; p < startP + 4 && p <= cap; p++) batch.push(p);
+                  await Promise.all(
+                    batch.map(async (p) => {
+                      const pHtml = await fetchTextDirectInClient(`https://olympustaff.com/series/${bestSlug}?page=${p}`, 500);
+                      if (pHtml) parseOlDoc(new DOMParser().parseFromString(pHtml, 'text/html'));
+                    }),
+                  );
+                }
               } catch {}
             })(),
             (async () => {
@@ -2395,28 +2596,33 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
                   .filter((x) => x.s >= 58)
                   .sort((a, b) => b.s - a.s)[0];
                 if (!hit?.p?.id || !hit?.p?.slug) return;
-                const chText = await fetchTextDirectInClient(
-                  `https://azoramoon.com/api/chapters?postId=${hit.p.id}&take=400`,
-                  20,
-                );
-                if (!chText || !chText.trim().startsWith('{')) return;
-                const chJson = JSON.parse(chText);
-                const list: any[] = Array.isArray(chJson?.post?.chapters) ? chJson.post.chapters : [];
-                for (const ch of list) {
-                  if (ch.isLocked || ch.isAccessible === false || Number(ch.price || 0) > 0) continue;
-                  const numStr = String(ch.number);
-                  if (!arabicChapters.some((c) => c.num === numStr)) {
-                    arabicChapters.push({
-                      id: `azora::${hit.p.slug}::${ch.slug}`,
-                      num: numStr,
-                      chapterNumber: Number(ch.number) || 0,
-                      title: ch.title ? String(ch.title).trim() : `الفصل ${numStr}`,
-                      language: 'ar',
-                      languageLabel: 'عربي',
-                      pagesCount: 20,
-                      publishAt: ch.createdAt || new Date().toISOString(),
-                    });
+                const take = 500;
+                for (let skip = 0; skip < 1500; skip += take) {
+                  const chText = await fetchTextDirectInClient(
+                    `https://azoramoon.com/api/chapters?postId=${hit.p.id}&take=${take}${skip > 0 ? `&skip=${skip}` : ''}`,
+                    20,
+                  );
+                  if (!chText || !chText.trim().startsWith('{')) break;
+                  const chJson = JSON.parse(chText);
+                  const list: any[] = Array.isArray(chJson?.post?.chapters) ? chJson.post.chapters : [];
+                  if (list.length === 0) break;
+                  for (const ch of list) {
+                    if (ch.isLocked || ch.isAccessible === false || Number(ch.price || 0) > 0) continue;
+                    const numStr = String(ch.number);
+                    if (!arabicChapters.some((c) => c.num === numStr)) {
+                      arabicChapters.push({
+                        id: `azora::${hit.p.slug}::${ch.slug}`,
+                        num: numStr,
+                        chapterNumber: Number(ch.number) || 0,
+                        title: ch.title ? String(ch.title).trim() : `الفصل ${numStr}`,
+                        language: 'ar',
+                        languageLabel: 'عربي',
+                        pagesCount: 20,
+                        publishAt: ch.createdAt || new Date().toISOString(),
+                      });
+                    }
                   }
+                  if (list.length < take) break;
                 }
               } catch {}
             })(),
@@ -2425,10 +2631,19 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
 
         if (!mdId && (title || altTitle)) {
           try {
-            const sUrl = `https://api.mangadex.org/manga?title=${encodeURIComponent(title || altTitle)}&limit=5`;
+            const sUrl = `https://api.mangadex.org/manga?title=${encodeURIComponent(title || altTitle)}&limit=10&order[relevance]=desc`;
             const sRes = await nativeFetch(sUrl);
             const sJson = sRes.ok ? await safeResponseJson(sRes) : null;
-            mdId = sJson?.data?.[0]?.id || '';
+            const list: any[] = Array.isArray(sJson?.data) ? sJson.data : [];
+            const variantRe = /\(\s*(?:official\s+)?colored\s*\)|digital\s+colored|\bdoujinshi\b|\banthology\b/i;
+            const best =
+              list.find((m) => {
+                const pt = Object.values(m?.attributes?.title || {}).join(' ');
+                return !variantRe.test(pt) && scoreMatch(pt) >= 85;
+              }) ||
+              list.find((m) => !variantRe.test(Object.values(m?.attributes?.title || {}).join(' '))) ||
+              list[0];
+            mdId = best?.id || '';
           } catch {}
         }
 
@@ -2437,26 +2652,34 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
 
         if (mdId) {
           try {
-            const fUrl = `https://api.mangadex.org/manga/${mdId}/feed?limit=200&translatedLanguage[]=ar&translatedLanguage[]=en&order[chapter]=desc&contentRating[]=safe&contentRating[]=suggestive`;
-            const fRes = await nativeFetch(fUrl);
-            const fJson = fRes.ok ? await safeResponseJson(fRes) : null;
-            if (fJson && Array.isArray(fJson.data)) {
-              for (const ch of fJson.data) {
-                if (Number(ch?.attributes?.pages || 0) <= 0 || ch?.attributes?.externalUrl) continue;
-                const chNumStr = String(ch.attributes.chapter || '0');
-                const lang = ch.attributes.translatedLanguage === 'ar' ? 'ar' : 'en';
-                const existing = byNum.get(chNumStr);
-                if (existing && (existing.language === 'ar' || existing.language === lang)) continue;
-                byNum.set(chNumStr, {
-                  id: ch.id,
-                  num: chNumStr,
-                  chapterNumber: parseFloat(chNumStr) || 0,
-                  title: ch.attributes.title || `الفصل ${chNumStr}`,
-                  language: lang,
-                  languageLabel: lang === 'ar' ? 'عربي' : 'إنجليزي',
-                  pagesCount: Number(ch.attributes.pages || 0),
-                  publishAt: ch.attributes.publishAt || new Date().toISOString(),
-                });
+            for (const lang of ['ar', 'en'] as const) {
+              for (let b = 0; b < 3; b++) {
+                const offset = b * 500;
+                const fUrl = `https://api.mangadex.org/manga/${mdId}/feed?limit=500&offset=${offset}&translatedLanguage[]=${lang}&order[chapter]=desc&contentRating[]=safe&contentRating[]=suggestive`;
+                const fRes = await nativeFetch(fUrl);
+                const fJson = fRes.ok ? await safeResponseJson(fRes) : null;
+                const batch: any[] = Array.isArray(fJson?.data) ? fJson.data : [];
+                if (batch.length === 0) break;
+                for (const ch of batch) {
+                  if (Number(ch?.attributes?.pages || 0) <= 0 || ch?.attributes?.externalUrl) continue;
+                  const chNumStr = String(ch.attributes.chapter || '0');
+                  const chNum = parseFloat(chNumStr) || 0;
+                  const key = Number.isInteger(chNum) ? String(chNum) : chNumStr;
+                  const existing = byNum.get(key);
+                  if (existing && (existing.language === 'ar' || existing.language === lang)) continue;
+                  byNum.set(key, {
+                    id: ch.id,
+                    num: chNumStr,
+                    chapterNumber: chNum,
+                    title: ch.attributes.title || `الفصل ${chNumStr}`,
+                    language: lang,
+                    languageLabel: lang === 'ar' ? 'عربي' : 'إنجليزي',
+                    pagesCount: Number(ch.attributes.pages || 0),
+                    publishAt: ch.attributes.publishAt || new Date().toISOString(),
+                  });
+                }
+                const total = Number(fJson?.total || 0);
+                if (batch.length < 500 || (total > 0 && offset + batch.length >= total)) break;
               }
             }
           } catch {}

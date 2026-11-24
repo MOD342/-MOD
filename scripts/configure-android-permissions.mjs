@@ -26,16 +26,20 @@ const REQUIRED_PERMISSIONS = [
   '<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />',
   '<uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />',
   '<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />',
-  '<uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />',
-  '<uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />',
-  '<uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />',
   '<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />',
   '<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />',
-  '<uses-permission android:name="android.permission.RECORD_AUDIO" />',
-  '<uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />',
-  '<uses-permission android:name="android.permission.CAMERA" />',
   '<uses-permission android:name="android.permission.VIBRATE" />',
   '<uses-permission android:name="android.permission.WAKE_LOCK" />',
+];
+
+const DISALLOWED_PERMISSION_NAMES = [
+  'android.permission.CAMERA',
+  'android.permission.RECORD_AUDIO',
+  'android.permission.MODIFY_AUDIO_SETTINGS',
+  'android.permission.READ_MEDIA_IMAGES',
+  'android.permission.READ_MEDIA_VIDEO',
+  'android.permission.READ_MEDIA_AUDIO',
+  'android.permission.MANAGE_EXTERNAL_STORAGE',
 ];
 
 const ANDROID_QUERIES_BLOCK = `
@@ -58,10 +62,6 @@ const ANDROID_QUERIES_BLOCK = `
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:mimeType="application/vnd.apple.mpegurl" />
-        </intent>
-        <intent>
-            <action android:name="android.intent.action.VIEW" />
-            <data android:mimeType="*/*" />
         </intent>
         <intent>
             <action android:name="android.settings.APPLICATION_DETAILS_SETTINGS" />
@@ -91,10 +91,9 @@ const ANDROID_QUERIES_BLOCK = `
 
 const NETWORK_SECURITY_XML = `<?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <base-config cleartextTrafficPermitted="true">
+    <base-config cleartextTrafficPermitted="false">
         <trust-anchors>
             <certificates src="system" />
-            <certificates src="user" />
         </trust-anchors>
     </base-config>
 </network-security-config>
@@ -131,18 +130,34 @@ function patchAndroidManifest() {
 
   let content = fs.readFileSync(manifestPath, 'utf8');
 
-  if (!content.includes('android:usesCleartextTraffic')) {
+  if (content.includes('android:usesCleartextTraffic')) {
+    content = content.replace(/android:usesCleartextTraffic="(true|false)"/g, 'android:usesCleartextTraffic="false"');
+  } else {
     content = content.replace(
       '<application',
-      '<application\n        android:usesCleartextTraffic="true"'
+      '<application\n        android:usesCleartextTraffic="false"'
     );
   }
-  if (!content.includes('android:requestLegacyExternalStorage')) {
+
+  if (content.includes('android:allowBackup')) {
+    content = content.replace(/android:allowBackup="(true|false)"/g, 'android:allowBackup="false"');
+  } else {
     content = content.replace(
       '<application',
-      '<application\n        android:requestLegacyExternalStorage="true"'
+      '<application\n        android:allowBackup="false"'
     );
   }
+
+  content = content.replace(/\s*android:requestLegacyExternalStorage="(true|false)"/g, '');
+
+  for (const permName of DISALLOWED_PERMISSION_NAMES) {
+    const escaped = permName.replace(/\./g, '\\.');
+    content = content.replace(
+      new RegExp(`\\s*<uses-permission[^>]*android:name="${escaped}"[^>]*/?>`, 'g'),
+      ''
+    );
+  }
+
   if (!content.includes('android:networkSecurityConfig')) {
     content = content.replace(
       '<application',
@@ -315,8 +330,8 @@ function patchMainActivityJava() {
   }
 
   const current = fs.readFileSync(mainActivityPath, 'utf8');
-  if (current.includes('MOD_NATIVE_BRIDGE_V3')) {
-    console.log('ℹ️ MainActivity.java محدّث مسبقاً إلى MOD_NATIVE_BRIDGE_V3.');
+  if (current.includes('MOD_NATIVE_BRIDGE_V4')) {
+    console.log('ℹ️ MainActivity.java محدّث مسبقاً إلى MOD_NATIVE_BRIDGE_V4.');
     return;
   }
 
@@ -325,7 +340,7 @@ function patchMainActivityJava() {
 
   const upgradedJava = `package ${packageName};
 
-// MOD_NATIVE_BRIDGE_V3
+// MOD_NATIVE_BRIDGE_V4
 import android.app.DownloadManager;
 import android.content.Context;
 import android.content.Intent;
@@ -485,9 +500,33 @@ public class MainActivity extends BridgeActivity {
         }
     }
 
+    private boolean isAllowedHttpUri(String rawUrl) {
+        if (rawUrl == null) return false;
+        try {
+            Uri uri = Uri.parse(rawUrl.trim());
+            String scheme = uri.getScheme();
+            return scheme != null && ("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme));
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private boolean isAllowedExternalScheme(String rawUrl) {
+        if (rawUrl == null) return false;
+        try {
+            Uri uri = Uri.parse(rawUrl.trim());
+            String scheme = uri.getScheme();
+            if (scheme == null) return false;
+            String s = scheme.toLowerCase();
+            return "http".equals(s) || "https".equals(s) || "mailto".equals(s) || "tg".equals(s);
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
     private boolean openUriInExternalBrowser(String url) {
         try {
-            if (url == null || url.trim().isEmpty()) return false;
+            if (!isAllowedHttpUri(url)) return false;
             Uri uri = Uri.parse(url.trim());
             Intent baseIntent = new Intent(Intent.ACTION_VIEW, uri);
             baseIntent.addCategory(Intent.CATEGORY_BROWSABLE);
@@ -516,7 +555,7 @@ public class MainActivity extends BridgeActivity {
 
     private boolean launchExternalPlayerInternal(String url, String title, String mimeType) {
         try {
-            if (url == null || url.trim().isEmpty()) return false;
+            if (!isAllowedHttpUri(url)) return false;
             String safeUrl = url.trim();
             String safeMime = (mimeType != null && !mimeType.trim().isEmpty()) ? mimeType.trim() : "video/*";
             String safeTitle = (title != null && !title.trim().isEmpty()) ? title.trim() : "Anime MOD Video";
@@ -567,7 +606,7 @@ public class MainActivity extends BridgeActivity {
 
     private boolean enqueueSystemDownloadInternal(String url, String filename, String mimeType) {
         try {
-            if (url == null || !url.trim().startsWith("http")) return false;
+            if (!isAllowedHttpUri(url)) return false;
             String safeName = (filename != null && !filename.trim().isEmpty()) ? filename.trim() : "AnimeMOD-Episode.mp4";
             safeName = safeName.replaceAll("[^a-zA-Z0-9._\\\\u0600-\\\\u06FF -]", "_");
             if (!safeName.contains(".")) safeName += ".mp4";
@@ -593,7 +632,7 @@ public class MainActivity extends BridgeActivity {
 
     private boolean launchDownloadManagerInternal(String url, String filename, String mimeType) {
         try {
-            if (url == null || url.trim().isEmpty()) return false;
+            if (!isAllowedHttpUri(url)) return false;
             String safeUrl = url.trim();
             String safeName = (filename != null && !filename.trim().isEmpty()) ? filename.trim() : "AnimeMOD-Episode.mp4";
             String safeMime = (mimeType != null && !mimeType.trim().isEmpty()) ? mimeType.trim() : "video/mp4";
@@ -659,7 +698,7 @@ public class MainActivity extends BridgeActivity {
         public boolean openExternalPlayer(String url, String title, String mimeType) {
             final boolean[] ok = new boolean[] { false };
             try {
-                if (url != null && !url.trim().isEmpty()) {
+                if (isAllowedHttpUri(url)) {
                     ok[0] = true;
                     runOnUiThread(() -> launchExternalPlayerInternal(url, title, mimeType));
                 }
@@ -671,7 +710,7 @@ public class MainActivity extends BridgeActivity {
         public boolean openDownloadManager(String url, String filename, String mimeType) {
             final boolean[] ok = new boolean[] { false };
             try {
-                if (url != null && !url.trim().isEmpty()) {
+                if (isAllowedHttpUri(url)) {
                     ok[0] = true;
                     runOnUiThread(() -> launchDownloadManagerInternal(url, filename, mimeType));
                 }
@@ -681,7 +720,7 @@ public class MainActivity extends BridgeActivity {
 
         @JavascriptInterface
         public boolean enqueueSystemDownload(String url, String filename, String mimeType) {
-            return enqueueSystemDownloadInternal(url, filename, mimeType);
+            return isAllowedHttpUri(url) && enqueueSystemDownloadInternal(url, filename, mimeType);
         }
 
         @JavascriptInterface
@@ -689,29 +728,42 @@ public class MainActivity extends BridgeActivity {
             try {
                 if (rawUrl == null || rawUrl.trim().isEmpty()) return false;
                 final String trimmed = rawUrl.trim();
+                final String lower = trimmed.toLowerCase();
+                if (!isAllowedExternalScheme(trimmed) && !lower.startsWith("intent:")) {
+                    return false;
+                }
                 runOnUiThread(() -> {
                     try {
-                        if (trimmed.toLowerCase().startsWith("intent:")) {
+                        if (lower.startsWith("intent:")) {
                             Intent parsed = Intent.parseUri(trimmed, Intent.URI_INTENT_SCHEME);
                             if (parsed != null) {
+                                parsed.addCategory(Intent.CATEGORY_BROWSABLE);
+                                parsed.setComponent(null);
+                                parsed.setSelector(null);
                                 parsed.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                                if (parsed.resolveActivity(getPackageManager()) != null && safeStartIntent(parsed)) {
+                                Uri dataUri = parsed.getData();
+                                if (dataUri != null && isAllowedExternalScheme(dataUri.toString())
+                                    && parsed.resolveActivity(getPackageManager()) != null
+                                    && safeStartIntent(parsed)) {
                                     return;
                                 }
                                 String fallbackUrl = parsed.getStringExtra("browser_fallback_url");
-                                if (fallbackUrl != null && !fallbackUrl.trim().isEmpty()) {
+                                if (isAllowedHttpUri(fallbackUrl)) {
                                     openUriInExternalBrowser(fallbackUrl);
                                     return;
                                 }
                             }
                             return;
                         }
-                        if (trimmed.toLowerCase().startsWith("http://") || trimmed.toLowerCase().startsWith("https://")) {
+                        if (isAllowedHttpUri(trimmed)) {
                             openUriInExternalBrowser(trimmed);
                             return;
                         }
-                        Intent generic = new Intent(Intent.ACTION_VIEW, Uri.parse(trimmed));
-                        safeStartIntent(generic);
+                        if (isAllowedExternalScheme(trimmed)) {
+                            Intent generic = new Intent(Intent.ACTION_VIEW, Uri.parse(trimmed));
+                            generic.addCategory(Intent.CATEGORY_BROWSABLE);
+                            safeStartIntent(generic);
+                        }
                     } catch (Throwable ignored) {}
                 });
                 return true;
@@ -756,19 +808,7 @@ public class MainActivity extends BridgeActivity {
 
         @JavascriptInterface
         public void openStorageSettings() {
-            runOnUiThread(() -> {
-                try {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                        Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
-                        intent.setData(Uri.fromParts("package", getPackageName(), null));
-                        if (intent.resolveActivity(getPackageManager()) != null) {
-                            safeStartIntent(intent);
-                            return;
-                        }
-                    }
-                } catch (Throwable ignored) {}
-                openAppSettings();
-            });
+            openAppSettings();
         }
 
         @JavascriptInterface
@@ -789,17 +829,7 @@ public class MainActivity extends BridgeActivity {
         public void requestStoragePermissions() {
             runOnUiThread(() -> {
                 try {
-                    if (Build.VERSION.SDK_INT >= 33) {
-                        ActivityCompat.requestPermissions(
-                            MainActivity.this,
-                            new String[]{
-                                "android.permission.READ_MEDIA_IMAGES",
-                                "android.permission.READ_MEDIA_VIDEO",
-                                "android.permission.READ_MEDIA_AUDIO"
-                            },
-                            REQ_STORAGE_PERMISSION
-                        );
-                    } else {
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
                         ActivityCompat.requestPermissions(
                             MainActivity.this,
                             new String[]{
@@ -824,11 +854,8 @@ public class MainActivity extends BridgeActivity {
                         : "denied";
                 }
 
-                if (Build.VERSION.SDK_INT >= 33) {
-                    boolean hasImg = ContextCompat.checkSelfPermission(MainActivity.this, "android.permission.READ_MEDIA_IMAGES") == PackageManager.PERMISSION_GRANTED;
-                    boolean hasVid = ContextCompat.checkSelfPermission(MainActivity.this, "android.permission.READ_MEDIA_VIDEO") == PackageManager.PERMISSION_GRANTED;
-                    boolean allFiles = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && Environment.isExternalStorageManager();
-                    storage = (hasImg || hasVid || allFiles) ? "granted" : "denied";
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    storage = "granted";
                 } else {
                     boolean hasRead = ContextCompat.checkSelfPermission(MainActivity.this, "android.permission.READ_EXTERNAL_STORAGE") == PackageManager.PERMISSION_GRANTED;
                     storage = hasRead ? "granted" : "denied";
@@ -842,7 +869,7 @@ public class MainActivity extends BridgeActivity {
 `;
 
   fs.writeFileSync(mainActivityPath, upgradedJava, 'utf8');
-  console.log('✅ MainActivity.java تم ترقيته إلى MOD_NATIVE_BRIDGE_V3 (دعم المشغلات الخارجية ومدراء التنزيل ومنع شاشة الخطأ).');
+  console.log('✅ MainActivity.java تم ترقيته إلى MOD_NATIVE_BRIDGE_V4 (توافق كامل مع سياسات متجر Google Play).');
 }
 
 function runAllAndroidPatches() {

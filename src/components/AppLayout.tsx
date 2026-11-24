@@ -5,17 +5,24 @@ import NotificationsModal from './NotificationsModal';
 import { db, auth } from '../firebase';
 import { collection, query, onSnapshot } from 'firebase/firestore';
 import { useDeviceDisplay } from '../hooks/useDeviceDisplay';
+import type { HomeMode } from '../utils/appPreferences';
 
 export function AppLayout({
   children,
   activeTab,
   setActiveTab,
   onNavigateTo,
+  homeMode = 'anime',
+  onToggleHomeMode,
+  canToggleHomeMode = true,
 }: {
   children: ReactNode;
   activeTab: string;
   setActiveTab: (tab: string) => void;
   onNavigateTo: (view: string, props?: any) => void;
+  homeMode?: HomeMode;
+  onToggleHomeMode?: () => void;
+  canToggleHomeMode?: boolean;
 }) {
   const { user, signIn } = useAuth();
   const display = useDeviceDisplay();
@@ -107,9 +114,37 @@ export function AppLayout({
           }}
           className="fixed top-0 right-0 bottom-0 w-[76px] xl:w-56 bg-[#07070b]/95 backdrop-blur-xl border-l border-white/10 z-50 flex flex-col justify-between px-2.5 xl:px-3.5 select-none"
         >
-          <div className="space-y-5">
-            {/* Brand / Profile Quick Entry */}
+          <div className="space-y-4">
+            {/* Brand / Mode Switcher */}
             <button
+              type="button"
+              onClick={() => {
+                if (activeTab !== 'home') setActiveTab('home');
+                if (canToggleHomeMode) onToggleHomeMode?.();
+              }}
+              title={
+                canToggleHomeMode
+                  ? homeMode === 'anime'
+                    ? 'التبديل إلى رئيسية المانجا والمانهوا'
+                    : 'التبديل إلى رئيسية الأنمي'
+                  : 'أوتاكو MOD'
+              }
+              className="w-full flex items-center justify-center xl:justify-start gap-2 px-3 py-2.5 rounded-xl bg-white/[0.03] hover:bg-white/[0.07] border border-white/10 transition cursor-pointer"
+            >
+              <span className="text-sm font-black text-white truncate hidden xl:inline">
+                أوتاكو{' '}
+                <span className={homeMode === 'manga' ? 'text-amber-400' : 'text-blue-400'}>
+                  MOD
+                </span>
+              </span>
+              <span className={`text-xs font-black xl:hidden ${homeMode === 'manga' ? 'text-amber-400' : 'text-blue-400'}`}>
+                MOD
+              </span>
+            </button>
+
+            {/* Profile Quick Entry */}
+            <button
+              type="button"
               onClick={() => (user ? onNavigateTo('profile') : signIn('login'))}
               className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-white/5 transition cursor-pointer justify-center xl:justify-start"
               title={user ? 'الملف الشخصي' : 'تسجيل الدخول'}
@@ -133,11 +168,11 @@ export function AppLayout({
                 </div>
               )}
               <div className="hidden xl:flex flex-col items-start min-w-0">
-                <span className="text-sm font-black text-white truncate">
-                  أنمي <span className="text-blue-400">MOD</span>
+                <span className="text-xs font-black text-white truncate max-w-[125px]">
+                  {user ? user.displayName || 'الملف الشخصي' : 'حسابي'}
                 </span>
-                <span className="text-[11px] text-neutral-400 truncate max-w-[125px]">
-                  {user ? user.displayName || 'حسابي' : 'تسجيل الدخول'}
+                <span className="text-[10px] text-neutral-400 truncate max-w-[125px]">
+                  {user ? 'عرض الملف الشخصي' : 'تسجيل الدخول'}
                 </span>
               </div>
             </button>
@@ -201,11 +236,11 @@ export function AppLayout({
 
             <button
               onClick={() => window.dispatchEvent(new Event('open-ai-chat'))}
-              title="صديقك الأوتاكو"
+              title="مود (MOD)"
               className="w-full min-h-[44px] flex items-center gap-3 px-3 py-2 rounded-xl text-rose-400 hover:bg-rose-500/10 transition cursor-pointer justify-center xl:justify-start"
             >
               <Bot size={18} className="shrink-0" />
-              <span className="hidden xl:inline text-xs font-bold whitespace-nowrap">صديقك الأوتاكو</span>
+              <span className="hidden xl:inline text-xs font-bold whitespace-nowrap">مود (MOD)</span>
             </button>
           </div>
         </aside>
@@ -223,37 +258,69 @@ export function AppLayout({
             showNav ? 'translate-y-0 opacity-100' : '-translate-y-full opacity-0'
           }`}
         >
-          <div className="theme-keep-dark flex items-center gap-2 bg-black/70 backdrop-blur-md px-2.5 sm:px-3.5 py-1.5 rounded-full border border-white/15 shadow-xl pointer-events-auto min-w-0">
-            {user ? (
-              user.photoURL ? (
-                <img
-                  src={user.photoURL}
-                  alt="Profile"
-                  className="w-7 h-7 sm:w-8 sm:h-8 rounded-full object-cover border border-purple-500/30 cursor-pointer shrink-0"
-                  onClick={() => onNavigateTo('profile')}
-                />
-              ) : (
-                <div
-                  onClick={() => onNavigateTo('profile')}
-                  className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-gradient-to-tr from-blue-600 to-purple-600 flex items-center justify-center font-black text-xs cursor-pointer shrink-0"
-                >
-                  {user.displayName ? user.displayName.charAt(0).toUpperCase() : 'U'}
-                </div>
-              )
-            ) : (
-              <button
-                onClick={() => signIn('login')}
-                className="px-2.5 py-1 rounded-full bg-gradient-to-r from-[#FF1744] to-purple-600 text-white text-[11px] font-black cursor-pointer whitespace-nowrap shrink-0"
-              >
-                دخول
-              </button>
-            )}
-            <h1
-              className="text-xs sm:text-sm font-black tracking-tight text-white cursor-pointer whitespace-nowrap truncate"
-              onClick={() => (user ? onNavigateTo('profile') : signIn('login'))}
+          <div className="theme-keep-dark flex items-center gap-1.5 bg-black/75 backdrop-blur-md p-1 pl-2.5 sm:pl-3 rounded-full border border-white/15 shadow-xl pointer-events-auto min-w-0">
+            <button
+              type="button"
+              onClick={() => onNavigateTo('profile')}
+              aria-label={user ? 'الملف الشخصي' : 'حسابي وتسجيل الدخول'}
+              className="rounded-full flex items-center justify-center shrink-0 cursor-pointer active:scale-95 transition"
             >
-              أنمي <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-500">MOD</span>
-            </h1>
+              {user ? (
+                user.photoURL ? (
+                  <img
+                    src={user.photoURL}
+                    alt="Profile"
+                    referrerPolicy="no-referrer"
+                    className="w-8 h-8 rounded-full object-cover border border-purple-500/40 shrink-0"
+                  />
+                ) : (
+                  <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-600 to-purple-600 flex items-center justify-center font-black text-xs text-white shrink-0">
+                    {user.displayName ? user.displayName.charAt(0).toUpperCase() : 'U'}
+                  </div>
+                )
+              ) : (
+                <div className="w-8 h-8 rounded-full bg-[#FF1744]/20 border border-[#FF1744]/40 flex items-center justify-center text-[#FF1744] shrink-0">
+                  <UserCircle size={18} />
+                </div>
+              )}
+            </button>
+
+            <span className="w-px h-4 bg-white/15 shrink-0" aria-hidden="true" />
+
+            <button
+              type="button"
+              onClick={() => {
+                if (canToggleHomeMode) onToggleHomeMode?.();
+              }}
+              aria-label={
+                canToggleHomeMode
+                  ? homeMode === 'anime'
+                    ? 'التبديل إلى رئيسية المانجا والمانهوا'
+                    : 'التبديل إلى رئيسية الأنمي'
+                  : 'أوتاكو MOD'
+              }
+              title={
+                canToggleHomeMode
+                  ? homeMode === 'anime'
+                    ? 'اضغط للتبديل إلى المانجا والمانهوا'
+                    : 'اضغط للتبديل إلى الأنمي'
+                  : 'أوتاكو MOD'
+              }
+              className="flex items-center min-h-[34px] px-1.5 rounded-full hover:bg-white/5 active:scale-95 transition cursor-pointer min-w-0"
+            >
+              <h1 className="text-xs sm:text-sm font-black tracking-tight text-white whitespace-nowrap truncate">
+                أوتاكو{' '}
+                <span
+                  className={
+                    homeMode === 'manga'
+                      ? 'text-transparent bg-clip-text bg-gradient-to-r from-amber-300 to-orange-500'
+                      : 'text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-500'
+                  }
+                >
+                  MOD
+                </span>
+              </h1>
+            </button>
           </div>
 
           <div className="flex items-center gap-1.5 sm:gap-2 pointer-events-auto shrink-0">
@@ -280,7 +347,7 @@ export function AppLayout({
             </button>
             <button
               onClick={() => window.dispatchEvent(new Event('open-ai-chat'))}
-              aria-label="صديقك الأوتاكو"
+              aria-label="مود (MOD)"
               className="w-9 h-9 rounded-full bg-rose-600/30 backdrop-blur-md border border-rose-500/30 flex items-center justify-center text-rose-400 hover:bg-rose-600 hover:text-white transition cursor-pointer"
             >
               <Bot size={16} />

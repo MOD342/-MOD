@@ -12,6 +12,8 @@ import { IS_EXTERNAL_FETCH_DISABLED, scraper, handleAsync } from "../helpers/sha
 import { fetchWithTimeout, fetchJikan } from "../helpers/jikanClient";
 
 const router = Router();
+const dashboardBypassTimestamps = new Map<string, number>();
+const DASHBOARD_BYPASS_COOLDOWN_MS = 60_000;
 
 router.get(
   "/dashboard",
@@ -44,7 +46,7 @@ router.get(
           ? requestedSeason
           : "best_season")
       ).toLowerCase();
-      const bypass = req.query.bypass === "true";
+      const rawBypass = req.query.bypass === "true";
       const excludeRecent = req.query.excludeRecent === "1" || req.query.excludeRecent === "true";
       const days = [
         "sunday",
@@ -59,31 +61,18 @@ router.get(
         ? userDay
         : days[new Date().getDay()];
 
-      const cacheKey = `dashboard-v7-${currentDay}-${requestedSeason}-${requestedSliderMode}${excludeRecent ? "-norecent" : ""}`;
+      const cacheKey = `dashboard-v8-${currentDay}-${requestedSeason}-${requestedSliderMode}${excludeRecent ? "-norecent" : ""}`;
+      const nowMs = Date.now();
+      const lastBypassAt = dashboardBypassTimestamps.get(cacheKey) || 0;
+      const bypass = rawBypass && nowMs - lastBypassAt >= DASHBOARD_BYPASS_COOLDOWN_MS;
 
       if (bypass) {
+        dashboardBypassTimestamps.set(cacheKey, nowMs);
         await serverCache.delete(cacheKey);
         if (!excludeRecent) {
           await serverCache.delete("recent_episodes");
           await serverCache.delete("recent_episodes_okanime_primary_v1_page_1");
           await serverCache.delete("recent_episodes_animedar_isolated_v3_page_1");
-        }
-        await serverCache.delete("schedule_okanime_week_v2");
-        await serverCache.delete("okanime_movies_v1_p_1");
-        await serverCache.delete("okanime_top_v1_p_1");
-        await serverCache.delete("https://api.jikan.moe/v4/seasons/now?limit=25");
-        const sliderModes = ["best_season", "trending_season", "all_time_best", "classic_historical", "custom"];
-        for (const d of days) {
-          await serverCache.delete(`dashboard-${d}-${requestedSeason}`);
-          await serverCache.delete(`dashboard-${d}-auto`);
-          for (const m of sliderModes) {
-            await serverCache.delete(`dashboard-v6-${d}-${requestedSeason}-${m}`);
-            await serverCache.delete(`dashboard-v6-${d}-auto-${m}`);
-            await serverCache.delete(`dashboard-v7-${d}-${requestedSeason}-${m}`);
-            await serverCache.delete(`dashboard-v7-${d}-auto-${m}`);
-            await serverCache.delete(`dashboard-v7-${d}-${requestedSeason}-${m}-norecent`);
-            await serverCache.delete(`dashboard-v7-${d}-auto-${m}-norecent`);
-          }
         }
       }
 
@@ -128,8 +117,8 @@ router.get(
       const [sliderListRaw, seasonListRaw, recentList, todayScheduleRaw, trendingTodayRaw, moviesResRaw, topAnimeResRaw] =
         await Promise.all([
           fetchWithTimeout(
-            anilistService.getSliderByMode(requestedSliderMode, 15).catch(async () => {
-              const r = await fetchJikan("https://api.jikan.moe/v4/top/anime?filter=bypopularity&limit=12").catch(() => ({ data: [] }));
+            anilistService.getSliderByMode(requestedSliderMode, 15, targetSeasonParam, currentYear).catch(async () => {
+              const r = await fetchJikan(seasonUrl).catch(() => ({ data: [] }));
               return r.data || [];
             }),
             3200,
@@ -163,8 +152,8 @@ router.get(
             []
           ),
           fetchWithTimeout(
-            anilistService.getSliderByMode("trending_season", 20).catch(async () => {
-              const r = await fetchJikan("https://api.jikan.moe/v4/top/anime?filter=airing&limit=20").catch(() => ({ data: [] }));
+            anilistService.getSliderByMode("trending_season", 20, targetSeasonParam, currentYear).catch(async () => {
+              const r = await fetchJikan(seasonUrl).catch(() => ({ data: [] }));
               return r.data || [];
             }),
             3500,
@@ -202,7 +191,7 @@ router.get(
             _id: idStr,
             title: cleanAnimeTitle(anime.title_english || anime.title) || anime.title_english || anime.title,
             posterUrl: anime.images?.jpg?.large_image_url || anime.images?.jpg?.image_url,
-            bannerUrl: anime.bannerUrl || anime.bannerImage || anime.images?.jpg?.large_image_url || anime.images?.jpg?.image_url,
+            bannerUrl: anime.bannerUrl || anime.bannerImage || "",
             rating: anime.score || 8.5,
             genres: anime.genres?.map((g: any) => g.name) || ["أكشن", "فانتازيا"],
           });
@@ -219,7 +208,7 @@ router.get(
               _id: idStr,
               title: cleanAnimeTitle(tAnime.title_english || tAnime.title) || tAnime.title_english || tAnime.title,
               posterUrl: tAnime.images?.jpg?.large_image_url || tAnime.images?.jpg?.image_url,
-              bannerUrl: tAnime.bannerUrl || tAnime.bannerImage || tAnime.images?.jpg?.large_image_url || tAnime.images?.jpg?.image_url,
+              bannerUrl: tAnime.bannerUrl || tAnime.bannerImage || "",
               rating: tAnime.score || 8.5,
               genres: tAnime.genres?.map((g: any) => g.name) || ["أكشن", "فانتازيا"],
             });
@@ -250,11 +239,12 @@ router.get(
         if (!seenRecentTitles.has(lowerTitle)) {
           seenRecentTitles.add(lowerTitle);
 
+          const fallbackPoster =
+            "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 300 420'%3E%3Crect width='300' height='420' fill='%2312131c'/%3E%3C/svg%3E";
           const posterUrl = item.imageUrl
             ? item.imageUrl.replace("-thumbnail.", "-poster.")
-            : "https://via.placeholder.com/300x400?text=Anime";
-          const thumbnailUrl =
-            item.imageUrl || "https://via.placeholder.com/300x400?text=Anime";
+            : fallbackPoster;
+          const thumbnailUrl = item.imageUrl || fallbackPoster;
 
           const exactSlug = item.id && item.id.includes("__ep__") ? item.id.split("__ep__")[0] : "";
 
@@ -300,6 +290,7 @@ router.get(
             _id: idStr,
             title: titleClean,
             posterUrl: anime.images?.jpg?.large_image_url || anime.images?.jpg?.image_url,
+            bannerUrl: anime.bannerUrl || anime.bannerImage || "",
             episodeNumber: anime.latestEpisode ? String(anime.latestEpisode) : undefined,
             rating: anime.score || 8.4,
             isDailyTrending: true,
@@ -342,6 +333,7 @@ router.get(
           title: anime.title_english || anime.title,
           posterUrl:
             anime.images?.jpg?.large_image_url || anime.images?.jpg?.image_url,
+          bannerUrl: anime.bannerUrl || anime.bannerImage || "",
           rating: anime.score || 0,
         }));
 
@@ -441,8 +433,8 @@ router.get(
 
       return resultPayload;
         },
-        120 * 1000,
-        15 * 60 * 1000,
+        5 * 60 * 1000,
+        30 * 60 * 1000,
         bypass
       );
 

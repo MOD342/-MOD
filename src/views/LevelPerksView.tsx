@@ -74,13 +74,13 @@ export default function LevelPerksView({ onBack, onNavigateToStore }: LevelPerks
       }
       if (lvl === 7) {
         perks.push({
-          text: 'فتح الدردشة الحرة مع صديقك الأوتاكو والترشيحات التفاعلية',
+          text: 'فتح الدردشة الحرة مع مود (MOD) والترشيحات التفاعلية للأنمي والمانجا',
           icon: Bot,
           color: 'text-rose-400',
         });
       }
       if (lvl === 10) {
-        perks.push({ text: 'فتح زر صديقك الأوتاكو السريع في الشريط العلوي', icon: Bot, color: 'text-pink-400' });
+        perks.push({ text: 'فتح زر مود (MOD) السريع في الشريط العلوي', icon: Bot, color: 'text-pink-400' });
         perks.push({ text: 'شارة صياد محترف مرخص في ساحة الأركيد', icon: Zap, color: 'text-amber-400' });
       }
       if (lvl === 20) {

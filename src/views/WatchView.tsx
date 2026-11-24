@@ -26,6 +26,7 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import { isStaffEmail } from '../services/moderationService';
 import { recordEpisodeWatch } from '../services/gamificationService';
+import { watchHistoryService } from '../services/listService';
 import { db } from '../firebase';
 import {
   collection,
@@ -128,27 +129,17 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
       const epNum = parseEpisodeNumber(episode?.num, episode?.title || '');
 
       // Save to user-scoped Continue Watching history immediately (works for guests & cloud users without leaking across accounts)
-      try {
-        if (typeof localStorage !== 'undefined' && anime?._id) {
-          const watchHistoryKey = `local_watch_history_${user?.id || 'guest'}`;
-          const raw = localStorage.getItem(watchHistoryKey);
-          const list = raw ? JSON.parse(raw) : [];
-          const filtered = Array.isArray(list)
-            ? list.filter((item: any) => String(item.id) !== String(anime._id))
-            : [];
-          const totalEps = Number(anime?.episodesCount || anime?.episodes?.length || 0);
-          const pct = totalEps > 0 ? Math.min(95, Math.max(15, Math.round((epNum / totalEps) * 100))) : 35;
-          const entry = {
-            id: String(anime._id),
-            title: anime.title || 'أنمي',
-            posterUrl: anime.posterUrl || anime.thumbnailUrl || '',
-            lastEpisode: String(epNum),
-            progress: pct,
-            updatedAt: Date.now()
-          };
-          localStorage.setItem(watchHistoryKey, JSON.stringify([entry, ...filtered].slice(0, 20)));
-        }
-      } catch {}
+      if (anime?._id) {
+        const totalEps = Number(anime?.episodesCount || anime?.episodes?.length || 0);
+        const pct = totalEps > 0 ? Math.min(95, Math.max(15, Math.round((epNum / totalEps) * 100))) : 35;
+        watchHistoryService.recordWatch(user?.id, {
+          id: String(anime._id),
+          title: anime.title || 'أنمي',
+          posterUrl: anime.posterUrl || anime.thumbnailUrl || '',
+          lastEpisode: String(epNum),
+          progress: pct,
+        });
+      }
 
       if (user) {
         recordEpisodeWatch(user.id, anime, epNum).catch(console.error);

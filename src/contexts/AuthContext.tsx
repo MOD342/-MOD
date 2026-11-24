@@ -18,10 +18,11 @@ import {
   reauthenticateWithCredential,
   reauthenticateWithPopup,
   EmailAuthProvider,
-  updateProfile
+  updateProfile,
+  deleteUser
 } from 'firebase/auth';
 import { auth, db } from '../firebase';
-import { doc, getDoc, setDoc, serverTimestamp, updateDoc, onSnapshot } from 'firebase/firestore';
+import { doc, getDoc, setDoc, serverTimestamp, updateDoc, onSnapshot, collection, getDocs, deleteDoc } from 'firebase/firestore';
 import { updateDailyStreak } from '../services/gamificationService';
 import { moderationService, RoleLevel, isStaffEmail } from '../services/moderationService';
 import { notificationsService } from '../services/notificationsService';
@@ -228,6 +229,7 @@ interface AuthContextType {
   changeUserEmail: (newEmail: string, currentPassword?: string) => Promise<{ success: boolean; message: string }>;
   changeUserPassword: (currentPassword: string, newPassword: string) => Promise<{ success: boolean; message: string }>;
   sendPasswordReset: (email?: string) => Promise<{ success: boolean; message: string }>;
+  deleteUserAccount: (currentPassword?: string) => Promise<{ success: boolean; message: string }>;
 }
 
 const AuthContext = createContext<AuthContextType>({
@@ -246,6 +248,7 @@ const AuthContext = createContext<AuthContextType>({
   changeUserEmail: async () => ({ success: false, message: '' }),
   changeUserPassword: async () => ({ success: false, message: '' }),
   sendPasswordReset: async () => ({ success: false, message: '' }),
+  deleteUserAccount: async () => ({ success: false, message: '' }),
 });
 
 export const useAuth = () => useContext(AuthContext);
@@ -940,6 +943,95 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
     }
   };
 
+  const deleteUserAccount = async (currentPassword?: string): Promise<{ success: boolean; message: string }> => {
+    const activeUid = user?.id || auth.currentUser?.uid || null;
+    if (!activeUid) {
+      return { success: false, message: 'يجب تسجيل الدخول أولاً لحذف الحساب.' };
+    }
+
+    // Handle local-only fallback guest accounts cleanly
+    if (activeUid.startsWith('otaku_guest_') || !auth.currentUser) {
+      try {
+        localStorage.removeItem('fallback_active_session');
+        localStorage.removeItem('fallback_otaku_accounts_v1');
+      } catch {}
+      clearPrivateMemberCaches(activeUid);
+      setUser(null);
+      setUserData(null);
+      setUserRole('user');
+      return { success: true, message: 'تم حذف بيانات الحساب المحلي بنجاح.' };
+    }
+
+    const currentUser = auth.currentUser;
+    const hasPasswordProvider = currentUser.providerData.some((p) => p.providerId === 'password');
+    const hasGoogleProvider = currentUser.providerData.some((p) => p.providerId === 'google.com');
+
+    try {
+      // 1. Re-authenticate BEFORE deleting any Firestore data to avoid partial deletions
+      if (hasPasswordProvider) {
+        if (!currentPassword) {
+          return {
+            success: false,
+            message: 'يرجى إدخال كلمة المرور الحالية لتأكيد ملكية الحساب قبل الحذف النهائي.',
+          };
+        }
+        await reauthenticateCurrentUser(currentPassword);
+      } else if (hasGoogleProvider && !Capacitor.isNativePlatform()) {
+        await reauthenticateCurrentUser();
+      }
+
+      // 2. Delete user subcollections cleanly
+      const subcollections = ['customLists', 'animeEntries', 'mangaEntries', 'tierList', 'notifications'];
+      for (const sub of subcollections) {
+        try {
+          const snap = await getDocs(collection(db, 'users', currentUser.uid, sub));
+          await Promise.all(snap.docs.map((d) => deleteDoc(d.ref).catch(() => {})));
+        } catch {}
+      }
+
+      // 3. Delete username reservation & primary user profile document
+      if (userData?.username) {
+        await deleteDoc(doc(db, 'usernames', String(userData.username))).catch(() => {});
+      }
+      await deleteDoc(doc(db, 'users', currentUser.uid));
+
+      // 4. Permanently delete Firebase Auth user
+      await deleteUser(currentUser);
+
+      // 5. Purge local device caches & reset state
+      try {
+        localStorage.removeItem('fallback_active_session');
+      } catch {}
+      clearPrivateMemberCaches(currentUser.uid);
+      if (Capacitor.isNativePlatform()) {
+        await FirebaseAuthentication.signOut().catch(() => {});
+      }
+      setUser(null);
+      setUserData(null);
+      setUserRole('user');
+
+      return { success: true, message: 'تم حذف حسابك وجميع بياناتك نهائياً بنجاح.' };
+    } catch (err: any) {
+      console.warn('deleteUserAccount error:', err);
+      if (err?.code === 'auth/wrong-password' || err?.code === 'auth/invalid-credential') {
+        return { success: false, message: 'كلمة المرور غير صحيحة، لم يتم حذف الحساب.' };
+      }
+      if (err?.code === 'auth/requires-recent-login') {
+        return {
+          success: false,
+          message: 'لأسباب أمنية، يرجى تسجيل الخروج ثم إعادة الدخول مجدداً وبعدها تأكيد حذف الحساب.',
+        };
+      }
+      if (err?.code === 'auth/popup-closed-by-user') {
+        return { success: false, message: 'تم إلغاء التحقق عبر Google، لم يتم حذف الحساب.' };
+      }
+      return {
+        success: false,
+        message: 'تعذر إتمام حذف الحساب حالياً، يرجى المحاولة مجدداً.',
+      };
+    }
+  };
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError('');
@@ -1052,7 +1144,7 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
         await updateProfile(userCredential.user, {
           displayName: guestName
         });
-        setAuthSuccess('✓ تم الدخول الفوري بنجاح إلى عالم أنمي MOD!');
+        setAuthSuccess('✓ تم الدخول الفوري بنجاح إلى عالم أوتاكو MOD!');
         setTimeout(() => {
           setIsAuthModalOpen(false);
           resetAuthForm();
@@ -1211,7 +1303,8 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
       refreshUserVerification,
       changeUserEmail,
       changeUserPassword,
-      sendPasswordReset
+      sendPasswordReset,
+      deleteUserAccount
     }}>
       {children}
 
@@ -1264,7 +1357,7 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
                   {authMode === 'login' ? 'طلب تسجيل الدخول' : authMode === 'register' ? 'إنشاء حساب أوتاكو جديد' : 'استعادة حسابك'}
                 </h3>
                 <p className="text-[10px] text-neutral-400 mt-1 px-4 leading-normal">
-                  {authMode === 'login' ? 'سجل دخولك لتتمكن من حفظ الأنمي، جمع الكوينز، ومشاركة التعليقات!' : authMode === 'register' ? 'انضم لأسرة أنمي MOD مجاناً بالكامل واحصل على جوائز يومية مذهلة!' : 'أدخل بريدك الإلكتروني وسيصلك رابط إعادة التعيين فوراً'}
+                  {authMode === 'login' ? 'سجل دخولك لتتمكن من حفظ أعمالك المفضلة، جمع الكوينز، ومشاركة التعليقات!' : authMode === 'register' ? 'انضم لأسرة أوتاكو MOD مجاناً بالكامل واحصل على جوائز يومية مذهلة!' : 'أدخل بريدك الإلكتروني وسيصلك رابط إعادة التعيين فوراً'}
                 </p>
               </div>
 
@@ -1439,8 +1532,37 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
                 </>
               )}
 
+              {/* Legal & Privacy Consent Disclosure */}
+              {authMode !== 'forgot' && (
+                <p className="mt-3.5 text-center text-[10px] text-neutral-400 leading-relaxed">
+                  بمتابعتك، أنت توافق على{' '}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAuthModalOpen(false);
+                      window.dispatchEvent(new CustomEvent('open-legal-view', { detail: { section: 'terms' } }));
+                    }}
+                    className="text-sky-400 hover:underline font-bold cursor-pointer"
+                  >
+                    اتفاقية الاستخدام
+                  </button>{' '}
+                  و{' '}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAuthModalOpen(false);
+                      window.dispatchEvent(new CustomEvent('open-legal-view', { detail: { section: 'privacy' } }));
+                    }}
+                    className="text-emerald-400 hover:underline font-bold cursor-pointer"
+                  >
+                    سياسة الخصوصية
+                  </button>
+                  .
+                </p>
+              )}
+
               {/* Mode switch */}
-              <div className="mt-4.5 text-center text-[10px] leading-relaxed">
+              <div className="mt-3 text-center text-[10px] leading-relaxed">
                 {authMode === 'login' ? (
                   <p className="text-neutral-400">
                     أنت جديد هنا؟{' '}

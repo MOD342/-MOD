@@ -657,7 +657,7 @@ service cloud.firestore {
           incoming().diff(existing()).affectedKeys().hasOnly(['likesReceived', 'dislikesReceived', 'xp', 'level', 'modPoints', 'coins', 'dailyStats', 'purchasedItems'])
         )
       );
-      allow delete: if isAdminAuth();
+      allow delete: if isAdminAuth() || isOwner(userId);
 
       match /customLists/{listId} {
         allow read: if isOwner(userId) || isAdminAuth();
@@ -744,8 +744,17 @@ service cloud.firestore {
 
     match /battleRooms/{roomId} {
       allow read: if true;
-      allow create, update: if isSignedIn() && isValidId(roomId)
-        && !exists(/databases/$(database)/documents/bannedUsers/$(request.auth.uid));
+      allow create: if isSignedIn() && isValidId(roomId)
+        && incoming().hostId == request.auth.uid
+        && incoming().players is list && incoming().players.size() >= 1 && incoming().players.size() <= 4
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && isNotBanned();
+      allow update: if isSignedIn() && isValidId(roomId)
+        && incoming().hostId == existing().hostId
+        && incoming().players is list && incoming().players.size() >= 1 && incoming().players.size() <= 4
+        && incoming().updatedAt == request.time
+        && isNotBanned();
       allow delete: if isSignedIn() && (existing().hostId == request.auth.uid || isModeratorAuth());
     }
 
@@ -762,7 +771,11 @@ service cloud.firestore {
     match /arenaBelt/{docId} {
       allow read: if true;
       allow create, update: if isSignedIn() && isValidId(docId)
-        && !exists(/databases/$(database)/documents/bannedUsers/$(request.auth.uid));
+        && incoming().championId == request.auth.uid
+        && incoming().championName is string && incoming().championName.size() <= 200
+        && incoming().winStreak is number && incoming().winStreak >= 1
+        && incoming().updatedAt == request.time
+        && isNotBanned();
       allow delete: if isModeratorAuth();
     }
 

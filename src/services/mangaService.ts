@@ -1,7 +1,9 @@
 import * as cheerio from "cheerio";
 import { serverCache } from "./cacheService";
 import { cleanAnimeTitle } from "../utils/animeTitleCleaner";
+import { GENRE_TAXONOMY, splitAniListGenresAndTags } from "../utils/genreTaxonomy";
 import {
+  needsArabicTranslation,
   smartQueryTranslator,
   translateGenresListToArabic,
   translateToArabic,
@@ -9,6 +11,17 @@ import {
 
 const ANILIST_ENDPOINT = "https://graphql.anilist.co";
 const MANGADEX_API = "https://api.mangadex.org";
+const inFlightManga = new Map<string, Promise<any>>();
+
+function coalesceManga<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const existing = inFlightManga.get(key);
+  if (existing) return existing as Promise<T>;
+  const p = fn().finally(() => {
+    inFlightManga.delete(key);
+  });
+  inFlightManga.set(key, p);
+  return p;
+}
 
 export type MangaOriginFilter = "ALL" | "JP" | "KR" | "CN";
 
@@ -57,6 +70,8 @@ const GENRE_AR_TO_EN: Record<string, string> = {
   كوميدي: "Comedy",
   دراما: "Drama",
   فانتازيا: "Fantasy",
+  خيالي: "Fantasy",
+  إيسيكاي: "Isekai",
   رعب: "Horror",
   غموض: "Mystery",
   نفسي: "Psychological",
@@ -65,30 +80,26 @@ const GENRE_AR_TO_EN: Record<string, string> = {
   "شريحة من الحياة": "Slice of Life",
   رياضي: "Sports",
   خوارق: "Supernatural",
+  "قوى خارقة": "Supernatural",
   إثارة: "Thriller",
   "إثارة وتشويق": "Thriller",
   ميكا: "Mecha",
   "ميكا (آليات)": "Mecha",
+  آليات: "Mecha",
   موسيقى: "Music",
   إيتشي: "Ecchi",
+  شونين: "Shounen",
+  سينين: "Seinen",
+  "فنون قتالية": "Martial Arts",
+  تاريخي: "Historical",
+  مدرسي: "School",
 };
 
-export const MANGA_GENRES_LIST = [
-  { id: "Action", name: "Action", nameAr: "أكشن" },
-  { id: "Adventure", name: "Adventure", nameAr: "مغامرات" },
-  { id: "Fantasy", name: "Fantasy", nameAr: "فانتازيا" },
-  { id: "Drama", name: "Drama", nameAr: "دراما" },
-  { id: "Comedy", name: "Comedy", nameAr: "كوميدي" },
-  { id: "Romance", name: "Romance", nameAr: "رومانسي" },
-  { id: "Mystery", name: "Mystery", nameAr: "غموض" },
-  { id: "Psychological", name: "Psychological", nameAr: "نفسي" },
-  { id: "Thriller", name: "Thriller", nameAr: "إثارة وتشويق" },
-  { id: "Horror", name: "Horror", nameAr: "رعب" },
-  { id: "Supernatural", name: "Supernatural", nameAr: "خوارق" },
-  { id: "Sci-Fi", name: "Sci-Fi", nameAr: "خيال علمي" },
-  { id: "Sports", name: "Sports", nameAr: "رياضي" },
-  { id: "Slice of Life", name: "Slice of Life", nameAr: "شريحة من الحياة" },
-];
+export const MANGA_GENRES_LIST = GENRE_TAXONOMY.map((g) => ({
+  id: g.id,
+  name: g.name,
+  nameAr: g.nameAr,
+}));
 
 const CURATED_FALLBACK_MANGA: MangaListItem[] = [
   {
@@ -339,10 +350,12 @@ function mapAniListMangaItem(media: any): MangaListItem | null {
   };
 }
 
-async function queryAniListManga(query: string, variables: Record<string, any> = {}, ttlMs = 30 * 60 * 1000): Promise<any> {
+async function queryAniListManga(query: string, variables: Record<string, any> = {}, ttlMs = 45 * 60 * 1000): Promise<any> {
   const cacheKey = `anilist_manga_v1_${Buffer.from(JSON.stringify({ q: query.slice(0, 90), v: variables })).toString("base64")}`;
   const cached = await serverCache.get<any>(cacheKey, false);
   if (cached !== null) return cached;
+
+  return coalesceManga(cacheKey, async () => {
 
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
@@ -376,6 +389,7 @@ async function queryAniListManga(query: string, variables: Record<string, any> =
     }
   }
   return null;
+  });
 }
 
 export function buildImageProxyUrl(rawUrl: string): string {
@@ -417,6 +431,7 @@ export const mangaService = {
     const cached = await serverCache.get<any>(cacheKey, false);
     if (cached) return cached;
 
+    return coalesceManga(cacheKey, async () => {
     try {
       const countryVar = origin !== "ALL" ? origin : undefined;
       const gql = `
@@ -477,7 +492,7 @@ export const mangaService = {
       };
 
       if (trending.length > 0 || latest.length > 0) {
-        await serverCache.set(cacheKey, payload, 20 * 60 * 1000);
+        await serverCache.set(cacheKey, payload, 45 * 60 * 1000);
         return payload;
       }
     } catch (err: any) {
@@ -496,6 +511,7 @@ export const mangaService = {
       hasNextPage: false,
       currentPage: 1,
     };
+    });
   },
 
   async searchManga(params: {
@@ -523,14 +539,16 @@ export const mangaService = {
     else if (params.orderBy === "updated_at") sortVal = "UPDATED_AT_DESC";
     else if (params.orderBy === "popularity") sortVal = isAsc ? "POPULARITY" : "POPULARITY_DESC";
 
+    const stLower = String(params.status || "").trim().toLowerCase();
     let statusVal: string | undefined;
-    if (params.status === "releasing" || params.status === "airing") statusVal = "RELEASING";
-    else if (params.status === "finished" || params.status === "complete") statusVal = "FINISHED";
-    else if (params.status === "hiatus") statusVal = "HIATUS";
+    if (stLower === "releasing" || stLower === "airing") statusVal = "RELEASING";
+    else if (stLower === "finished" || stLower === "complete") statusVal = "FINISHED";
+    else if (stLower === "hiatus") statusVal = "HIATUS";
 
-    const normalizedGenres = (params.genres || [])
+    const rawGenres = (params.genres || [])
       .map((g) => GENRE_AR_TO_EN[g.trim()] || g.trim())
       .filter(Boolean);
+    const splitGenres = splitAniListGenresAndTags(rawGenres);
 
     const variables: Record<string, any> = {
       page,
@@ -539,10 +557,16 @@ export const mangaService = {
     };
     if (translatedQuery) variables.search = translatedQuery;
     if (origin !== "ALL") variables.country = origin;
-    if (normalizedGenres.length > 0) variables.genre_in = normalizedGenres;
+    if (splitGenres.genreIn.length > 0) variables.genre_in = splitGenres.genreIn;
+    if (splitGenres.tagIn.length > 0) variables.tag_in = splitGenres.tagIn;
     if (statusVal) variables.status = statusVal;
     if (params.minScore && params.minScore > 0) {
       variables.averageScore_greater = Math.round(params.minScore * 10);
+    }
+    if (params.year && !isNaN(Number(params.year)) && Number(params.year) > 1950) {
+      const y = Number(params.year);
+      variables.startDate_greater = y * 10000;
+      variables.startDate_lesser = (y + 1) * 10000;
     }
 
     const gql = `
@@ -552,8 +576,11 @@ export const mangaService = {
         $search: String,
         $country: CountryCode,
         $genre_in: [String],
+        $tag_in: [String],
         $status: MediaStatus,
         $averageScore_greater: Int,
+        $startDate_greater: FuzzyDateInt,
+        $startDate_lesser: FuzzyDateInt,
         $sort: [MediaSort]
       ) {
         Page(page: $page, perPage: $perPage) {
@@ -567,8 +594,11 @@ export const mangaService = {
             search: $search,
             countryOfOrigin: $country,
             genre_in: $genre_in,
+            tag_in: $tag_in,
             status: $status,
             averageScore_greater: $averageScore_greater,
+            startDate_greater: $startDate_greater,
+            startDate_lesser: $startDate_lesser,
             sort: $sort,
             isAdult: false
           ) {
@@ -593,6 +623,7 @@ export const mangaService = {
       const qLower = (translatedQuery || rawQuery).toLowerCase();
       const filtered = CURATED_FALLBACK_MANGA.filter((m) => {
         if (origin !== "ALL" && m.countryOfOrigin !== origin) return false;
+        if (params.year && m.releaseYear && Number(m.releaseYear) !== Number(params.year)) return false;
         if (qLower && !`${m.title} ${m.englishTitle || ""} ${m.romajiTitle || ""}`.toLowerCase().includes(qLower)) {
           return false;
         }
@@ -608,84 +639,115 @@ export const mangaService = {
   async resolveMangaDexUuid(
     titles: string[],
     anilistId?: number | string | null,
+    releaseYear?: number | string | null,
   ): Promise<string | null> {
     const cleanTitles = Array.from(
       new Set(titles.map((t) => cleanAnimeTitle(String(t || "")).trim()).filter((t) => t.length >= 2)),
     );
     if (cleanTitles.length === 0) return null;
 
-    const cacheKey = `md_uuid_v1_${anilistId || normalizeTitleKey(cleanTitles[0])}`;
+    const cacheKey = `md_uuid_v2_${anilistId || normalizeTitleKey(cleanTitles[0])}`;
     const cached = await serverCache.get<string>(cacheKey, false);
     if (cached) return cached === "NONE" ? null : cached;
 
+    return coalesceManga(cacheKey, async () => {
+    const variantEditionRegex =
+      /\(\s*(?:official\s+)?colored\s*\)|digital\s+colored|fan\s+colored|\bcolored\b|\bdoujinshi\b|\banthology\b|\bspin[\s-]?off\b|\bside\s+stor(?:y|ies)\b|\bgaiden\b|\bspecial\s+one[\s-]?shot\b/i;
+    const requestWantsVariant = cleanTitles.some((t) => variantEditionRegex.test(t));
+    const targetKeys = cleanTitles.map(normalizeTitleKey).filter(Boolean);
+    const targetYearNum = releaseYear ? Number(releaseYear) : 0;
+
+    let globalBest: { id: string; score: number } | null = null;
+
     for (const qTitle of cleanTitles.slice(0, 3)) {
       try {
-        const url = `${MANGADEX_API}/manga?title=${encodeURIComponent(qTitle)}&limit=10&order[relevance]=desc&contentRating[]=safe&contentRating[]=suggestive&contentRating[]=erotica`;
+        const url = `${MANGADEX_API}/manga?title=${encodeURIComponent(qTitle)}&limit=12&order[relevance]=desc&contentRating[]=safe&contentRating[]=suggestive&contentRating[]=erotica`;
         const json = await fetchJsonSafe(url, 6500);
         const list: any[] = Array.isArray(json?.data) ? json.data : [];
         if (list.length === 0) continue;
 
-        // 1. Exact AniList ID link match
-        if (anilistId) {
-          const exactAl = list.find(
-            (m) => String(m?.attributes?.links?.al || "") === String(anilistId),
-          );
-          if (exactAl?.id) {
-            await serverCache.set(cacheKey, exactAl.id, 12 * 60 * 60 * 1000);
-            return exactAl.id;
-          }
-        }
-
-        // 2. Normalized title comparison
-        const targetKeys = cleanTitles.map(normalizeTitleKey);
         const scored = list
           .map((m) => {
-            const titlesPool: string[] = [];
+            const primaryPool: string[] = [];
             const titleObj = m?.attributes?.title || {};
-            Object.values(titleObj).forEach((v) => v && titlesPool.push(String(v)));
+            Object.values(titleObj).forEach((v) => v && primaryPool.push(String(v)));
+
+            const altPool: string[] = [];
             const altArr = Array.isArray(m?.attributes?.altTitles) ? m.attributes.altTitles : [];
             altArr.forEach((obj: any) =>
-              Object.values(obj || {}).forEach((v) => v && titlesPool.push(String(v))),
+              Object.values(obj || {}).forEach((v) => v && altPool.push(String(v))),
             );
-            const normPool = titlesPool.map(normalizeTitleKey);
+
+            const normPrimary = primaryPool.map(normalizeTitleKey).filter(Boolean);
+            const normAlt = altPool.map(normalizeTitleKey).filter(Boolean);
+            const normPool = [...normPrimary, ...normAlt];
+
             let score = 0;
             for (const tk of targetKeys) {
-              if (normPool.includes(tk)) score = Math.max(score, 100);
-              else if (normPool.some((np) => np.includes(tk) || tk.includes(np))) score = Math.max(score, 65);
+              if (normPrimary.includes(tk)) score = Math.max(score, 115);
+              else if (normPool.includes(tk)) score = Math.max(score, 95);
+              else if (normPool.some((np) => np.includes(tk) || tk.includes(np))) score = Math.max(score, 60);
             }
+
+            const isPrimaryVariant = primaryPool.some((pt) => variantEditionRegex.test(pt));
+            const matchesAl = Boolean(anilistId && String(m?.attributes?.links?.al || "") === String(anilistId));
+
+            // MangaDex sometimes puts the AniList ID on the "(Official Colored)" entry instead of the main manga
+            if (matchesAl) {
+              score += isPrimaryVariant && !requestWantsVariant ? 20 : 110;
+            }
+            if (isPrimaryVariant && !requestWantsVariant) {
+              score -= 95;
+            }
+
+            const mdYear = Number(m?.attributes?.year || 0);
+            if (targetYearNum > 1950 && mdYear > 1950 && Math.abs(mdYear - targetYearNum) <= 1) {
+              score += 18;
+            }
+
             const langs: string[] = Array.isArray(m?.attributes?.availableTranslatedLanguages)
               ? m.attributes.availableTranslatedLanguages
               : [];
             if (langs.includes("ar")) score += 15;
             else if (langs.includes("en")) score += 5;
+
             return { id: m.id, score };
           })
           .sort((a, b) => b.score - a.score);
 
-        if (scored[0] && scored[0].score >= 50) {
-          await serverCache.set(cacheKey, scored[0].id, 12 * 60 * 60 * 1000);
-          return scored[0].id;
+        if (scored[0] && (!globalBest || scored[0].score > globalBest.score)) {
+          globalBest = scored[0];
         }
-        if (list[0]?.id) {
-          await serverCache.set(cacheKey, list[0].id, 6 * 60 * 60 * 1000);
-          return list[0].id;
+        // Only stop searching extra titles if we found a confident non-variant match
+        if (globalBest && globalBest.score >= 100) {
+          break;
         }
       } catch (err) {
         console.warn(`[MangaDexResolve] error searching "${qTitle}":`, (err as any)?.message || err);
       }
     }
 
+    if (globalBest && globalBest.score >= 45) {
+      await serverCache.set(cacheKey, globalBest.id, 12 * 60 * 60 * 1000);
+      return globalBest.id;
+    }
+
     await serverCache.set(cacheKey, "NONE", 30 * 60 * 1000);
     return null;
+    });
   },
 
-  async getMangaDetails(idOrQuery: string) {
+  async getMangaDetails(idOrQuery: string, bypassCache = false) {
     const rawId = decodeURIComponent(String(idOrQuery || "").trim());
     if (!rawId) return null;
 
-    const cacheKey = `manga_details_v3_${rawId}`;
-    const cached = await serverCache.get<any>(cacheKey, false);
-    if (cached) return cached;
+    const cacheKey = `manga_details_v4_${rawId}`;
+    if (!bypassCache) {
+      const cached = await serverCache.get<any>(cacheKey, false);
+      if (cached) return cached;
+    }
+
+    return coalesceManga(`${cacheKey}${bypassCache ? ":force" : ""}`, async () => {
 
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawId);
     const isNumeric = /^\d+$/.test(rawId);
@@ -873,7 +935,7 @@ export const mangaService = {
       .replace(/\s+/g, " ")
       .trim();
 
-    if (description && /[a-zA-Z]{10,}/.test(description)) {
+    if (description && needsArabicTranslation(description)) {
       description = await Promise.race([
         translateToArabic(description).catch(() => description),
         new Promise<string>((r) => setTimeout(() => r(description), 4500)),
@@ -965,7 +1027,7 @@ export const mangaService = {
     ].filter(Boolean);
 
     const mangadexId = await Promise.race([
-      this.resolveMangaDexUuid(mdSearchPool, mapped.anilistId).catch(() => null),
+      this.resolveMangaDexUuid(mdSearchPool, mapped.anilistId, mapped.releaseYear).catch(() => null),
       new Promise<null>((r) => setTimeout(() => r(null), 2600)),
     ]);
 
@@ -982,6 +1044,7 @@ export const mangaService = {
 
     await serverCache.set(cacheKey, result, 6 * 60 * 60 * 1000);
     return result;
+    });
   },
 
   async getMangaChapters(params: {
@@ -1001,7 +1064,7 @@ export const mangaService = {
 
     // Fast path: check numeric AniList chapter cache immediately before any upstream call
     if (!bypassCache && rawId && /^\d+$/.test(rawId)) {
-      const fastCached = await serverCache.get<MangaChapterItem[]>(`manga_chapters_v7_al_${rawId}`, false);
+      const fastCached = await serverCache.get<MangaChapterItem[]>(`manga_chapters_v9_al_${rawId}`, false);
       if (fastCached && fastCached.length > 0) {
         return { mangadexId: mdId, chapters: fastCached };
       }
@@ -1019,12 +1082,17 @@ export const mangaService = {
       params.synonyms.forEach((s) => pushTitle(s));
     }
 
-    // Only fetch details when synonyms weren't already provided or cache already has details
+    let detailsYear: number | null = null;
     if (rawId && /^\d+$/.test(rawId)) {
-      const cachedDetails = await serverCache.get<any>(`manga_details_v3_${rawId}`, true);
-      const details = cachedDetails || (candidateSet.size < 3 ? await this.getMangaDetails(rawId).catch(() => null) : null);
+      const cachedDetails = bypassCache ? null : await serverCache.get<any>(`manga_details_v4_${rawId}`, true);
+      const details =
+        cachedDetails ||
+        (bypassCache || candidateSet.size < 3 || !mdId
+          ? await this.getMangaDetails(rawId, bypassCache).catch(() => null)
+          : null);
       if (details) {
-        if (!mdId) mdId = details.mangadexId || null;
+        if (details.mangadexId) mdId = details.mangadexId;
+        if (details.releaseYear) detailsYear = Number(details.releaseYear) || null;
         pushTitle(details.englishTitle || details.title);
         pushTitle(details.romajiTitle);
         if (Array.isArray(details.synonyms)) {
@@ -1038,10 +1106,11 @@ export const mangaService = {
     if (!mdId && candidateTitles.length > 0) {
       mdId = await Promise.race([
         this.resolveMangaDexUuid(
-          candidateTitles.filter((t) => /[a-zA-Z0-9]/.test(t)).slice(0, 2),
+          candidateTitles.filter((t) => /[a-zA-Z0-9]/.test(t)).slice(0, 3),
           /^\d+$/.test(rawId) ? rawId : null,
+          detailsYear,
         ).catch(() => null),
-        new Promise<null>((r) => setTimeout(() => r(null), 2400)),
+        new Promise<null>((r) => setTimeout(() => r(null), 2600)),
       ]);
     }
 
@@ -1050,7 +1119,7 @@ export const mangaService = {
       return { mangadexId: null, chapters: [] };
     }
 
-    const cacheKey = `manga_chapters_v7_${keySuffix}`;
+    const cacheKey = `manga_chapters_v9_${keySuffix}`;
     if (!bypassCache) {
       const cached = await serverCache.get<MangaChapterItem[]>(cacheKey, false);
       if (cached && cached.length > 0) {
@@ -1058,32 +1127,67 @@ export const mangaService = {
       }
     }
 
-    // Fetch up to 2 pages (500 chapters total) preferring Arabic, falling back gracefully to English when missing
-    const fetchLangFeed = async (lang: "ar" | "en", maxBatches = 2): Promise<any[]> => {
+    return coalesceManga(`${cacheKey}${bypassCache ? ":force" : ""}`, async () => {
+
+    // Fetch MangaDex feed up to 5 batches (limit=500 -> up to 2,500 releases) keeping partial progress if deadline nears
+    const fetchLangFeed = async (lang: "ar" | "en", maxBatches = 5): Promise<any[]> => {
       if (!mdId) return [];
       const collected: any[] = [];
+      const deadlineAt = Date.now() + 10500;
+      let total = 0;
+      let fetchedCount = 0;
+
       for (let b = 0; b < maxBatches; b++) {
-        const offset = b * 250;
-        const url = `${MANGADEX_API}/manga/${mdId}/feed?limit=250&offset=${offset}&translatedLanguage[]=${lang}&order[chapter]=desc&includes[]=scanlation_group&contentRating[]=safe&contentRating[]=suggestive&contentRating[]=erotica`;
-        const json = await fetchJsonSafe(url, 7500).catch(() => null);
+        const remaining = deadlineAt - Date.now();
+        if (remaining < 1200) break;
+        const offset = b * 500;
+        const url = `${MANGADEX_API}/manga/${mdId}/feed?limit=500&offset=${offset}&translatedLanguage[]=${lang}&order[chapter]=desc&includes[]=scanlation_group&contentRating[]=safe&contentRating[]=suggestive&contentRating[]=erotica`;
+        const json = await fetchJsonSafe(url, Math.min(7000, remaining)).catch(() => null);
         const batch: any[] = Array.isArray(json?.data) ? json.data : [];
+        if (typeof json?.total === "number" && json.total > 0) total = json.total;
         if (batch.length === 0) break;
         collected.push(...batch);
-        if (batch.length < 250) break;
+        fetchedCount += batch.length;
+        if (batch.length < 500) break;
+        if (total > 0 && offset + batch.length >= total) break;
       }
+
+      // If descending feed hit the batch cap on a very long work and still didn't reach early chapters, fetch 1 ascending batch for chapters 1+
+      if (total > fetchedCount && Date.now() < deadlineAt - 1500) {
+        const readableNums = collected
+          .filter((ch) => Number(ch?.attributes?.pages || 0) > 0 && !ch?.attributes?.externalUrl)
+          .map((ch) => parseFloat(String(ch?.attributes?.chapter || "")))
+          .filter((n) => Number.isFinite(n) && n >= 0);
+        const minCollected = readableNums.length > 0 ? Math.min(...readableNums) : Infinity;
+        if (minCollected > 3) {
+          const ascUrl = `${MANGADEX_API}/manga/${mdId}/feed?limit=500&offset=0&translatedLanguage[]=${lang}&order[chapter]=asc&includes[]=scanlation_group&contentRating[]=safe&contentRating[]=suggestive&contentRating[]=erotica`;
+          const ascJson = await fetchJsonSafe(ascUrl, Math.min(6000, deadlineAt - Date.now())).catch(() => null);
+          if (Array.isArray(ascJson?.data) && ascJson.data.length > 0) {
+            const seenIds = new Set(collected.map((c) => c.id));
+            for (const item of ascJson.data) {
+              if (!seenIds.has(item.id)) collected.push(item);
+            }
+          }
+        }
+      }
+
       return collected;
     };
 
-    const withFeedDeadline = (p: Promise<any[]>) =>
-      Promise.race([p.catch(() => []), new Promise<any[]>((r) => setTimeout(() => r([]), 8500))]);
-
     const [arRaw, enRaw, arabicDirect] = await Promise.all([
-      withFeedDeadline(fetchLangFeed("ar", 2)),
-      withFeedDeadline(fetchLangFeed("en", 2)),
+      fetchLangFeed("ar", 5).catch(() => []),
+      fetchLangFeed("en", 5).catch(() => []),
       candidateTitles.length > 0
         ? this.fetchArabicProviderChapters(candidateTitles, bypassCache).catch(() => [])
         : Promise.resolve([]),
     ]);
+
+    const toCanonKey = (chStr: string, chNum: number, fallbackId: string): string => {
+      if (Number.isFinite(chNum) && chStr) {
+        return Number.isInteger(chNum) ? String(chNum) : String(parseFloat(chStr));
+      }
+      return chStr || fallbackId;
+    };
 
     const byChapterKey = new Map<string, MangaChapterItem>();
 
@@ -1099,7 +1203,7 @@ export const mangaService = {
         const chNum = chStr ? parseFloat(chStr) : 0;
         if (Number.isNaN(chNum) && !chStr) continue;
 
-        const dedupKey = chStr || ch.id;
+        const dedupKey = toCanonKey(chStr, chNum, ch.id);
         const existing = byChapterKey.get(dedupKey);
         // Always prefer Arabic over English, or higher page count within same language
         if (existing) {
@@ -1128,9 +1232,10 @@ export const mangaService = {
     ingest(arRaw, "ar");
     // Merge direct Arabic provider chapters whenever missing or when replacing English chapters
     for (const ch of arabicDirect) {
-      const existing = byChapterKey.get(ch.num);
+      const dedupKey = toCanonKey(ch.num, ch.chapterNumber, ch.id);
+      const existing = byChapterKey.get(dedupKey);
       if (!existing || existing.language !== "ar") {
-        byChapterKey.set(ch.num, ch);
+        byChapterKey.set(dedupKey, ch);
       }
     }
     ingest(enRaw, "en");
@@ -1140,10 +1245,11 @@ export const mangaService = {
     );
 
     if (chapters.length > 0) {
-      await serverCache.set(cacheKey, chapters, 15 * 60 * 1000);
+      await serverCache.set(cacheKey, chapters, 30 * 60 * 1000);
     }
 
     return { mangadexId: mdId, chapters };
+    });
   },
 
   async fetchArabicProviderChapters(titles: string[], bypassCache = false): Promise<MangaChapterItem[]> {
@@ -1155,7 +1261,6 @@ export const mangaService = {
       // Skip non-Latin/non-Arabic scripts (Kana, Kanji, Hangul, Thai) that Arabic manga sites never index
       if (!/[a-zA-Z0-9\u0600-\u06FF]/.test(cleaned)) continue;
       expanded.push(cleaned);
-      // Only include core title before colon/dash when the subtitle is NOT a sequel/spinoff marker
       const colonParts = cleaned.split(/\s*[:–—]\s*/);
       const basePart = colonParts[0].trim();
       const subPart = colonParts.slice(1).join(" ").trim();
@@ -1167,19 +1272,31 @@ export const mangaService = {
       ) {
         expanded.push(basePart);
       }
+      // Also push secondary Romaji/English title after colon (e.g. "Demon Slayer: Kimetsu no Yaiba" -> "Kimetsu no Yaiba")
+      if (
+        subPart &&
+        subPart.length >= 5 &&
+        subPart !== cleaned &&
+        !sequelTermsRegex.test(subPart) &&
+        !/^\d+$/.test(subPart)
+      ) {
+        expanded.push(subPart);
+      }
     }
 
-    const cleanTitles = Array.from(new Set(expanded)).slice(0, 10);
+    const cleanTitles = Array.from(new Set(expanded)).slice(0, 6);
     if (cleanTitles.length === 0) return [];
 
     const normTargets = Array.from(new Set(cleanTitles.map(normalizeTitleKey).filter((k) => k.length >= 3)));
     if (normTargets.length === 0) return [];
 
-    const cacheKey = `ar_chapters_v5_${normTargets.slice(0, 4).join("|")}`;
+    const cacheKey = `ar_chapters_v7_${normTargets.slice(0, 4).join("|")}`;
     if (!bypassCache) {
       const cached = await serverCache.get<MangaChapterItem[]>(cacheKey, false);
       if (cached && cached.length > 0) return cached;
     }
+
+    return coalesceManga(`${cacheKey}${bypassCache ? ":force" : ""}`, async () => {
 
     const spinoffMarkers = [
       "ragnarok",
@@ -1238,14 +1355,23 @@ export const mangaService = {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130.0.0.0",
     };
 
-    const withDeadline = <T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> =>
-      Promise.race([
-        promise.catch(() => fallback),
-        new Promise<T>((r) => setTimeout(() => r(fallback), ms)),
-      ]);
+    const providerDeadlineAt = Date.now() + 14500;
 
     const tryAzora = async (): Promise<{ score: number; items: MangaChapterItem[] }> => {
-      const searchAzoraPosts = async (qTitle: string): Promise<{ post: any; score: number } | null> => {
+      const detectAzoraSeasonSplit = (
+        postTitle: string,
+      ): { baseNorm: string; seasonNum: number } | null => {
+        const cNorm = normalizeTitleKey(postTitle);
+        const m = cNorm.match(/^(.+?)\s+(?:s|season|part)\s*(\d{1,2})$/i);
+        if (!m) return null;
+        return { baseNorm: m[1].trim(), seasonNum: Number(m[2]) };
+      };
+
+      const targetHasSeasonMarker = normTargets.some((t) => /\b(?:s|season|part)\s*\d+\b/i.test(t));
+
+      const searchAzoraPosts = async (
+        qTitle: string,
+      ): Promise<{ post: any; score: number; seasonNum?: number }[]> => {
         try {
           const qRes = await fetchJsonSafe(
             `https://azoramoon.com/api/query?searchTerm=${encodeURIComponent(qTitle)}&perPage=12`,
@@ -1266,68 +1392,171 @@ export const mangaService = {
             })
             .map((p) => {
               const alts = [p.postTitle, ...(Array.isArray(p.alternativeTitles) ? p.alternativeTitles : [])].filter(Boolean);
-              const maxScore = Math.max(0, ...alts.map((a) => scoreTitleMatch(String(a))));
-              return { post: p, score: maxScore };
+              let maxScore = Math.max(0, ...alts.map((a) => scoreTitleMatch(String(a))));
+              let seasonNum: number | undefined;
+
+              if (!targetHasSeasonMarker) {
+                for (const a of alts) {
+                  const split = detectAzoraSeasonSplit(String(a));
+                  if (split && normTargets.includes(split.baseNorm)) {
+                    maxScore = Math.max(maxScore, 112);
+                    seasonNum = split.seasonNum;
+                  }
+                }
+              }
+
+              return { post: p, score: maxScore, seasonNum };
             })
             .filter((x) => x.score >= 58)
             .sort((a, b) => b.score - a.score);
-          return ranked[0] || null;
+          return ranked;
         } catch {
-          return null;
+          return [];
         }
       };
 
       const fetchAzoraChapters = async (bestPost: any): Promise<MangaChapterItem[]> => {
         if (!bestPost?.id || !bestPost?.slug) return [];
-        const chRes = await fetchJsonSafe(
-          `https://azoramoon.com/api/chapters?postId=${bestPost.id}&take=600`,
-          6500,
-        ).catch(() => null);
-        const rawChaps: any[] = Array.isArray(chRes?.post?.chapters) ? chRes.post.chapters : [];
         const mapped: MangaChapterItem[] = [];
-        for (const ch of rawChaps) {
-          if (
-            ch.isLocked ||
-            ch.isAccessible === false ||
-            ch.isPermanentlyLocked ||
-            ch.isShortLinkLocked ||
-            Number(ch.price || 0) > 0
-          ) {
-            continue;
+        const seenSlugs = new Set<string>();
+        const take = 500;
+
+        for (let skip = 0; skip < 2000; skip += take) {
+          const remaining = providerDeadlineAt - Date.now();
+          if (remaining < 1000) break;
+          const chRes = await fetchJsonSafe(
+            `https://azoramoon.com/api/chapters?postId=${bestPost.id}&take=${take}${skip > 0 ? `&skip=${skip}` : ""}`,
+            Math.min(6000, remaining),
+          ).catch(() => null);
+          const rawChaps: any[] = Array.isArray(chRes?.post?.chapters) ? chRes.post.chapters : [];
+          if (rawChaps.length === 0) break;
+
+          for (const ch of rawChaps) {
+            if (
+              ch.isLocked ||
+              ch.isAccessible === false ||
+              ch.isPermanentlyLocked ||
+              ch.isShortLinkLocked ||
+              Number(ch.price || 0) > 0
+            ) {
+              continue;
+            }
+            const chSlug = String(ch.slug || "");
+            if (seenSlugs.has(chSlug)) continue;
+            seenSlugs.add(chSlug);
+            const numVal = Number(ch.number);
+            if (!Number.isFinite(numVal)) continue;
+            const numStr = String(ch.number);
+            mapped.push({
+              id: `azora::${bestPost.slug}::${chSlug}`,
+              num: numStr,
+              chapterNumber: numVal,
+              volume: null,
+              title: ch.title ? String(ch.title).trim() : `الفصل ${numStr}`,
+              language: "ar",
+              languageLabel: "عربي",
+              pagesCount: 20,
+              publishAt: ch.createdAt || new Date().toISOString(),
+            });
           }
-          const numVal = Number(ch.number);
-          if (!Number.isFinite(numVal)) continue;
-          const numStr = String(ch.number);
-          mapped.push({
-            id: `azora::${bestPost.slug}::${ch.slug}`,
-            num: numStr,
-            chapterNumber: numVal,
-            volume: null,
-            title: ch.title ? String(ch.title).trim() : `الفصل ${numStr}`,
-            language: "ar",
-            languageLabel: "عربي",
-            pagesCount: 20,
-            publishAt: ch.createdAt || new Date().toISOString(),
-          });
+
+          if (rawChaps.length < take) break;
         }
         return mapped;
       };
 
-      // Stage 1: primary title alone (single fast request, avoids rate-limit bursts)
-      const firstHit = await searchAzoraPosts(cleanTitles[0]);
-      if (firstHit?.post) {
-        const ch = await fetchAzoraChapters(firstHit.post);
-        if (ch.length > 0) return { score: firstHit.score, items: ch };
-      }
+      const resolveFromRanked = async (
+        ranked: { post: any; score: number; seasonNum?: number }[],
+      ): Promise<{ score: number; items: MangaChapterItem[] } | null> => {
+        if (ranked.length === 0) return null;
 
-      // Stage 2 & 3: remaining synonyms in small batches of 3
-      for (let i = 1; i < cleanTitles.length; i += 3) {
-        const batch = await Promise.all(cleanTitles.slice(i, i + 3).map(searchAzoraPosts));
-        const hit = batch.filter(Boolean).sort((a, b) => (b?.score || 0) - (a?.score || 0))[0];
-        if (hit?.post) {
-          const ch = await fetchAzoraChapters(hit.post);
-          if (ch.length > 0) return { score: hit.score, items: ch };
+        // Detect split-season siblings (e.g. Tower of God S1, S2, S3)
+        const seasonSiblings = ranked.filter(
+          (r) => typeof r.seasonNum === "number" && r.score >= 100,
+        );
+        const uniqueSeasons = new Map<number, { post: any; score: number; seasonNum: number }>();
+        for (const s of seasonSiblings) {
+          if (s.seasonNum && !uniqueSeasons.has(s.seasonNum)) {
+            uniqueSeasons.set(s.seasonNum, s as any);
+          }
         }
+
+        if (uniqueSeasons.size >= 2) {
+          const orderedSeasons = Array.from(uniqueSeasons.values()).sort(
+            (a, b) => a.seasonNum - b.seasonNum,
+          );
+          const fetchedAll = await Promise.all(
+            orderedSeasons.map(async (entry) => ({
+              seasonNum: entry.seasonNum,
+              score: entry.score,
+              items: await fetchAzoraChapters(entry.post),
+            })),
+          );
+          const nonEmpty = fetchedAll.filter((x) => x.items.length > 0);
+          if (nonEmpty.length > 0) {
+            const combined: MangaChapterItem[] = [];
+            let cumulativeOffset = 0;
+
+            for (let idx = 0; idx < nonEmpty.length; idx++) {
+              const seg = nonEmpty[idx];
+              const sortedAsc = [...seg.items].sort((a, b) => a.chapterNumber - b.chapterNumber);
+              const segMin = sortedAsc[0]?.chapterNumber ?? 0;
+              const segMax = sortedAsc[sortedAsc.length - 1]?.chapterNumber ?? 0;
+
+              // Reset-per-season numbering if later season restarts near 0/1 rather than continuing sequentially
+              const resetsNumbering = idx > 0 && segMin <= 2 && cumulativeOffset > 5;
+              const appliedOffset = resetsNumbering ? cumulativeOffset : 0;
+
+              for (const ch of sortedAsc) {
+                const rawNum = ch.chapterNumber;
+                const mappedNum =
+                  appliedOffset > 0
+                    ? rawNum <= 0
+                      ? appliedOffset + 0.5
+                      : appliedOffset + rawNum
+                    : rawNum;
+                const mappedNumStr = Number.isInteger(mappedNum)
+                  ? String(mappedNum)
+                  : String(Number(mappedNum.toFixed(2)));
+                combined.push({
+                  ...ch,
+                  num: mappedNumStr,
+                  chapterNumber: mappedNum,
+                  title: `الموسم ${seg.seasonNum} · ${ch.title || `الفصل ${ch.num}`}`,
+                });
+              }
+
+              if (resetsNumbering || idx === 0) {
+                cumulativeOffset = (appliedOffset > 0 ? appliedOffset : 0) + Math.max(Math.floor(segMax), sortedAsc.length);
+              } else {
+                cumulativeOffset = Math.max(cumulativeOffset, Math.floor(segMax));
+              }
+            }
+
+            return { score: Math.max(...nonEmpty.map((s) => s.score)), items: combined };
+          }
+        }
+
+        const primary = ranked[0];
+        if (primary?.post) {
+          const ch = await fetchAzoraChapters(primary.post);
+          if (ch.length > 0) return { score: primary.score, items: ch };
+        }
+        return null;
+      };
+
+      // Stage 1: primary title alone (single fast request, avoids rate-limit bursts)
+      const firstRanked = await searchAzoraPosts(cleanTitles[0]);
+      const firstResolved = await resolveFromRanked(firstRanked);
+      if (firstResolved) return firstResolved;
+
+      // Stage 2: remaining synonyms in batches of 2
+      for (let i = 1; i < cleanTitles.length; i += 2) {
+        if (Date.now() > providerDeadlineAt - 1500) break;
+        const batch = await Promise.all(cleanTitles.slice(i, i + 2).map(searchAzoraPosts));
+        const mergedRanked = batch.flat().sort((a, b) => b.score - a.score);
+        const resolved = await resolveFromRanked(mergedRanked);
+        if (resolved) return resolved;
       }
       return { score: 0, items: [] };
     };
@@ -1370,6 +1599,7 @@ export const mangaService = {
       const fetchOlympusChapters = async (chosen: { slug: string }): Promise<MangaChapterItem[]> => {
         const parsePage = async (
           pageNum: number,
+          timeoutMs = 5500,
         ): Promise<{ items: MangaChapterItem[]; lockedNums: Set<string>; maxPage: number }> => {
           const url =
             pageNum === 1
@@ -1377,7 +1607,7 @@ export const mangaService = {
               : `https://olympustaff.com/series/${chosen.slug}?page=${pageNum}`;
           const r = await fetch(url, {
             headers: browserHeaders,
-            signal: AbortSignal.timeout(5500),
+            signal: AbortSignal.timeout(timeoutMs),
           });
           if (!r.ok) return { items: [], lockedNums: new Set(), maxPage: 1 };
           const pageHtml = await r.text();
@@ -1446,15 +1676,28 @@ export const mangaService = {
           return { items, lockedNums, maxPage };
         };
 
-        const first = await parsePage(1);
+        const first = await parsePage(1, Math.min(5500, Math.max(1500, providerDeadlineAt - Date.now())));
         const allItems = [...first.items];
         const allLocked = new Set<string>(first.lockedNums);
-        if (first.maxPage > 1) {
-          const extraPages = [];
-          for (let p = 2; p <= Math.min(first.maxPage, 8); p++) {
-            extraPages.push(parsePage(p).catch(() => ({ items: [], lockedNums: new Set<string>(), maxPage: 1 })));
+        const totalPagesToFetch = Math.min(first.maxPage, 30);
+
+        // Fetch remaining pages in gentle batches of 4 so long manhwas load cleanly without upstream bursts or losing partial results
+        for (let startP = 2; startP <= totalPagesToFetch; startP += 4) {
+          const remaining = providerDeadlineAt - Date.now();
+          if (remaining < 1000) break;
+          const batchNums: number[] = [];
+          for (let p = startP; p < startP + 4 && p <= totalPagesToFetch; p++) {
+            batchNums.push(p);
           }
-          const results = await Promise.all(extraPages);
+          const results = await Promise.all(
+            batchNums.map((p) =>
+              parsePage(p, Math.min(5000, remaining)).catch(() => ({
+                items: [],
+                lockedNums: new Set<string>(),
+                maxPage: 1,
+              })),
+            ),
+          );
           results.forEach((res) => {
             allItems.push(...res.items);
             res.lockedNums.forEach((n) => allLocked.add(n));
@@ -1469,8 +1712,9 @@ export const mangaService = {
         if (ch.length > 0) return { score: firstHit.score, items: ch };
       }
 
-      for (let i = 1; i < cleanTitles.length; i += 3) {
-        const batch = await Promise.all(cleanTitles.slice(i, i + 3).map(searchOlympusSeries));
+      for (let i = 1; i < cleanTitles.length; i += 2) {
+        if (Date.now() > providerDeadlineAt - 1500) break;
+        const batch = await Promise.all(cleanTitles.slice(i, i + 2).map(searchOlympusSeries));
         const hit = batch.filter(Boolean).sort((a, b) => (b?.score || 0) - (a?.score || 0))[0];
         if (hit) {
           const ch = await fetchOlympusChapters(hit);
@@ -1481,10 +1725,29 @@ export const mangaService = {
     };
 
     const try3asq = async (): Promise<{ score: number; items: MangaChapterItem[] }> => {
-      const parse3asqChaptersHtml = (html: string, slug: string): MangaChapterItem[] => {
+      const parse3asqChaptersHtml = (
+        html: string,
+        slug: string,
+      ): { items: MangaChapterItem[]; maxPage: number } => {
         const $c = cheerio.load(html);
         const list: MangaChapterItem[] = [];
         const seenNum = new Set<string>();
+        const targetSlugNorm = (() => {
+          try {
+            return decodeURIComponent(slug).toLowerCase();
+          } catch {
+            return slug.toLowerCase();
+          }
+        })();
+
+        let maxPage = 1;
+        $c(".pagination a[data-page], .pagination a[href*='t=']").each((_, el) => {
+          const dp = Number($c(el).attr("data-page") || 0);
+          if (dp > maxPage) maxPage = dp;
+          const hm = ($c(el).attr("href") || "").match(/[?&]t=(\d+)/);
+          if (hm && Number(hm[1]) > maxPage) maxPage = Number(hm[1]);
+        });
+
         $c("li.wp-manga-chapter a").each((_, el) => {
           const href = ($c(el).attr("href") || "").trim();
           const linkText = $c(el).text().replace(/\s+/g, " ").trim();
@@ -1492,7 +1755,11 @@ export const mangaService = {
           if (!m) return;
           const matchedSlug = m[1];
           const chSlug = m[2];
-          if (matchedSlug !== slug) return;
+          let matchedNorm = matchedSlug.toLowerCase();
+          try {
+            matchedNorm = decodeURIComponent(matchedSlug).toLowerCase();
+          } catch {}
+          if (matchedNorm !== targetSlugNorm) return;
           const numMatch = linkText.match(/(\d+(?:\.\d+)?)/) || chSlug.match(/(\d+(?:\.\d+)?)/);
           if (!numMatch) return;
           const numStr = numMatch[1];
@@ -1512,24 +1779,65 @@ export const mangaService = {
             publishAt: new Date().toISOString(),
           });
         });
-        return list;
+        return { items: list, maxPage };
       };
 
       const fetch3asqSeriesChapters = async (seriesUrl: string, slug: string): Promise<MangaChapterItem[]> => {
         const cleanUrl = seriesUrl.replace(/\/+$/, "");
         try {
+          const remaining = providerDeadlineAt - Date.now();
+          if (remaining < 1000) return [];
           const ajaxRes = await fetch(`${cleanUrl}/ajax/chapters/`, {
             method: "POST",
             headers: {
               ...browserHeaders,
               Referer: `${cleanUrl}/`,
             },
-            signal: AbortSignal.timeout(5500),
+            signal: AbortSignal.timeout(Math.min(5500, remaining)),
           });
           if (ajaxRes.ok) {
             const ajaxHtml = await ajaxRes.text();
-            const parsed = parse3asqChaptersHtml(ajaxHtml, slug);
-            if (parsed.length > 0) return parsed;
+            const first = parse3asqChaptersHtml(ajaxHtml, slug);
+            if (first.items.length > 0) {
+              const allItems = [...first.items];
+              const maxT = Math.min(first.maxPage, 25);
+              for (let startT = 2; startT <= maxT; startT += 4) {
+                const rem = providerDeadlineAt - Date.now();
+                if (rem < 1000) break;
+                const pageNums: number[] = [];
+                for (let t = startT; t < startT + 4 && t <= maxT; t++) {
+                  pageNums.push(t);
+                }
+                const pageResults = await Promise.all(
+                  pageNums.map(async (t) => {
+                    try {
+                      const r = await fetch(`${cleanUrl}/ajax/chapters/?t=${t}`, {
+                        method: "POST",
+                        headers: {
+                          ...browserHeaders,
+                          Referer: `${cleanUrl}/`,
+                        },
+                        signal: AbortSignal.timeout(Math.min(4800, rem)),
+                      });
+                      if (!r.ok) return [];
+                      const h = await r.text();
+                      return parse3asqChaptersHtml(h, slug).items;
+                    } catch {
+                      return [];
+                    }
+                  }),
+                );
+                let anyAdded = false;
+                for (const list of pageResults) {
+                  if (list.length > 0) {
+                    allItems.push(...list);
+                    anyAdded = true;
+                  }
+                }
+                if (!anyAdded) break;
+              }
+              return allItems;
+            }
           }
         } catch {}
 
@@ -1541,13 +1849,15 @@ export const mangaService = {
           if (pageRes.ok) {
             const pageHtml = await pageRes.text();
             const parsed = parse3asqChaptersHtml(pageHtml, slug);
-            if (parsed.length > 0) return parsed;
+            if (parsed.items.length > 0) return parsed.items;
           }
         } catch {}
         return [];
       };
 
-      const search3asq = async (qTitle: string): Promise<{ href: string; slug: string; score: number } | null> => {
+      const search3asq = async (
+        qTitle: string,
+      ): Promise<{ href: string; slug: string; score: number; latestNum: number }[]> => {
         try {
           const searchRes = await fetch(
             `https://3asq.org/?s=${encodeURIComponent(qTitle)}&post_type=wp-manga`,
@@ -1556,10 +1866,10 @@ export const mangaService = {
               signal: AbortSignal.timeout(5500),
             },
           );
-          if (!searchRes.ok) return null;
+          if (!searchRes.ok) return [];
           const html = await searchRes.text();
           const $ = cheerio.load(html);
-          const candidates: { href: string; slug: string; score: number }[] = [];
+          const candidates: { href: string; slug: string; score: number; latestNum: number; hasDupSuffix: boolean }[] = [];
 
           $(".c-tabs-item__content .post-title a, .tab-content-wrap .post-title a").each((_, el) => {
             const href = ($(el).attr("href") || "").trim();
@@ -1568,21 +1878,63 @@ export const mangaService = {
             if (!m) return;
             const slug = m[1];
             const score = scoreTitleMatch(titleText, ["french", "english", "colored", "episode a", "crossover"]);
-            if (score >= 58) {
-              candidates.push({ href, slug, score });
-            }
+            if (score < 58) return;
+
+            const card = $(el).closest(".c-tabs-item__content, .row, .tab-summary");
+            let latestNum = 0;
+            card.find(`a[href*="/manga/${slug}/"]`).each((__, chEl) => {
+              const chHref = $(chEl).attr("href") || "";
+              const lm = chHref.match(new RegExp(`/manga/${slug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/(\\d+(?:\\.\\d+)?)`));
+              if (lm) latestNum = Math.max(latestNum, parseFloat(lm[1]) || 0);
+            });
+            const hasDupSuffix = /-\d+$/.test(slug);
+            candidates.push({ href, slug, score, latestNum, hasDupSuffix });
           });
-          candidates.sort((a, b) => b.score - a.score);
-          return candidates[0] || null;
+
+          candidates.sort((a, b) => {
+            if (Math.abs(b.score - a.score) > 15) return b.score - a.score;
+            if (b.latestNum !== a.latestNum) return b.latestNum - a.latestNum;
+            if (a.hasDupSuffix !== b.hasDupSuffix) return a.hasDupSuffix ? 1 : -1;
+            return b.score - a.score;
+          });
+          return candidates;
         } catch {
-          return null;
+          return [];
         }
       };
 
-      const firstHit = await search3asq(cleanTitles[0]);
-      if (firstHit) {
-        const chapters = await fetch3asqSeriesChapters(firstHit.href, firstHit.slug);
-        if (chapters.length > 0) return { score: firstHit.score, items: chapters };
+      const merge3asqHits = async (
+        hits: { href: string; slug: string; score: number; latestNum: number }[],
+      ): Promise<{ score: number; items: MangaChapterItem[] }> => {
+        if (hits.length === 0) return { score: 0, items: [] };
+        const primary = hits[0];
+        const chapters = await fetch3asqSeriesChapters(primary.href, primary.slug);
+        if (chapters.length === 0) {
+          if (hits[1]) {
+            const altCh = await fetch3asqSeriesChapters(hits[1].href, hits[1].slug);
+            if (altCh.length > 0) return { score: hits[1].score, items: altCh };
+          }
+          return { score: 0, items: [] };
+        }
+        // If a secondary tied result exists and primary doesn't start near chapter 1, also pull missing chapters from secondary
+        const minPrimary = Math.min(...chapters.map((c) => c.chapterNumber).filter(Number.isFinite));
+        if (hits[1] && hits[1].score >= primary.score - 10 && minPrimary > 3 && Date.now() < providerDeadlineAt - 2000) {
+          const extra = await fetch3asqSeriesChapters(hits[1].href, hits[1].slug);
+          const have = new Set(chapters.map((c) => c.num));
+          for (const c of extra) {
+            if (!have.has(c.num)) {
+              have.add(c.num);
+              chapters.push(c);
+            }
+          }
+        }
+        return { score: primary.score, items: chapters };
+      };
+
+      const firstHits = await search3asq(cleanTitles[0]);
+      if (firstHits.length > 0) {
+        const res = await merge3asqHits(firstHits);
+        if (res.items.length > 0) return res;
       }
 
       const directSlug = cleanTitles[0]
@@ -1593,7 +1945,7 @@ export const mangaService = {
 
       const [extraSearchHits, directHits] = await Promise.all([
         cleanTitles.length > 1
-          ? Promise.all(cleanTitles.slice(1, 3).map(search3asq))
+          ? Promise.all(cleanTitles.slice(1, 4).map(search3asq))
           : Promise.resolve([]),
         directSlug.length >= 4
           ? fetch3asqSeriesChapters(`https://3asq.online/manga/${directSlug}`, directSlug)
@@ -1602,10 +1954,13 @@ export const mangaService = {
 
       if (directHits.length > 0) return { score: 110, items: directHits };
 
-      const bestExtra = extraSearchHits.filter(Boolean).sort((a, b) => (b?.score || 0) - (a?.score || 0))[0];
-      if (bestExtra) {
-        const chapters = await fetch3asqSeriesChapters(bestExtra.href, bestExtra.slug);
-        if (chapters.length > 0) return { score: bestExtra.score, items: chapters };
+      const flatExtra = extraSearchHits.flat().sort((a, b) => {
+        if (Math.abs(b.score - a.score) > 15) return b.score - a.score;
+        return b.latestNum - a.latestNum;
+      });
+      if (flatExtra.length > 0) {
+        const res = await merge3asqHits(flatExtra);
+        if (res.items.length > 0) return res;
       }
 
       return { score: 0, items: [] };
@@ -1613,23 +1968,27 @@ export const mangaService = {
 
     const emptyRes = { score: 0, items: [] as MangaChapterItem[] };
     const providerResults = await Promise.all([
-      withDeadline(tryAzora(), 13500, emptyRes),
-      withDeadline(tryOlympus(), 13500, emptyRes),
-      withDeadline(try3asq(), 13500, emptyRes),
+      tryAzora().catch(() => emptyRes),
+      tryOlympus().catch(() => emptyRes),
+      try3asq().catch(() => emptyRes),
     ]);
     providerResults.sort((a, b) => b.score - a.score);
 
     const merged = new Map<string, MangaChapterItem>();
     for (const group of providerResults) {
       for (const ch of group.items) {
-        if (!merged.has(ch.num)) merged.set(ch.num, ch);
+        const k = Number.isFinite(ch.chapterNumber)
+          ? (Number.isInteger(ch.chapterNumber) ? String(ch.chapterNumber) : String(parseFloat(ch.num) || ch.chapterNumber))
+          : ch.num;
+        if (!merged.has(k)) merged.set(k, ch);
       }
     }
     const finalItems = Array.from(merged.values()).sort((a, b) => b.chapterNumber - a.chapterNumber);
     if (finalItems.length > 0) {
-      await serverCache.set(cacheKey, finalItems, 20 * 60 * 1000);
+      await serverCache.set(cacheKey, finalItems, 30 * 60 * 1000);
     }
     return finalItems;
+    });
   },
 
   async getChapterPages(chapterId: string, quality: "high" | "saver" = "high") {
@@ -1641,6 +2000,8 @@ export const mangaService = {
     if (cached && Array.isArray(cached.pages) && cached.pages.length > 0) {
       return cached;
     }
+
+    return coalesceManga(cacheKey, async () => {
 
     if (cleanId.startsWith("azora::")) {
       const [, slug, chSlug] = cleanId.split("::");
@@ -1828,7 +2189,8 @@ export const mangaService = {
       pages,
     };
 
-    await serverCache.set(cacheKey, payload, 10 * 60 * 1000);
+    await serverCache.set(cacheKey, payload, 12 * 60 * 1000);
     return payload;
+    });
   },
 };

@@ -16,6 +16,7 @@ import { db } from '../firebase';
 import { DYNAMIC_ACHIEVEMENTS, CATEGORY_LABELS } from '../data/dynamicAchievements';
 import PullToRefresh from '../components/PullToRefresh';
 import { useDeviceDisplay } from '../hooks/useDeviceDisplay';
+import ImageLightboxModal from '../components/ImageLightboxModal';
 
 interface ProfileViewProps {
   onAdminClick?: () => void;
@@ -70,6 +71,7 @@ export default function ProfileView({
   const [activeAchievementTab, setActiveAchievementTab] = useState<'all' | 'completed' | 'locked'>('all');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [achievementsLimit, setAchievementsLimit] = useState<number>(30);
+  const [lightboxImage, setLightboxImage] = useState<{ src: string; caption?: string } | null>(null);
 
   useEffect(() => {
     if (openSettingsInitially && isCurrentUser && onOpenAccountSettings) {
@@ -182,7 +184,7 @@ export default function ProfileView({
   }, [userData, showStore]);
 
   const bannerImg = equipped.banner?.img || '';
-  const avatarImg = equipped.avatar?.img || (isCurrentUser ? user?.photoURL : null) || "https://api.dicebear.com/7.x/avataaars/svg?seed=Felix";
+  const avatarImg = equipped.avatar?.img || (isCurrentUser ? user?.photoURL : userData?.photoURL) || "https://api.dicebear.com/7.x/avataaars/svg?seed=Felix";
 
   const userAchievements = useMemo(() => {
     const mapped = DYNAMIC_ACHIEVEMENTS.map((ach) => {
@@ -240,7 +242,19 @@ export default function ProfileView({
 
   if (isCurrentUser && !user) {
     return (
-      <div className="bg-[#000000] min-h-screen text-xs font-sans text-right select-none max-w-2xl mx-auto border-x border-[#1a1a1a] relative pb-28 pt-16 px-5 flex flex-col items-center justify-center gap-5" dir="rtl">
+      <div className="bg-[#000000] min-h-screen text-xs font-sans text-right select-none max-w-2xl mx-auto border-x border-[#1a1a1a] relative pb-12 pt-16 px-5 flex flex-col items-center justify-center gap-5" dir="rtl">
+        {onBack && (
+          <div className="theme-keep-dark absolute top-4 right-4 z-40">
+            <button
+              type="button"
+              onClick={onBack}
+              aria-label="رجوع"
+              className="w-10 h-10 bg-[#0a0a0c]/85 backdrop-blur-md rounded-xl hover:bg-[#141418] border border-white/10 active:scale-95 transition text-white flex items-center justify-center cursor-pointer"
+            >
+              <ChevronRight size={18} />
+            </button>
+          </div>
+        )}
         <div className="w-20 h-20 rounded-3xl bg-gradient-to-tr from-[#FF1744]/20 to-purple-600/20 border border-[#FF1744]/30 flex items-center justify-center text-[#FF1744] shadow-xl">
           <User size={36} />
         </div>
@@ -287,7 +301,7 @@ export default function ProfileView({
 
   return (
     <PullToRefresh onRefresh={() => fetchProfile(true)}>
-      <div className="bg-[#000000] min-h-screen text-xs font-sans text-right select-none w-full max-w-6xl mx-auto border-x border-[#1a1a1a]/70 relative pb-28 overflow-x-hidden" dir="rtl">
+      <div className="bg-[#000000] min-h-screen text-xs font-sans text-right select-none w-full max-w-6xl mx-auto border-x border-[#1a1a1a]/70 relative pb-12 overflow-x-hidden" dir="rtl">
 
         {/* Top Floating Controls */}
         {onBack && (
@@ -314,16 +328,30 @@ export default function ProfileView({
         )}
 
         {/* Banner */}
-        <div className={`theme-keep-dark relative ${bannerHeightClass} w-full overflow-hidden bg-[#060609] border-b border-white/5 select-none z-10`}>
+        <div
+          onClick={() => {
+            if (bannerImg) {
+              setLightboxImage({
+                src: bannerImg,
+                caption: equipped.banner?.name || 'غلاف الملف الشخصي',
+              });
+            }
+          }}
+          className={`theme-keep-dark relative ${bannerHeightClass} w-full overflow-hidden bg-[#060609] border-b border-white/5 select-none z-10 ${
+            bannerImg ? 'cursor-zoom-in' : ''
+          }`}
+        >
           {bannerImg ? (
-            <div
-              className={`absolute inset-0 w-full h-full bg-cover bg-center ${equipped.banner?.imageStyle || ''}`}
-              style={{ backgroundImage: `url(${bannerImg})` }}
+            <img
+              src={bannerImg}
+              alt={equipped.banner?.name || 'غلاف الملف الشخصي'}
+              referrerPolicy="no-referrer"
+              className={`absolute inset-0 w-full h-full object-cover object-center ${equipped.banner?.imageStyle || ''}`}
             />
           ) : (
             <div className="absolute inset-0 w-full h-full bg-gradient-to-tr from-[#06060b] via-[#130d20] to-[#06060b]" />
           )}
-          <div className="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-black via-black/55 to-transparent z-10" />
+          <div className="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-black via-black/55 to-transparent z-10 pointer-events-none" />
         </div>
 
         {/* Responsive Split Grid: Identity Column + Main Content Column (hinge-safe in book mode) */}
@@ -342,15 +370,22 @@ export default function ProfileView({
             isCentered ? 'flex-col items-center' : isLeft ? 'flex-row-reverse' : 'flex-row'
           }`}>
             {/* Avatar */}
-            <div
-              className={`relative shrink-0 ${isCurrentUser && onOpenAppearance ? 'cursor-pointer' : ''}`}
-              onClick={() => isCurrentUser && onOpenAppearance?.()}
+            <button
+              type="button"
+              aria-label="تكبير الصورة الشخصية"
+              onClick={() =>
+                setLightboxImage({
+                  src: avatarImg,
+                  caption: userData?.displayName || (isCurrentUser ? user?.displayName : undefined) || 'الصورة الشخصية',
+                })
+              }
+              className="relative shrink-0 cursor-zoom-in group focus:outline-none"
             >
               {equipped.aura && (
                 <div className={`absolute -inset-2 ${avatarShapeClass} pointer-events-none z-0 opacity-85 ${equipped.aura.auraStyle || ''} bg-gradient-to-tr ${equipped.aura.auraGradient || 'from-purple-500/40 to-amber-500/40'} blur-[3px]`} />
               )}
-              <div className={`w-20 h-20 ${avatarShapeClass} border-4 border-black bg-[#0c0c0e] overflow-hidden relative z-10 shadow-xl`}>
-                <img src={avatarImg} alt="Avatar" className={`w-full h-full object-cover ${equipped.avatar?.imageStyle || ''}`} />
+              <div className={`w-20 h-20 ${avatarShapeClass} border-4 border-black bg-[#0c0c0e] overflow-hidden relative z-10 shadow-xl group-hover:brightness-110 transition`}>
+                <img src={avatarImg} alt="Avatar" className={`w-full h-full object-cover ${equipped.avatar?.imageStyle || ''}`} referrerPolicy="no-referrer" />
               </div>
               {equipped.frame?.frameStyle && (
                 <div className={`absolute inset-[-4px] pointer-events-none z-20 ${equipped.frame.frameStyle} ${avatarShapeClass}`} />
@@ -358,7 +393,7 @@ export default function ProfileView({
               <div className="absolute -bottom-1 -right-1 bg-gradient-to-tr from-[#9333ea] to-[#ec4899] text-white font-black text-[11px] w-7 h-7 rounded-full flex items-center justify-center border-2 border-black shadow-lg font-mono tabular-nums z-30">
                 {currentLevel}
               </div>
-            </div>
+            </button>
 
             {/* Clean inline currency & streak summary */}
             {showHistory && (
@@ -661,9 +696,9 @@ export default function ProfileView({
                       <Trophy size={14} className="text-amber-400" />
                       أبرز الإنجازات
                     </span>
-                    <span className="text-[11px] font-bold text-purple-400 flex items-center gap-0.5 tabular-nums">
-                      عرض الكل ({userAchievements.completed.length}/{DYNAMIC_ACHIEVEMENTS.length})
-                      <ChevronLeft size={13} />
+                    <span className="text-[11px] font-bold text-purple-400 flex items-center gap-1 tabular-nums" aria-label="عرض كل الإنجازات">
+                      <span>{userAchievements.completed.length}/{DYNAMIC_ACHIEVEMENTS.length}</span>
+                      <ChevronLeft size={14} />
                     </span>
                   </button>
 
@@ -970,6 +1005,12 @@ export default function ProfileView({
             <Loader2 size={18} className="animate-spin text-neutral-500" />
           </div>
         )}
+        <ImageLightboxModal
+          src={lightboxImage?.src || null}
+          alt={lightboxImage?.caption || 'صورة مكبرة'}
+          caption={lightboxImage?.caption}
+          onClose={() => setLightboxImage(null)}
+        />
       </div>
     </PullToRefresh>
   );

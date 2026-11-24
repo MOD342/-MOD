@@ -32,6 +32,9 @@ import ViewportPortal from '../components/ViewportPortal';
 import PullToRefresh from '../components/PullToRefresh';
 import AnimeCommentItem from '../components/AnimeCommentItem';
 import BatchChapterDownloadModal from '../components/BatchChapterDownloadModal';
+import ImageLightboxModal from '../components/ImageLightboxModal';
+import { LongPressCopy } from '../components/LongPressCopy';
+import { translateGenreToArabic } from '../utils/genreTaxonomy';
 
 interface MangaDetailsViewProps {
   mangaId: string;
@@ -47,6 +50,7 @@ interface MangaDetailsViewProps {
   }) => void;
   onNavigateDownloads: () => void;
   onUserClick?: (userId: string) => void;
+  onNavigate?: (view: string, props?: any) => void;
 }
 
 const READING_LISTS: { id: MainListStatus; label: string }[] = [
@@ -65,19 +69,20 @@ export default function MangaDetailsView({
   onReadChapter,
   onNavigateDownloads,
   onUserClick,
+  onNavigate,
 }: MangaDetailsViewProps) {
   const { user, userData, signIn } = useAuth();
   const display = useDeviceDisplay();
   const downloadQueue = useDownloadQueue();
 
   const [manga, setManga] = useState<any>(() =>
-    clientCache.get(`client_manga_details_v4_${mangaId}`),
+    clientCache.get(`client_manga_details_v7_${mangaId}`),
   );
   const [chapters, setChapters] = useState<any[]>(() => {
-    const cached = clientCache.get(`client_manga_chapters_v4_${mangaId}`);
+    const cached = clientCache.get(`client_manga_chapters_v7_${mangaId}`);
     return Array.isArray(cached) && cached.length > 0 ? cached : [];
   });
-  const [loading, setLoading] = useState(() => !clientCache.get(`client_manga_details_v4_${mangaId}`));
+  const [loading, setLoading] = useState(() => !clientCache.get(`client_manga_details_v7_${mangaId}`));
   const [chaptersLoading, setChaptersLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
 
@@ -93,6 +98,7 @@ export default function MangaDetailsView({
   const [showListModal, setShowListModal] = useState(false);
   const [newListName, setNewListName] = useState('');
   const [showBatchModal, setShowBatchModal] = useState(false);
+  const [lightboxImage, setLightboxImage] = useState<{ src: string; caption?: string } | null>(null);
 
   // Comments tab state
   const [comments, setComments] = useState<Comment[]>([]);
@@ -120,30 +126,61 @@ export default function MangaDetailsView({
     } catch {}
   }, [user, mangaId]);
 
-  const autoRetriedRef = React.useRef(false);
-
   const fetchAll = useCallback(
     async (forceBypass = false) => {
+      const detailsCacheKey = `client_manga_details_v7_${mangaId}`;
+      const chaptersCacheKey = `client_manga_chapters_v7_${mangaId}`;
+
+      // Clean up legacy v5 client caches for this manga if present
+      clientCache.delete(`client_manga_details_v5_${mangaId}`);
+      clientCache.delete(`client_manga_chapters_v5_${mangaId}`);
+
+      if (forceBypass) {
+        clientCache.delete(detailsCacheKey);
+        clientCache.delete(chaptersCacheKey);
+      } else {
+        const cachedDetails = clientCache.get<any>(detailsCacheKey);
+        const cachedChapters = clientCache.get<any[]>(chaptersCacheKey);
+        if (cachedDetails && Array.isArray(cachedChapters) && cachedChapters.length > 0) {
+          const expected = Number(cachedDetails?.chaptersCount || 0);
+          const nums = cachedChapters
+            .map((c: any) => Number(c?.chapterNumber))
+            .filter((n: number) => Number.isFinite(n) && n >= 0);
+          const looksIncomplete =
+            (expected >= 15 && cachedChapters.length < Math.floor(expected * 0.72)) ||
+            (cachedChapters.length >= 10 && nums.length > 0 && Math.min(...nums) > 3);
+
+          setManga(cachedDetails);
+          setChapters(cachedChapters);
+          setLoading(false);
+          void mangaListService.getMangaAppRating(String(cachedDetails._id || mangaId)).then(setAppRating);
+
+          if (!looksIncomplete) {
+            setChaptersLoading(false);
+            return;
+          }
+          forceBypass = true;
+        }
+      }
+
       if (!manga) setLoading(true);
       setLoadError(false);
       setChaptersLoading(true);
-      let loadedCount = 0;
 
       try {
-        const res = await cloudCatalogService.getMangaWithCloud(String(mangaId), {
+        await cloudCatalogService.getMangaWithCloud(String(mangaId), {
           forceRefresh: forceBypass,
           onDetails: (details) => {
             setManga(details);
-            clientCache.set(`client_manga_details_v4_${mangaId}`, details, 6 * 60 * 60 * 1000);
+            clientCache.set(detailsCacheKey, details, 6 * 60 * 60 * 1000);
             setLoading(false);
             void mangaListService.getMangaAppRating(String(details._id || mangaId)).then(setAppRating);
           },
           onChapters: (chList, resolvedMdId) => {
             const safeList = Array.isArray(chList) ? chList : [];
-            loadedCount = safeList.length;
             setChapters(safeList);
             if (safeList.length > 0) {
-              clientCache.set(`client_manga_chapters_v4_${mangaId}`, safeList, 30 * 60 * 1000);
+              clientCache.set(chaptersCacheKey, safeList, 30 * 60 * 1000);
             }
             if (resolvedMdId) {
               setManga((prev: any) =>
@@ -156,26 +193,21 @@ export default function MangaDetailsView({
             if (!manga) setLoadError(true);
           },
         });
-        loadedCount = Math.max(loadedCount, Array.isArray(res?.chapters) ? res.chapters.length : 0);
       } catch {
         if (!manga) setLoadError(true);
       } finally {
         setLoading(false);
         setChaptersLoading(false);
       }
-
-      if (!forceBypass && loadedCount === 0 && !autoRetriedRef.current) {
-        autoRetriedRef.current = true;
-        setTimeout(() => {
-          void fetchAll(true);
-        }, 2200);
-      }
     },
     [mangaId],
   );
 
   useEffect(() => {
-    autoRetriedRef.current = false;
+    const cachedDetails = clientCache.get<any>(`client_manga_details_v7_${mangaId}`);
+    const cachedChapters = clientCache.get<any[]>(`client_manga_chapters_v7_${mangaId}`);
+    setManga(cachedDetails || null);
+    setChapters(Array.isArray(cachedChapters) && cachedChapters.length > 0 ? cachedChapters : []);
     void fetchAll(false);
   }, [mangaId]);
 
@@ -512,7 +544,11 @@ export default function MangaDetailsView({
 
         {/* Full-bleed Hero */}
         <div
-          className={`theme-keep-dark relative w-full bg-[#0c0c10] overflow-hidden ${
+          onClick={() => {
+            const cover = manga.bannerUrl || manga.posterUrl;
+            if (cover) setLightboxImage({ src: cover, caption: manga.title });
+          }}
+          className={`theme-keep-dark relative w-full bg-[#0c0c10] overflow-hidden cursor-zoom-in ${
             display.isCoverScreen ? 'h-[42vh] min-h-[280px]' : 'h-[48vh] min-h-[340px] max-h-[460px]'
           }`}
         >
@@ -524,10 +560,20 @@ export default function MangaDetailsView({
               className="w-full h-full object-cover opacity-85"
             />
           )}
-          <div className="absolute inset-0 bg-gradient-to-t from-black via-black/55 to-black/25" />
+          <div className="absolute inset-0 bg-gradient-to-t from-black via-black/55 to-black/25 pointer-events-none" />
 
-          <div className="absolute bottom-5 inset-x-4 max-w-6xl mx-auto z-20 flex items-end gap-4 md:gap-6">
-            <div className="w-24 sm:w-28 md:w-32 aspect-[3/4] rounded-2xl overflow-hidden border border-white/15 bg-neutral-900 shadow-2xl shrink-0">
+          <div className="absolute bottom-5 inset-x-4 max-w-6xl mx-auto z-20 flex items-end gap-4 md:gap-6 pointer-events-none">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (manga.posterUrl) {
+                  setLightboxImage({ src: manga.posterUrl, caption: manga.title });
+                }
+              }}
+              aria-label="تكبير غلاف العمل"
+              className="w-24 sm:w-28 md:w-32 aspect-[3/4] rounded-2xl overflow-hidden border border-white/15 hover:border-white/40 bg-neutral-900 shadow-2xl shrink-0 pointer-events-auto cursor-zoom-in transition"
+            >
               {manga.posterUrl ? (
                 <img
                   src={manga.posterUrl}
@@ -540,7 +586,7 @@ export default function MangaDetailsView({
                   <BookOpen size={28} />
                 </div>
               )}
-            </div>
+            </button>
 
             <div className="flex-1 min-w-0 space-y-1.5 text-right">
               <div className="flex items-center flex-wrap gap-1.5 text-xs font-bold text-neutral-300 tabular-nums">
@@ -568,9 +614,21 @@ export default function MangaDetailsView({
                 )}
               </div>
 
-              <h1 className="text-xl sm:text-2xl md:text-3xl font-black text-white leading-tight line-clamp-2">
-                {manga.title}
+              <h1
+                onClick={(e) => e.stopPropagation()}
+                className="pointer-events-auto text-xl sm:text-2xl md:text-3xl font-black text-white leading-tight line-clamp-2"
+              >
+                <LongPressCopy text={manga.title}>{manga.title}</LongPressCopy>
               </h1>
+
+              {manga.englishTitle && manga.englishTitle !== manga.title && (
+                <p
+                  onClick={(e) => e.stopPropagation()}
+                  className="pointer-events-auto text-[11px] sm:text-xs text-neutral-300 font-semibold truncate"
+                >
+                  <LongPressCopy text={manga.englishTitle}>{manga.englishTitle}</LongPressCopy>
+                </p>
+              )}
 
               {manga.releaseYear && (
                 <p className="text-xs text-neutral-300 tabular-nums">
@@ -679,8 +737,22 @@ export default function MangaDetailsView({
                     {manga.description || 'لا توجد قصة متاحة لهذا العمل حالياً.'}
                   </p>
                   {Array.isArray(manga.genres) && manga.genres.length > 0 && (
-                    <div className="pt-2 border-t border-white/5 text-xs text-neutral-400 font-bold">
-                      التصنيفات: <span className="text-neutral-200">{manga.genres.join(' · ')}</span>
+                    <div className="pt-2 border-t border-white/5 flex flex-wrap items-center gap-1.5">
+                      {manga.genres.map((g: string, gIdx: number) => (
+                        <button
+                          key={`${g}-${gIdx}`}
+                          type="button"
+                          onClick={() =>
+                            onNavigate?.('watch', {
+                              initialGenre: g,
+                              initialMediaKind: 'manga',
+                            })
+                          }
+                          className="min-h-[32px] text-[11px] bg-black/60 border border-white/10 hover:border-amber-400/60 hover:text-amber-300 px-3 py-1 rounded-full text-neutral-200 font-bold transition cursor-pointer"
+                        >
+                          {translateGenreToArabic(g)}
+                        </button>
+                      ))}
                     </div>
                   )}
                   {Array.isArray(manga.authors) && manga.authors.length > 0 && (
@@ -771,7 +843,7 @@ export default function MangaDetailsView({
                               {rel.relation} · {rel.originLabel}
                             </span>
                             <span className="text-xs font-black text-white line-clamp-2">
-                              {rel.title}
+                              <LongPressCopy text={rel.title}>{rel.title}</LongPressCopy>
                             </span>
                           </div>
                         </div>
@@ -811,7 +883,7 @@ export default function MangaDetailsView({
                               {rec.originLabel} · {rec.rating}
                             </span>
                             <span className="text-xs font-black text-white line-clamp-2">
-                              {rec.title}
+                              <LongPressCopy text={rec.title}>{rec.title}</LongPressCopy>
                             </span>
                           </div>
                         </div>
@@ -839,6 +911,17 @@ export default function MangaDetailsView({
                     />
                   </div>
                   <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void fetchAll(true)}
+                      disabled={chaptersLoading}
+                      title="تحديث قائمة الفصول"
+                      aria-label="تحديث قائمة الفصول"
+                      className="min-h-[44px] px-3 rounded-xl bg-[#0f0f13] hover:bg-neutral-800 border border-neutral-800 text-xs font-black text-neutral-200 flex items-center gap-1.5 cursor-pointer whitespace-nowrap disabled:opacity-50"
+                    >
+                      <RefreshCw size={14} className={chaptersLoading ? 'animate-spin text-[#FF1744]' : ''} />
+                      <span>تحديث</span>
+                    </button>
                     <button
                       type="button"
                       onClick={() => setSortDesc((p) => !p)}
@@ -1111,6 +1194,12 @@ export default function MangaDetailsView({
           chapters={ascSortedChapters}
           isChapterRead={isChapterRead}
           onStartDownloads={onNavigateDownloads}
+        />
+        <ImageLightboxModal
+          src={lightboxImage?.src || null}
+          alt={manga.title}
+          caption={lightboxImage?.caption}
+          onClose={() => setLightboxImage(null)}
         />
       </div>
     </PullToRefresh>

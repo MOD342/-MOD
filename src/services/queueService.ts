@@ -120,9 +120,6 @@ class QueueManager {
       console.log('--- [Queue System Setup] INFO: Redis connection bypassed. Activating In-Process High-Resiliency Queue Worker! ✔ ---');
       this.startLocalWorkerLoop();
     }
-
-    // Register a periodic scheduler loop for scheduled background scraping (asynchronous queue scheduling)
-    this.startSchedulerLoop();
   }
 
   // Add scrubbing task to queue
@@ -289,22 +286,7 @@ class QueueManager {
     }
   }
 
-  // Periodic Scheduler Loop (Schedules warmup jobs in background)
-  private startSchedulerLoop() {
-    // Run pre-warmups immediately 5 seconds after server startup
-    setTimeout(() => {
-      this.addJob('preWarmDashboard', {}, 1)
-        .then(id => console.log(`[Queue Scheduler] Automatically scheduled Dashboard pre-warmup. Job ID: ${id}`))
-        .catch(e => console.error(`[Queue Scheduler] Dynamic pre-warmup injection failed:`, e));
-    }, 5000);
-
-    // Schedule Dashboard warmups every 15 minutes to keep caches continuously updated
-    setInterval(() => {
-      console.log(`[Queue Scheduler] Dispatching background periodic dashboard check...`);
-      this.addJob('preWarmDashboard', {}, 1)
-        .catch(e => console.error(`[Queue Scheduler] Error:`, e));
-    }, 15 * 60 * 1000);
-  }
+  // Manual / on-demand pre-warm can still be queued explicitly via Admin Queue API without idle polling loops.
 
   // Request logs and stats for dashboard
   public getStatus(): QueueSystemStatus {

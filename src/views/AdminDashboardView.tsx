@@ -59,18 +59,30 @@ import { AdminBroadcastTab } from './admin/AdminBroadcastTab';
 import { AdminPlatformTab } from './admin/AdminPlatformTab';
 import ViewportPortal from '../components/ViewportPortal';
 import { useDeviceDisplay } from '../hooks/useDeviceDisplay';
+import {
+  BANNER_STYLE_OPTIONS,
+  DEFAULT_DUAL_HOME_CONFIG,
+  normalizeDualHomeConfig,
+  type AnimeSliderMode,
+  type BannerCustomItem,
+  type BannerStyle,
+  type DualHomeConfig,
+  type MangaSliderMode,
+} from '../types/platformConfig';
 
 type MainWorkspace = 'overview' | 'moderation' | 'community' | 'broadcast' | 'platform';
 type ModerationSubTab = 'live_content' | 'reports' | 'recommendations' | 'suggestions' | 'audit';
 type CommunitySubTab = 'members' | 'roles' | 'bans' | 'promos';
-type PlatformSubTab = 'slider' | 'curation' | 'links_ads' | 'queue' | 'maintenance';
+type PlatformSubTab = 'slider' | 'homes' | 'curation' | 'links_ads' | 'queue' | 'maintenance';
 
 export default function AdminDashboardView({
   onBack,
-  onNavigate
+  onNavigate,
+  initialTab
 }: {
   onBack: () => void;
   onNavigate?: (view: string, data?: any) => void;
+  initialTab?: string;
 }) {
   const { user: authUser, userRole: contextRole } = useAuth();
   const display = useDeviceDisplay();
@@ -82,10 +94,28 @@ export default function AdminDashboardView({
   const [isServerVerifying, setIsServerVerifying] = useState<boolean>(true);
 
   // Navigation State: 5 Clean Workspaces instead of 11 cluttered tabs
-  const [workspace, setWorkspace] = useState<MainWorkspace>('overview');
-  const [modSubTab, setModSubTab] = useState<ModerationSubTab>('live_content');
+  const [workspace, setWorkspace] = useState<MainWorkspace>(() => {
+    if (initialTab === 'reports' || initialTab === 'recommendations' || initialTab === 'suggestions_moderation') {
+      return 'moderation';
+    }
+    if (initialTab === 'slider' || initialTab === 'homes' || initialTab === 'links_ads') {
+      return 'platform';
+    }
+    if (initialTab === 'broadcast') return 'broadcast';
+    return 'overview';
+  });
+  const [modSubTab, setModSubTab] = useState<ModerationSubTab>(() => {
+    if (initialTab === 'recommendations') return 'recommendations';
+    if (initialTab === 'suggestions_moderation') return 'suggestions';
+    if (initialTab === 'reports') return 'reports';
+    return 'live_content';
+  });
   const [commSubTab, setCommSubTab] = useState<CommunitySubTab>('members');
-  const [platformSubTab, setPlatformSubTab] = useState<PlatformSubTab>('slider');
+  const [platformSubTab, setPlatformSubTab] = useState<PlatformSubTab>(() => {
+    if (initialTab === 'homes') return 'homes';
+    if (initialTab === 'links_ads') return 'links_ads';
+    return 'slider';
+  });
 
   // Data Collections (Real-time synced with Firestore)
   const [usersInfo, setUsersInfo] = useState<GlobalRole[]>([]);
@@ -189,16 +219,30 @@ export default function AdminDashboardView({
   const [selectedNotifAnime, setSelectedNotifAnime] = useState<any>(null);
   const [isSendingNotif, setIsSendingNotif] = useState(false);
 
-  // Platform Settings & Slider States
+  // Platform Settings & Dual Home / Banner States
   const [sliderLimit, setSliderLimit] = useState(5);
   const [sliderSeason, setSliderSeason] = useState('auto');
-  const [sliderMode, setSliderMode] = useState<'best_season' | 'trending_season' | 'all_time_best' | 'classic_historical' | 'custom'>('best_season');
-  const [customSliderAnime, setCustomSliderAnime] = useState<any[]>([]);
+  const [sliderMode, setSliderMode] = useState<AnimeSliderMode>('best_season');
+  const [animeBannerStyle, setAnimeBannerStyle] = useState<BannerStyle>('classic');
+  const [customSliderAnime, setCustomSliderAnime] = useState<BannerCustomItem[]>([]);
   const [sliderSearchQuery, setSliderSearchQuery] = useState('');
   const [sliderSearchResults, setSliderSearchResults] = useState<any[]>([]);
   const [isSearchingSliderAnime, setIsSearchingSliderAnime] = useState(false);
-  const [sliderSpeed, setSliderSpeed] = useState(3);
+  const [sliderSpeed, setSliderSpeed] = useState(4);
   const [globalAnnouncement, setGlobalAnnouncement] = useState('');
+
+  // Manga Banner & Dual Home Config States
+  const [mangaBannerStyle, setMangaBannerStyle] = useState<BannerStyle>('split');
+  const [mangaBannerLimit, setMangaBannerLimit] = useState(5);
+  const [mangaSliderMode, setMangaSliderMode] = useState<MangaSliderMode>('trending');
+  const [customMangaBanner, setCustomMangaBanner] = useState<BannerCustomItem[]>([]);
+  const [mangaBannerSearchQuery, setMangaBannerSearchQuery] = useState('');
+  const [mangaBannerSearchResults, setMangaBannerSearchResults] = useState<any[]>([]);
+  const [isSearchingMangaBanner, setIsSearchingMangaBanner] = useState(false);
+  const [mangaBannerSpeed, setMangaBannerSpeed] = useState(5);
+  const [mangaAnnouncement, setMangaAnnouncement] = useState('');
+  const [dualHomeConfig, setDualHomeConfig] = useState<DualHomeConfig>(DEFAULT_DUAL_HOME_CONFIG);
+
   const [helpTelegramUrl, setHelpTelegramUrl] = useState('https://t.me/+St876s24-2I4N2U0');
   const [groupTelegramUrl, setGroupTelegramUrl] = useState('https://t.me/+pW720892GZRkN2I0');
   const [donateTelegramUrl, setDonateTelegramUrl] = useState('https://t.me/Mod_342');
@@ -350,12 +394,21 @@ export default function AdminDashboardView({
           moderationService.getGlobalSettings('animeCuration')
         ]);
         if (sliderCfg) {
-          setSliderLimit(Math.min(10, Math.max(3, Number(sliderCfg.limit) || 5)));
+          setSliderLimit(Math.min(10, Math.max(1, Number(sliderCfg.limit) || 5)));
           setSliderSeason(sliderCfg.season || 'auto');
           setSliderMode(sliderCfg.sliderMode || 'best_season');
+          setAnimeBannerStyle(sliderCfg.animeBannerStyle || 'classic');
           if (Array.isArray(sliderCfg.customAnime)) setCustomSliderAnime(sliderCfg.customAnime);
-          setSliderSpeed(sliderCfg.speed ?? 3);
+          setSliderSpeed(Math.min(15, Math.max(2, Number(sliderCfg.speed) || 4)));
           setGlobalAnnouncement(sliderCfg.globalAnnouncement || '');
+
+          setMangaBannerStyle(sliderCfg.mangaBannerStyle || 'split');
+          setMangaBannerLimit(Math.min(10, Math.max(1, Number(sliderCfg.mangaBannerLimit) || 5)));
+          setMangaSliderMode(sliderCfg.mangaSliderMode || 'trending');
+          if (Array.isArray(sliderCfg.customMangaBanner)) setCustomMangaBanner(sliderCfg.customMangaBanner);
+          setMangaBannerSpeed(Math.min(15, Math.max(2, Number(sliderCfg.mangaBannerSpeed) || 5)));
+          setMangaAnnouncement(sliderCfg.mangaAnnouncement || '');
+          setDualHomeConfig(normalizeDualHomeConfig(sliderCfg.dualHomeConfig));
         }
         if (curCfg) {
           if (Array.isArray(curCfg.pinnedAnime)) setPinnedAnimeList(curCfg.pinnedAnime);
@@ -622,6 +675,41 @@ export default function AdminDashboardView({
       controller.abort();
     };
   }, [sliderSearchQuery, sliderMode]);
+
+  // Real Manga/Manhwa Search for Custom Manga Banner
+  useEffect(() => {
+    const q = mangaBannerSearchQuery.trim();
+    if (mangaSliderMode !== 'custom' || q.length < 2) {
+      setMangaBannerSearchResults([]);
+      setIsSearchingMangaBanner(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      setIsSearchingMangaBanner(true);
+      try {
+        const res = await fetch(`/api/manga/search?q=${encodeURIComponent(q)}`, {
+          signal: controller.signal
+        });
+        const json = await res.json();
+        if (json.success && Array.isArray(json.data)) {
+          setMangaBannerSearchResults(json.data.slice(0, 10));
+        } else {
+          setMangaBannerSearchResults([]);
+        }
+      } catch (e: any) {
+        if (e?.name !== 'AbortError') setMangaBannerSearchResults([]);
+      } finally {
+        if (!controller.signal.aborted) setIsSearchingMangaBanner(false);
+      }
+    }, 350);
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [mangaBannerSearchQuery, mangaSliderMode]);
 
   // Real Anime Search for Content Curation (Pinning & Hiding)
   useEffect(() => {
@@ -1377,15 +1465,42 @@ export default function AdminDashboardView({
   const saveSliderSettings = async () => {
     try {
       setIsSavingSettings(true);
-      const clampedLimit = Math.min(10, Math.max(3, Number(sliderLimit) || 5));
-      setSliderLimit(clampedLimit);
+      const clampedAnimeLimit = Math.min(10, Math.max(1, Number(sliderLimit) || 5));
+      const clampedMangaLimit = Math.min(10, Math.max(1, Number(mangaBannerLimit) || 5));
+      const clampedAnimeSpeed = Math.min(15, Math.max(2, Number(sliderSpeed) || 4));
+      const clampedMangaSpeed = Math.min(15, Math.max(2, Number(mangaBannerSpeed) || 5));
+      const safeDualHome: DualHomeConfig = {
+        ...dualHomeConfig,
+        enableAnimeHome: dualHomeConfig.enableAnimeHome || !dualHomeConfig.enableMangaHome,
+        enableMangaHome: dualHomeConfig.enableMangaHome,
+        defaultVisitorHome:
+          !dualHomeConfig.enableMangaHome
+            ? 'anime'
+            : !dualHomeConfig.enableAnimeHome
+            ? 'manga'
+            : dualHomeConfig.defaultVisitorHome,
+      };
+      setSliderLimit(clampedAnimeLimit);
+      setMangaBannerLimit(clampedMangaLimit);
+      setSliderSpeed(clampedAnimeSpeed);
+      setMangaBannerSpeed(clampedMangaSpeed);
+      setDualHomeConfig(safeDualHome);
+
       const payload = {
-        limit: clampedLimit,
+        limit: clampedAnimeLimit,
         season: sliderSeason,
         sliderMode,
+        animeBannerStyle,
         customAnime: customSliderAnime.slice(0, 10),
-        speed: sliderSpeed,
+        speed: clampedAnimeSpeed,
         globalAnnouncement,
+        mangaBannerStyle,
+        mangaBannerLimit: clampedMangaLimit,
+        mangaSliderMode,
+        customMangaBanner: customMangaBanner.slice(0, 10),
+        mangaBannerSpeed: clampedMangaSpeed,
+        mangaAnnouncement,
+        dualHomeConfig: safeDualHome,
         updatedAt: new Date().toISOString()
       };
       await moderationService.updateGlobalSettings('slider', payload);
@@ -1416,8 +1531,12 @@ export default function AdminDashboardView({
         updatedAt: new Date().toISOString()
       });
 
-      writeAudit('settings', 'إعدادات المنصة والسلايدر', `حفظ إعدادات السلايدر (${sliderMode}) والروابط`);
-      notify('تم حفظ ومزامنة إعدادات المنصة بنجاح');
+      writeAudit(
+        'settings',
+        'إعدادات الشاشتين والبانرات',
+        `تحديث بانر الأنمي (${animeBannerStyle}/${clampedAnimeLimit}) وبانر المانجا (${mangaBannerStyle}/${clampedMangaLimit}) وإعدادات الشاشتين`
+      );
+      notify('تم حفظ ومزامنة إعدادات الشاشتين والبانرات والمنصة بنجاح');
     } catch (err: any) {
       notify(err?.message || 'فشل حفظ الإعدادات', 'error');
     } finally {
@@ -2004,6 +2123,8 @@ export default function AdminDashboardView({
             setSliderSeason,
             sliderMode,
             setSliderMode,
+            animeBannerStyle,
+            setAnimeBannerStyle,
             customSliderAnime,
             setCustomSliderAnime,
             sliderSearchQuery,
@@ -2016,6 +2137,27 @@ export default function AdminDashboardView({
             setSliderSpeed,
             globalAnnouncement,
             setGlobalAnnouncement,
+            mangaBannerStyle,
+            setMangaBannerStyle,
+            mangaBannerLimit,
+            setMangaBannerLimit,
+            mangaSliderMode,
+            setMangaSliderMode,
+            customMangaBanner,
+            setCustomMangaBanner,
+            mangaBannerSearchQuery,
+            setMangaBannerSearchQuery,
+            mangaBannerSearchResults,
+            setMangaBannerSearchResults,
+            isSearchingMangaBanner,
+            setIsSearchingMangaBanner,
+            mangaBannerSpeed,
+            setMangaBannerSpeed,
+            mangaAnnouncement,
+            setMangaAnnouncement,
+            dualHomeConfig,
+            setDualHomeConfig,
+            bannerStyleOptions: BANNER_STYLE_OPTIONS,
             helpTelegramUrl,
             setHelpTelegramUrl,
             groupTelegramUrl,

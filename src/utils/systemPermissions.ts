@@ -84,15 +84,7 @@ export async function checkSystemPermissionsStatus(): Promise<SystemPermissionsS
     }
   }
 
-  // Media / Microphone check
-  try {
-    if (navigator.permissions?.query) {
-      const mic = await navigator.permissions.query({ name: 'microphone' as PermissionName });
-      if (mic?.state === 'granted') result.media = 'granted';
-      else if (mic?.state === 'denied') result.media = 'denied';
-    }
-  } catch {}
-
+  result.media = 'unsupported';
   return result;
 }
 
@@ -102,8 +94,8 @@ export async function ensureNotificationChannel(): Promise<void> {
   try {
     await LocalNotifications.createChannel({
       id: 'animemod_alerts',
-      name: 'تنبيهات أنمي MOD',
-      description: 'إشعارات الحلقات الجديدة والردود والبطولات',
+      name: 'تنبيهات أوتاكو MOD',
+      description: 'إشعارات الحلقات الجديدة والأنميات والفصول المميزة',
       importance: 4,
       visibility: 1,
       vibration: true,
@@ -152,7 +144,7 @@ export async function requestSystemStoragePermission(): Promise<UnifiedPermissio
   if (Capacitor.isNativePlatform()) {
     let status: UnifiedPermissionStatus = 'default';
 
-    // 1. Android 6-15 native ActivityCompat runtime permission prompt (READ_MEDIA_* & READ/WRITE_EXTERNAL_STORAGE)
+    // 1. Android < 10 legacy storage permission prompt (Android 10+ uses Scoped Storage automatically)
     try {
       const bridge = getNativeBridge();
       if (bridge?.requestStoragePermissions) {
@@ -199,16 +191,6 @@ export async function requestSystemStoragePermission(): Promise<UnifiedPermissio
 }
 
 export async function requestSystemMediaPermission(): Promise<UnifiedPermissionStatus> {
-  if (typeof window === 'undefined') return 'unsupported';
-  if (navigator.mediaDevices?.getUserMedia) {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach((track) => track.stop());
-      return 'granted';
-    } catch {
-      return 'denied';
-    }
-  }
   return 'unsupported';
 }
 
@@ -267,6 +249,9 @@ export async function dispatchNativeSystemNotification(params: {
   title: string;
   body: string;
   imageUrl?: string;
+  tag?: string;
+  scheduleAt?: Date;
+  extra?: Record<string, any>;
   onClick?: () => void;
 }): Promise<void> {
   if (typeof window === 'undefined') return;
@@ -285,14 +270,20 @@ export async function dispatchNativeSystemNotification(params: {
                   .reduce((acc, ch) => (acc * 31 + ch.charCodeAt(0)) | 0, 7)
               ) % 2_000_000_000;
 
+        const targetDate =
+          params.scheduleAt && params.scheduleAt.getTime() > Date.now()
+            ? params.scheduleAt
+            : new Date(Date.now() + 50);
+
         await LocalNotifications.schedule({
           notifications: [
             {
               id: numericId || Math.floor(Math.random() * 100000),
-              title: params.title || 'أنمي MOD ⚡',
+              title: params.title || 'أوتاكو MOD ⚡',
               body: params.body || '',
               channelId: 'animemod_alerts',
-              schedule: { at: new Date(Date.now() + 50) },
+              extra: params.extra,
+              schedule: { at: targetDate },
             },
           ],
         });
@@ -303,12 +294,17 @@ export async function dispatchNativeSystemNotification(params: {
     }
   }
 
+  if (params.scheduleAt && params.scheduleAt.getTime() > Date.now() + 1000) {
+    return;
+  }
+
   if ('Notification' in window && Notification.permission === 'granted') {
     try {
       const options: NotificationOptions = {
         body: params.body || '',
         icon: './app_icon.png',
         dir: 'rtl',
+        tag: params.tag,
       };
       if (params.imageUrl) {
         (options as any).image = params.imageUrl;
@@ -320,4 +316,44 @@ export async function dispatchNativeSystemNotification(params: {
       };
     } catch {}
   }
+}
+
+export async function cancelNativeSystemNotifications(ids: number[]): Promise<void> {
+  if (typeof window === 'undefined' || !Capacitor.isNativePlatform() || ids.length === 0) return;
+  try {
+    await LocalNotifications.cancel({
+      notifications: ids.map((id) => ({ id })),
+    });
+  } catch {}
+}
+
+export function registerNativeNotificationTapListener(
+  onTap: (extra: Record<string, any>) => void
+): () => void {
+  if (typeof window === 'undefined' || !Capacitor.isNativePlatform()) {
+    return () => {};
+  }
+
+  let removed = false;
+  let handle: { remove: () => Promise<void> } | null = null;
+
+  LocalNotifications.addListener('localNotificationActionPerformed', (event) => {
+    const extra = event?.notification?.extra;
+    if (extra && typeof extra === 'object') {
+      onTap(extra);
+    }
+  })
+    .then((listenerHandle) => {
+      if (removed) {
+        listenerHandle.remove().catch(() => {});
+      } else {
+        handle = listenerHandle;
+      }
+    })
+    .catch(() => {});
+
+  return () => {
+    removed = true;
+    handle?.remove().catch(() => {});
+  };
 }

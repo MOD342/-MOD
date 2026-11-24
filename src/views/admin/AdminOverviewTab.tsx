@@ -12,7 +12,9 @@ import {
   ChevronLeft,
   Pin,
   Gift,
-  Coins
+  Coins,
+  Layers,
+  LayoutTemplate
 } from "lucide-react";
 import { useAdminDashboard } from "./AdminDashboardContext";
 import { useDeviceDisplay } from "../../hooks/useDeviceDisplay";
@@ -30,8 +32,11 @@ export const AdminOverviewTab: React.FC = () => {
     pinnedAnimeList,
     hiddenAnimeList,
     setRecStatusFilter,
-    sliderMode,
-    customSliderAnime,
+    sliderLimit,
+    animeBannerStyle,
+    mangaBannerLimit,
+    mangaBannerStyle,
+    dualHomeConfig,
     adStatsData,
     canAccessPlatform,
     canAccessBroadcast,
@@ -178,20 +183,40 @@ export const AdminOverviewTab: React.FC = () => {
                   >
                     <div className="flex items-center gap-3 min-w-0">
                       <div className="w-10 h-10 rounded-xl bg-[#FF1744]/10 text-[#FF1744] flex items-center justify-center shrink-0">
-                        <Sliders size={18} />
+                        <LayoutTemplate size={18} />
                       </div>
                       <div className="min-w-0">
-                        <div className="text-xs font-bold text-white truncate">تخصيص السلايدر العلوي</div>
-                        <div className="text-[11px] text-zinc-400 mt-0.5 truncate">
-                          {sliderMode === "custom"
-                            ? `مخصص (${customSliderAnime.length})`
-                            : sliderMode === "best_season"
-                            ? "الأفضل هذا الموسم"
-                            : sliderMode === "trending_season"
-                            ? "الرائج هذا الموسم"
-                            : sliderMode === "all_time_best"
-                            ? "الأفضل على الإطلاق"
-                            : "الأنميات التاريخية"}
+                        <div className="text-xs font-bold text-white truncate">البانرات والسلايدر (أنمي ومانجا)</div>
+                        <div className="text-[11px] text-zinc-400 mt-0.5 tabular-nums truncate">
+                          أنمي: {sliderLimit || 5} شرائح ({animeBannerStyle || "classic"}) · مانجا: {mangaBannerLimit || 5} شرائح ({mangaBannerStyle || "split"})
+                        </div>
+                      </div>
+                    </div>
+                    <ChevronLeft size={16} className="text-zinc-500 shrink-0" />
+                  </button>
+                )}
+
+                {canAccessPlatform && (
+                  <button
+                    onClick={() => {
+                      setWorkspace("platform");
+                      setPlatformSubTab("homes");
+                    }}
+                    className="min-h-[64px] flex items-center justify-between p-3.5 rounded-xl bg-purple-500/5 hover:bg-purple-500/10 border border-purple-500/20 transition cursor-pointer text-right"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-10 h-10 rounded-xl bg-purple-500/15 text-purple-400 flex items-center justify-center shrink-0">
+                        <Layers size={18} />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold text-white truncate">الشاشتان الرئيسيتان والأقسام</div>
+                        <div className="text-[11px] text-purple-300/90 mt-0.5 truncate">
+                          الافتراضي: {dualHomeConfig?.defaultVisitorHome === "manga" ? "المانجا والمانهوا" : "الأنمي"} ·{" "}
+                          {dualHomeConfig?.enableAnimeHome !== false && dualHomeConfig?.enableMangaHome !== false
+                            ? "كلا الشاشتين مفعّلتان"
+                            : dualHomeConfig?.enableMangaHome === false
+                            ? "الأنمي فقط"
+                            : "المانجا فقط"}
                         </div>
                       </div>
                     </div>

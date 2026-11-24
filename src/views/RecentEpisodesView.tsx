@@ -4,6 +4,8 @@ import { clientCache } from '../utils/clientCache';
 import { recentEpisodesLocal } from '../services/cloudCatalogService';
 import { cleanAnimeTitle } from '../utils/animeTitleCleaner';
 import PullToRefresh from '../components/PullToRefresh';
+import { LongPressCopy } from '../components/LongPressCopy';
+import { FALLBACK_POSTER_DATA_URL } from '../utils/posterFallback';
 import {
   useGlobalLayoutMode,
   LayoutModeToggleButton,
@@ -92,37 +94,37 @@ export default function RecentEpisodesView({ onBack, onAnimeClick }: { onBack: (
     <PullToRefresh onRefresh={() => loadEpisodes(page, true)}>
     <div className="min-h-screen bg-black text-white pb-24" dir="rtl">
       {/* شريط العنوان العلوي - مدمج وغير ثابت */}
-      <div className="bg-black border-b border-white/5 px-4 py-3 flex items-center justify-between gap-2 max-w-7xl mx-auto">
-        <div className="flex items-center gap-2.5 min-w-0">
+      <div className="bg-black border-b border-white/5 px-4 py-3 flex flex-nowrap items-center justify-between gap-2 max-w-7xl mx-auto">
+        <div className="flex items-center gap-2 min-w-0">
           <button 
             onClick={onBack} 
-            className="min-w-[44px] min-h-[44px] flex items-center justify-center bg-neutral-900 rounded-xl hover:bg-neutral-800 transition text-neutral-300 hover:text-white cursor-pointer shrink-0"
+            className="w-10 h-10 flex items-center justify-center bg-neutral-900 rounded-xl hover:bg-neutral-800 transition text-neutral-300 hover:text-white cursor-pointer shrink-0"
             aria-label="الرجوع"
           >
             <ChevronRight size={18} />
           </button>
-          <div className="min-w-0">
-            <h1 className="font-black text-base md:text-lg text-white truncate">
+          <div className="flex items-center gap-2 min-w-0">
+            <h1 className="font-black text-base md:text-lg text-white whitespace-nowrap">
               أحدث الحلقات
             </h1>
             {lastFetchedAt > 0 && (
-              <p className="text-[11px] font-bold text-neutral-400 truncate">
-                آخر تحديث: {recentEpisodesLocal.formatRelativeTimeAr(lastFetchedAt)}
-              </p>
+              <span className="text-[11px] font-bold text-neutral-400 whitespace-nowrap truncate">
+                {recentEpisodesLocal.formatRelativeTimeAr(lastFetchedAt)}
+              </span>
             )}
           </div>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-1.5 shrink-0">
           <button
             type="button"
             onClick={() => void loadEpisodes(page, true)}
             disabled={refreshing || loading}
+            title="تحديث الحلقات"
             aria-label="تحديث الحلقات"
-            className="min-h-[44px] px-3.5 py-2 rounded-xl bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-xs font-black text-white flex items-center gap-1.5 transition active:scale-95 disabled:opacity-50 cursor-pointer"
+            className="p-2 rounded-full bg-transparent border-0 hover:bg-white/5 text-red-400 hover:text-red-300 flex items-center justify-center transition active:scale-90 disabled:opacity-50 cursor-pointer"
           >
-            <RefreshCw size={14} className={refreshing ? 'animate-spin text-red-400' : 'text-red-400'} />
-            <span>{refreshing ? 'جاري التحديث' : 'تحديث'}</span>
+            <RefreshCw size={20} strokeWidth={2.35} className={refreshing ? 'animate-spin text-red-400' : 'text-red-400'} />
           </button>
           <LayoutModeToggleButton mode={layoutMode} onToggle={cycleLayoutMode} />
         </div>
@@ -143,7 +145,7 @@ export default function RecentEpisodesView({ onBack, onAnimeClick }: { onBack: (
           ) : (
             displayEpisodes.map((ep: any, idx: number) => {
               const cleanTitle = cleanAnimeTitle(ep.animeId?.title || ep.animeId?.titleAr || ep.title || 'Anime');
-              const epPoster = ep.animeId?.posterUrl || ep.thumbnailUrl || ep.posterUrl || ep.animeId?.thumbnailUrl || 'https://via.placeholder.com/200x300?text=Anime';
+              const epPoster = ep.animeId?.posterUrl || ep.thumbnailUrl || ep.posterUrl || ep.animeId?.thumbnailUrl || FALLBACK_POSTER_DATA_URL;
               const epNumber = ep.episodeNumber || (ep.title && ep.title.match(/الحلقة\s*(\d+)/)?.[1]) || '1';
               const animeTargetId = ep.animeId?._id || ep.animeId?.id || ep.animeId?.mal_id || (cleanTitle ? `search-${cleanTitle}` : 'unknown');
               const shortType = getShortTypeCode(ep.type || ep.animeId?.type || 'TV');
@@ -183,7 +185,7 @@ export default function RecentEpisodesView({ onBack, onAnimeClick }: { onBack: (
                         className="w-full font-black text-sm sm:text-base text-white group-hover:text-red-400 transition-colors line-clamp-1 leading-snug text-right"
                         dir="auto"
                       >
-                        {cleanTitle}
+                        <LongPressCopy text={cleanTitle}>{cleanTitle}</LongPressCopy>
                       </h5>
 
                       <div className="flex flex-wrap items-center justify-start gap-1.5 text-[10px] sm:text-xs font-bold">
@@ -269,12 +271,12 @@ export default function RecentEpisodesView({ onBack, onAnimeClick }: { onBack: (
 
                   <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 via-black/70 to-transparent pt-8 pb-2 px-2 pointer-events-none flex flex-col justify-end">
                     <h5
-                      className={`font-black ${
+                      className={`pointer-events-auto font-black ${
                         isLargeGrid ? 'text-xs sm:text-sm' : 'text-[10px] sm:text-xs'
                       } text-white group-hover:text-red-400 transition-colors line-clamp-2 text-center leading-tight drop-shadow`}
-                      dir="ltr"
+                      dir="auto"
                     >
-                      {cleanTitle}
+                      <LongPressCopy text={cleanTitle}>{cleanTitle}</LongPressCopy>
                     </h5>
                   </div>
                 </div>

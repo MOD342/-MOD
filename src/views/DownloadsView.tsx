@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import {
   ChevronRight,
+  ChevronDown,
   Download,
   Pause,
   Play,
@@ -36,6 +37,29 @@ interface DownloadsViewProps {
 }
 
 type FilterKey = 'all' | 'active' | 'completed' | 'paused';
+type MediaScope = 'all' | 'anime' | 'manga';
+
+interface WorkGroup {
+  groupKey: string;
+  itemType: 'episode' | 'chapter';
+  workId: string;
+  title: string;
+  posterUrl?: string;
+  items: DownloadQueueItem[];
+  activeCount: number;
+  completedCount: number;
+  pausedCount: number;
+  failedCount: number;
+  totalBytes: number;
+  downloadedBytes: number;
+  avgProgress: number;
+  latestUpdatedAt: number;
+}
+
+function parseNumericOrder(val?: string | number): number {
+  const match = String(val || '').match(/(\d+(?:\.\d+)?)/);
+  return match ? parseFloat(match[1]) : Number.MAX_SAFE_INTEGER;
+}
 
 export default function DownloadsView({
   onBack,
@@ -46,6 +70,8 @@ export default function DownloadsView({
 }: DownloadsViewProps) {
   const items = useDownloadQueue();
   const [filter, setFilter] = useState<FilterKey>('all');
+  const [mediaScope, setMediaScope] = useState<MediaScope>('all');
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   const [playingOffline, setPlayingOffline] = useState<{
     title: string;
     url: string;
@@ -57,23 +83,27 @@ export default function DownloadsView({
     let completed = 0;
     let paused = 0;
     let failed = 0;
+    let animeCount = 0;
+    let mangaCount = 0;
     for (const item of items) {
+      if (item.itemType === 'chapter') mangaCount++;
+      else animeCount++;
       if (item.status === 'queued' || item.status === 'resolving' || item.status === 'downloading') {
         active++;
       } else if (item.status === 'completed') {
         completed++;
       } else {
         paused++;
-        if (item.status === 'failed') {
-          failed++;
-        }
+        if (item.status === 'failed') failed++;
       }
     }
-    return { all: items.length, active, completed, paused, failed };
+    return { all: items.length, active, completed, paused, failed, animeCount, mangaCount };
   }, [items]);
 
   const filteredItems = useMemo(() => {
     return items.filter((item) => {
+      if (mediaScope === 'anime' && item.itemType === 'chapter') return false;
+      if (mediaScope === 'manga' && item.itemType !== 'chapter') return false;
       if (filter === 'all') return true;
       if (filter === 'active') {
         return item.status === 'queued' || item.status === 'resolving' || item.status === 'downloading';
@@ -81,7 +111,101 @@ export default function DownloadsView({
       if (filter === 'completed') return item.status === 'completed';
       return item.status === 'paused' || item.status === 'failed';
     });
-  }, [items, filter]);
+  }, [items, filter, mediaScope]);
+
+  const groupedWorks = useMemo<WorkGroup[]>(() => {
+    const map = new Map<string, WorkGroup>();
+
+    for (const item of filteredItems) {
+      const isChapter = item.itemType === 'chapter';
+      const workId = String(isChapter ? item.mangaId || item.animeId : item.animeId || item.animeTitle);
+      const groupKey = `${isChapter ? 'manga' : 'anime'}:${workId || item.animeTitle}`;
+
+      let group = map.get(groupKey);
+      if (!group) {
+        group = {
+          groupKey,
+          itemType: isChapter ? 'chapter' : 'episode',
+          workId,
+          title: item.animeTitle || (isChapter ? 'مانجا' : 'أنمي'),
+          posterUrl: item.posterUrl,
+          items: [],
+          activeCount: 0,
+          completedCount: 0,
+          pausedCount: 0,
+          failedCount: 0,
+          totalBytes: 0,
+          downloadedBytes: 0,
+          avgProgress: 0,
+          latestUpdatedAt: item.updatedAt || item.createdAt || 0,
+        };
+        map.set(groupKey, group);
+      }
+
+      if (!group.posterUrl && item.posterUrl) group.posterUrl = item.posterUrl;
+      group.items.push(item);
+      group.latestUpdatedAt = Math.max(group.latestUpdatedAt, item.updatedAt || item.createdAt || 0);
+
+      if (item.status === 'queued' || item.status === 'resolving' || item.status === 'downloading') {
+        group.activeCount++;
+      } else if (item.status === 'completed') {
+        group.completedCount++;
+      } else if (item.status === 'failed') {
+        group.failedCount++;
+        group.pausedCount++;
+      } else {
+        group.pausedCount++;
+      }
+
+      const itemSize = item.totalBytes > 0 ? item.totalBytes : item.downloadedBytes || 0;
+      group.totalBytes += itemSize;
+      group.downloadedBytes += item.downloadedBytes || 0;
+    }
+
+    const groups = Array.from(map.values());
+    for (const g of groups) {
+      g.items.sort((a, b) => {
+        if ((a.seasonNumber || 1) !== (b.seasonNumber || 1)) {
+          return (a.seasonNumber || 1) - (b.seasonNumber || 1);
+        }
+        return (
+          parseNumericOrder(a.chapterNum || a.episodeNum) -
+          parseNumericOrder(b.chapterNum || b.episodeNum)
+        );
+      });
+      const sumPct = g.items.reduce(
+        (acc, it) => acc + (it.status === 'completed' ? 100 : Math.max(0, it.progress || 0)),
+        0,
+      );
+      g.avgProgress = g.items.length > 0 ? Math.round(sumPct / g.items.length) : 0;
+    }
+
+    groups.sort((a, b) => {
+      if (a.activeCount > 0 && b.activeCount === 0) return -1;
+      if (b.activeCount > 0 && a.activeCount === 0) return 1;
+      return b.latestUpdatedAt - a.latestUpdatedAt;
+    });
+
+    return groups;
+  }, [filteredItems]);
+
+  const isGroupExpanded = (group: WorkGroup, index: number): boolean => {
+    if (Object.prototype.hasOwnProperty.call(expandedGroups, group.groupKey)) {
+      return expandedGroups[group.groupKey];
+    }
+    return group.activeCount > 0 || index === 0 || groupedWorks.length <= 2;
+  };
+
+  const toggleGroup = (group: WorkGroup, index: number) => {
+    const current = isGroupExpanded(group, index);
+    setExpandedGroups((prev) => ({ ...prev, [group.groupKey]: !current }));
+  };
+
+  const handleRemoveGroup = (group: WorkGroup) => {
+    for (const item of group.items) {
+      downloadManagerService.removeItem(item.id);
+    }
+  };
 
   const handlePlayOffline = async (item: DownloadQueueItem) => {
     const objUrl = await downloadManagerService.getOfflineVideoUrl(item.id);
@@ -121,21 +245,25 @@ export default function DownloadsView({
     }
   };
 
-  const renderStatusText = (item: DownloadQueueItem) => {
+  const renderRowSubtitle = (item: DownloadQueueItem): string => {
     const isChapter = item.itemType === 'chapter';
+    const qualityOrLang = isChapter
+      ? item.resolvedQuality || 'عربي'
+      : formatQualityLabel(item.resolvedQuality || item.requestedQuality);
+
     switch (item.status) {
       case 'queued':
-        return 'في انتظار الدور';
+        return `${qualityOrLang} · في الانتظار`;
       case 'resolving':
-        return isChapter ? 'جاري تجهيز صفحات الفصل...' : 'جاري تجهيز أفضل جودة متاحة...';
+        return isChapter ? 'جاري تجهيز الصفحات...' : 'جاري تجهيز الرابط...';
       case 'downloading': {
-        const pctLabel =
+        const parts: string[] = [
           !isChapter && item.totalBytes <= 0 && item.progress > 0
             ? `~${item.progress}%`
-            : `${item.progress}%`;
-        const parts: string[] = [pctLabel];
+            : `${item.progress}%`,
+        ];
         if (isChapter) {
-          parts.push(`${item.downloadedPages || 0} / ${item.totalPages || '?'} صفحة`);
+          parts.push(`${item.downloadedPages || 0}/${item.totalPages || '?'} صفحة`);
         } else if (item.downloadedBytes > 0) {
           parts.push(
             item.totalBytes > 0
@@ -148,18 +276,17 @@ export default function DownloadsView({
         return parts.join(' · ');
       }
       case 'paused':
-        return 'متوقف مؤقتاً';
+        return `${qualityOrLang} · متوقف مؤقتاً`;
       case 'completed':
         if (isChapter) {
           return item.totalPages
-            ? `مكتمل · ${item.totalPages} صفحة جاهزة للقراءة`
-            : 'اكتمل تنزيل الفصل';
+            ? `${qualityOrLang} · ${item.totalPages} صفحة`
+            : `${qualityOrLang} · مكتمل`;
         }
-        return item.targetMode === 'external'
-          ? 'تم الإرسال للتنزيل الخارجي'
-          : item.totalBytes > 0
-          ? `مكتمل · ${formatBytes(item.totalBytes)}`
-          : 'اكتمل التنزيل';
+        if (item.targetMode === 'external') return `${qualityOrLang} · عبر تنزيل خارجي`;
+        return item.totalBytes > 0
+          ? `${qualityOrLang} · ${formatBytes(item.totalBytes)}`
+          : `${qualityOrLang} · مكتمل`;
       case 'failed':
         return item.errorMessage || 'تعذر التنزيل';
     }
@@ -170,7 +297,7 @@ export default function DownloadsView({
       className="min-h-[var(--vv-height,100dvh)] bg-black text-neutral-100 pb-24 font-sans"
       dir="rtl"
     >
-      {/* Top Bar */}
+      {/* Top App Bar */}
       <header className="sticky top-0 z-30 bg-black/90 backdrop-blur-md border-b border-white/10">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
@@ -178,21 +305,21 @@ export default function DownloadsView({
               type="button"
               onClick={onBack}
               aria-label="رجوع"
-              className="min-w-[44px] min-h-[44px] rounded-xl bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 flex items-center justify-center text-neutral-200 transition cursor-pointer shrink-0"
+              className="min-w-[44px] min-h-[44px] rounded-full bg-transparent hover:bg-white/5 flex items-center justify-center text-neutral-200 transition cursor-pointer shrink-0"
             >
-              <ChevronRight size={20} />
+              <ChevronRight size={22} strokeWidth={2.3} />
             </button>
             <div className="min-w-0">
               <h1 className="text-base sm:text-lg font-black text-white truncate">
                 مدير التنزيلات
               </h1>
               <p className="text-xs text-neutral-400 tabular-nums truncate">
-                {counts.active} قيد التنزيل · {counts.completed} مكتمل · {counts.all} إجمالي
+                {groupedWorks.length} عمل · {counts.active} نشط · {counts.completed} مكتمل
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 shrink-0">
             {counts.active > 0 && (
               <button
                 type="button"
@@ -236,7 +363,7 @@ export default function DownloadsView({
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto px-4 sm:px-6 pt-5 space-y-5">
+      <main className="max-w-5xl mx-auto px-4 sm:px-6 pt-4 space-y-4">
         {feedback && (
           <div className="bg-neutral-900 border border-neutral-800 rounded-xl px-4 py-3 text-xs font-bold text-neutral-200 flex items-center justify-between gap-3">
             <span>{feedback}</span>
@@ -250,43 +377,70 @@ export default function DownloadsView({
           </div>
         )}
 
-        {/* Filter Segmented Bar */}
-        <div className="grid grid-cols-4 bg-neutral-900/90 border border-neutral-800/80 rounded-xl p-1 gap-1">
-          {(
-            [
-              { id: 'all', label: `الكل (${counts.all})` },
-              { id: 'active', label: `النشطة (${counts.active})` },
-              { id: 'completed', label: `المكتملة (${counts.completed})` },
-              { id: 'paused', label: `المتوقفة (${counts.paused})` },
-            ] as { id: FilterKey; label: string }[]
-          ).map((tab) => {
-            const active = filter === tab.id;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => setFilter(tab.id)}
-                className={`min-h-[40px] px-2 rounded-lg text-[11px] sm:text-xs font-black transition cursor-pointer whitespace-nowrap truncate tabular-nums ${
-                  active
-                    ? 'bg-[#1a1a22] text-white shadow-sm'
-                    : 'text-neutral-400 hover:text-neutral-200'
-                }`}
-              >
-                {tab.label}
-              </button>
-            );
-          })}
+        {/* Filter Controls */}
+        <div className="flex flex-col sm:flex-row gap-2.5">
+          <div className="flex-1 grid grid-cols-4 bg-neutral-900/90 border border-neutral-800/80 rounded-xl p-1 gap-1">
+            {(
+              [
+                { id: 'all', label: `الكل (${counts.all})` },
+                { id: 'active', label: `النشطة (${counts.active})` },
+                { id: 'completed', label: `المكتملة (${counts.completed})` },
+                { id: 'paused', label: `المتوقفة (${counts.paused})` },
+              ] as { id: FilterKey; label: string }[]
+            ).map((tab) => {
+              const active = filter === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setFilter(tab.id)}
+                  className={`min-h-[38px] px-2 rounded-lg text-[11px] sm:text-xs font-black transition cursor-pointer whitespace-nowrap truncate tabular-nums ${
+                    active
+                      ? 'bg-[#1f1f29] text-white shadow-sm'
+                      : 'text-neutral-400 hover:text-neutral-200'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {counts.animeCount > 0 && counts.mangaCount > 0 && (
+            <div className="grid grid-cols-3 bg-neutral-900/90 border border-neutral-800/80 rounded-xl p-1 gap-1 sm:w-56">
+              {(
+                [
+                  { id: 'all', label: 'الكل' },
+                  { id: 'anime', label: 'أنمي' },
+                  { id: 'manga', label: 'مانجا' },
+                ] as { id: MediaScope; label: string }[]
+              ).map((scope) => (
+                <button
+                  key={scope.id}
+                  type="button"
+                  onClick={() => setMediaScope(scope.id)}
+                  className={`min-h-[38px] px-2 rounded-lg text-[11px] font-black transition cursor-pointer whitespace-nowrap ${
+                    mediaScope === scope.id
+                      ? 'bg-[#FF1744] text-white'
+                      : 'text-neutral-400 hover:text-white'
+                  }`}
+                >
+                  {scope.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
-        {/* Queue Items */}
-        {filteredItems.length === 0 ? (
+        {/* Grouped Works List */}
+        {groupedWorks.length === 0 ? (
           <div className="bg-[#0f0f13] border border-neutral-800/80 rounded-2xl p-10 text-center flex flex-col items-center gap-3">
             <div className="w-14 h-14 rounded-2xl bg-neutral-900 border border-neutral-800 flex items-center justify-center text-neutral-400">
               <Download size={26} />
             </div>
             <h2 className="text-base font-black text-white">لا توجد تنزيلات في هذه القائمة</h2>
             <p className="text-xs text-neutral-400 max-w-md leading-relaxed">
-              يمكنك فتح أي أنمي والضغط على «تنزيل عدة حلقات» لاختيار الحلقات والجودة المناسبة، وسيتولى مدير التنزيلات تحميلها تلقائياً.
+              عند تنزيل حلقات أنمي أو فصول مانجا ومانهوا ستتجمع هنا مرتبة تحت عنوان كل عمل لسهولة الوصول والتشغيل أوفلاين.
             </p>
             {onExplore && (
               <button
@@ -299,233 +453,288 @@ export default function DownloadsView({
             )}
           </div>
         ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
-            {filteredItems.map((item) => {
-              const isBusy =
-                item.status === 'queued' ||
-                item.status === 'resolving' ||
-                item.status === 'downloading';
-              const isCompleted = item.status === 'completed';
-              const isFailed = item.status === 'failed';
+          <div className="space-y-3">
+            {groupedWorks.map((group, groupIdx) => {
+              const expanded = isGroupExpanded(group, groupIdx);
+              const isChapterGroup = group.itemType === 'chapter';
+              const unitSingular = isChapterGroup ? 'فصل' : 'حلقة';
+              const unitPlural = isChapterGroup ? 'فصول' : 'حلقات';
+              const countLabel =
+                group.items.length === 1
+                  ? `${unitSingular} واحد`
+                  : group.items.length === 2
+                    ? isChapterGroup
+                      ? 'فصلان'
+                      : 'حلقتان'
+                    : group.items.length <= 10
+                      ? `${group.items.length} ${unitPlural}`
+                      : `${group.items.length} ${unitSingular}`;
+
+              const metaParts = [
+                isChapterGroup ? 'مانجا ومانهوا' : 'أنمي',
+                countLabel,
+              ];
+              if (group.completedCount > 0 && group.completedCount < group.items.length) {
+                metaParts.push(`${group.completedCount} مكتمل`);
+              } else if (group.completedCount === group.items.length) {
+                metaParts.push('مكتمل');
+              }
+              if (group.activeCount > 0) {
+                metaParts.push(`جاري التنزيل ${group.avgProgress}%`);
+              }
+              if (group.totalBytes > 0) {
+                metaParts.push(formatBytes(group.totalBytes));
+              }
 
               return (
-                <article
-                  key={item.id}
-                  className="bg-[#0f0f13] border border-neutral-800/90 rounded-2xl p-4 flex flex-col gap-3.5"
+                <section
+                  key={group.groupKey}
+                  className="bg-[#0f0f13] border border-neutral-800/90 rounded-2xl overflow-hidden"
                 >
-                  <div className="flex items-start gap-3">
-                    {/* Poster Thumbnail */}
+                  {/* Series / Work Group Header */}
+                  <div className="flex items-center gap-3 p-3.5 sm:p-4">
                     <button
                       type="button"
                       onClick={() => {
-                        if (item.itemType === 'chapter') {
-                          onOpenManga?.(item.mangaId || item.animeId);
+                        if (isChapterGroup) {
+                          onOpenManga?.(group.workId);
                         } else {
-                          onOpenAnime?.(item.animeId);
+                          onOpenAnime?.(group.workId);
                         }
                       }}
-                      className="w-14 h-20 rounded-xl bg-neutral-900 border border-neutral-800 overflow-hidden shrink-0 cursor-pointer flex items-center justify-center"
+                      aria-label={`فتح صفحة ${group.title}`}
+                      className="w-12 h-16 rounded-xl bg-neutral-900 border border-white/10 overflow-hidden shrink-0 cursor-pointer flex items-center justify-center"
                     >
-                      {item.posterUrl ? (
+                      {group.posterUrl ? (
                         <img
-                          src={item.posterUrl}
-                          alt={item.animeTitle}
+                          src={group.posterUrl}
+                          alt={group.title}
                           referrerPolicy="no-referrer"
                           className="w-full h-full object-cover"
                         />
-                      ) : item.itemType === 'chapter' ? (
-                        <BookOpen size={20} className="text-neutral-600" />
+                      ) : isChapterGroup ? (
+                        <BookOpen size={18} className="text-neutral-500" />
                       ) : (
-                        <Tv size={20} className="text-neutral-600" />
+                        <Tv size={18} className="text-neutral-500" />
                       )}
                     </button>
 
-                    {/* Title & Clean Unboxed Metadata */}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-start justify-between gap-2">
-                        <h3 className="text-sm font-black text-white truncate">
-                          {item.animeTitle}
-                        </h3>
-                        <span className="shrink-0 text-neutral-400">
-                          {isCompleted ? (
-                            <CheckCircle2 size={17} className="text-emerald-400" />
-                          ) : isFailed ? (
-                            <AlertTriangle size={17} className="text-amber-400" />
-                          ) : isBusy ? (
-                            <Loader2 size={17} className="text-[#FF1744] animate-spin" />
-                          ) : (
-                            <Pause size={17} className="text-neutral-400" />
-                          )}
-                        </span>
-                      </div>
-
-                      <div className="text-xs font-bold text-neutral-300 mt-0.5 tabular-nums truncate">
-                        {item.itemType === 'chapter'
-                          ? item.chapterTitle || `الفصل ${item.chapterNum || item.episodeNum}`
-                          : (
-                            <>
-                              {item.episodeTitle || `الحلقة ${item.episodeNum}`}
-                              {item.seasonNumber > 1 ? ` · الموسم ${item.seasonNumber}` : ''}
-                            </>
-                          )}
-                      </div>
-
-                      <div className="text-[11px] text-neutral-400 mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 tabular-nums">
-                        {item.itemType === 'chapter' ? (
-                          <span>
-                            اللغة:{' '}
-                            <strong className="text-neutral-200 font-bold">
-                              {item.resolvedQuality || 'عربي'}
-                            </strong>
-                          </span>
-                        ) : (
-                          <span>
-                            الجودة:{' '}
-                            <strong className="text-neutral-200 font-bold">
-                              {item.resolvedQuality
-                                ? formatQualityLabel(item.resolvedQuality)
-                                : formatQualityLabel(item.requestedQuality)}
-                            </strong>
-                          </span>
-                        )}
-                        {item.usedFallbackQuality && item.itemType !== 'chapter' && (
-                          <>
-                            <span aria-hidden="true">·</span>
-                            <span className="text-amber-400 font-semibold">
-                              بديل تلقائي (بدلاً من {formatQualityLabel(item.requestedQuality)})
-                            </span>
-                          </>
-                        )}
-                        {item.serverName && item.itemType !== 'chapter' && (
-                          <>
-                            <span aria-hidden="true">·</span>
-                            <span>{item.serverName}</span>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Progress & Live Metrics */}
-                  <div className="space-y-1.5">
-                    <div className="w-full h-2 bg-neutral-900 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full rounded-full transition-all duration-300 ${
-                          isCompleted
-                            ? 'bg-emerald-500'
-                            : isFailed
-                            ? 'bg-amber-500'
-                            : item.status === 'paused'
-                            ? 'bg-neutral-500'
-                            : item.status === 'resolving' || item.status === 'downloading'
-                            ? 'bg-[#FF1744] animate-pulse'
-                            : 'bg-[#FF1744]'
-                        }`}
-                        style={{
-                          width: `${
-                            isCompleted
-                              ? 100
-                              : item.status === 'resolving'
-                              ? 12
-                              : Math.max(0, Math.min(100, item.progress || 0))
-                          }%`,
-                        }}
-                      />
-                    </div>
-                    <div className="text-[11px] font-bold text-neutral-400 tabular-nums truncate">
-                      {renderStatusText(item)}
-                    </div>
-                  </div>
-
-                  {/* Item Action Row */}
-                  <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-white/5">
-                    {isBusy && (
-                      <button
-                        type="button"
-                        onClick={() => downloadManagerService.pauseItem(item.id)}
-                        className="min-h-[40px] px-3 py-1.5 rounded-xl bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-xs font-bold text-neutral-200 flex items-center gap-1.5 transition cursor-pointer"
-                      >
-                        <Pause size={14} />
-                        <span>إيقاف مؤقت</span>
-                      </button>
-                    )}
-
-                    {item.status === 'paused' && (
-                      <button
-                        type="button"
-                        onClick={() => downloadManagerService.resumeItem(item.id)}
-                        className="min-h-[40px] px-3.5 py-1.5 rounded-xl bg-[#FF1744] hover:bg-red-600 text-xs font-black text-white flex items-center gap-1.5 transition cursor-pointer"
-                      >
-                        <Play size={14} />
-                        <span>استئناف</span>
-                      </button>
-                    )}
-
-                    {isFailed && (
-                      <button
-                        type="button"
-                        onClick={() => downloadManagerService.retryItem(item.id)}
-                        className="min-h-[40px] px-3.5 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-xs font-black text-white flex items-center gap-1.5 transition cursor-pointer"
-                      >
-                        <RotateCcw size={14} />
-                        <span>إعادة المحاولة</span>
-                      </button>
-                    )}
-
-                    {isCompleted && item.hasOfflineFile && item.itemType === 'chapter' && (
-                      <button
-                        type="button"
-                        onClick={() => onOpenOfflineChapter?.(item)}
-                        className="min-h-[40px] px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-xs font-black text-white flex items-center gap-1.5 transition cursor-pointer"
-                      >
-                        <BookOpen size={14} />
-                        <span>قراءة أوفلاين</span>
-                      </button>
-                    )}
-
-                    {isCompleted && item.hasOfflineFile && item.itemType !== 'chapter' && (
-                      <button
-                        type="button"
-                        onClick={() => void handlePlayOffline(item)}
-                        className="min-h-[40px] px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-xs font-black text-white flex items-center gap-1.5 transition cursor-pointer"
-                      >
-                        <Play size={14} fill="currentColor" />
-                        <span>تشغيل</span>
-                      </button>
-                    )}
-
-                    {isCompleted && item.targetMode === 'internal' && item.itemType !== 'chapter' && (
-                      <button
-                        type="button"
-                        onClick={() => void handleSaveDevice(item)}
-                        className="min-h-[40px] px-3 py-1.5 rounded-xl bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-xs font-bold text-neutral-200 flex items-center gap-1.5 transition cursor-pointer"
-                      >
-                        <FolderDown size={14} />
-                        <span>حفظ على الجهاز</span>
-                      </button>
-                    )}
-
-                    {item.itemType !== 'chapter' && (item.externalDirectUrl || item.downloadUrl) && (
-                      <button
-                        type="button"
-                        onClick={() => void handleExternalHandoff(item)}
-                        className="min-h-[40px] px-3 py-1.5 rounded-xl bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-xs font-bold text-neutral-300 flex items-center gap-1.5 transition cursor-pointer"
-                      >
-                        <ExternalLink size={14} />
-                        <span>تنزيل خارجي</span>
-                      </button>
-                    )}
-
                     <button
                       type="button"
-                      onClick={() => downloadManagerService.removeItem(item.id)}
-                      aria-label="حذف"
-                      className="min-h-[40px] min-w-[40px] mr-auto px-2.5 py-1.5 rounded-xl bg-neutral-900 hover:bg-red-950/50 border border-neutral-800 hover:border-red-500/40 text-xs font-bold text-neutral-400 hover:text-red-400 flex items-center justify-center transition cursor-pointer"
+                      onClick={() => toggleGroup(group, groupIdx)}
+                      aria-expanded={expanded}
+                      className="flex-1 min-w-0 text-right cursor-pointer py-1"
                     >
-                      <Trash2 size={15} />
+                      <h2 className="text-sm sm:text-base font-black text-white truncate">
+                        {group.title}
+                      </h2>
+                      <p className="text-xs text-neutral-400 mt-1 tabular-nums truncate">
+                        {metaParts.join(' · ')}
+                      </p>
+                      {group.activeCount > 0 && (
+                        <div className="w-full h-1 bg-neutral-800 rounded-full overflow-hidden mt-2">
+                          <div
+                            className="h-full bg-[#FF1744] rounded-full transition-all duration-300"
+                            style={{ width: `${Math.max(4, group.avgProgress)}%` }}
+                          />
+                        </div>
+                      )}
                     </button>
+
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveGroup(group)}
+                        title="حذف تنزيلات هذا العمل"
+                        aria-label={`حذف تنزيلات ${group.title}`}
+                        className="min-w-[40px] min-h-[40px] rounded-full hover:bg-red-950/50 text-neutral-400 hover:text-red-400 flex items-center justify-center transition cursor-pointer"
+                      >
+                        <Trash2 size={17} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => toggleGroup(group, groupIdx)}
+                        aria-label={expanded ? 'طي القائمة' : 'عرض القائمة'}
+                        className="min-w-[40px] min-h-[40px] rounded-full hover:bg-white/5 text-neutral-300 hover:text-white flex items-center justify-center transition cursor-pointer"
+                      >
+                        <ChevronDown
+                          size={20}
+                          className={`transition-transform duration-200 ${
+                            expanded ? 'rotate-180' : ''
+                          }`}
+                        />
+                      </button>
+                    </div>
                   </div>
-                </article>
+
+                  {/* Clean Expandable Simple List of Episodes / Chapters */}
+                  {expanded && (
+                    <div className="border-t border-white/[0.06] bg-black/35 divide-y divide-white/[0.06]">
+                      {group.items.map((item) => {
+                        const isBusy =
+                          item.status === 'queued' ||
+                          item.status === 'resolving' ||
+                          item.status === 'downloading';
+                        const isCompleted = item.status === 'completed';
+                        const isFailed = item.status === 'failed';
+                        const isChapter = item.itemType === 'chapter';
+
+                        const rowTitle = isChapter
+                          ? item.chapterTitle || `الفصل ${item.chapterNum || item.episodeNum}`
+                          : `${item.episodeTitle || `الحلقة ${item.episodeNum}`}${
+                              item.seasonNumber > 1 ? ` · الموسم ${item.seasonNumber}` : ''
+                            }`;
+
+                        return (
+                          <div
+                            key={item.id}
+                            className="px-3.5 sm:px-4 py-2.5 flex items-center justify-between gap-3"
+                          >
+                            {/* Row Label & Status */}
+                            <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                              <span className="shrink-0">
+                                {isCompleted ? (
+                                  <CheckCircle2 size={16} className="text-emerald-400" />
+                                ) : isFailed ? (
+                                  <AlertTriangle size={16} className="text-amber-400" />
+                                ) : isBusy ? (
+                                  <Loader2 size={16} className="text-[#FF1744] animate-spin" />
+                                ) : (
+                                  <Pause size={16} className="text-neutral-400" />
+                                )}
+                              </span>
+
+                              <div className="min-w-0 flex-1">
+                                <div className="text-xs sm:text-sm font-bold text-neutral-100 truncate tabular-nums">
+                                  {rowTitle}
+                                </div>
+                                <div className="text-[11px] text-neutral-400 truncate tabular-nums mt-0.5">
+                                  {renderRowSubtitle(item)}
+                                </div>
+                                {!isCompleted && (
+                                  <div className="w-full h-1 bg-neutral-900 rounded-full overflow-hidden mt-1.5">
+                                    <div
+                                      className={`h-full rounded-full transition-all duration-300 ${
+                                        isFailed
+                                          ? 'bg-amber-500'
+                                          : item.status === 'paused'
+                                            ? 'bg-neutral-500'
+                                            : 'bg-[#FF1744]'
+                                      }`}
+                                      style={{
+                                        width: `${
+                                          item.status === 'resolving'
+                                            ? 12
+                                            : Math.max(0, Math.min(100, item.progress || 0))
+                                        }%`,
+                                      }}
+                                    />
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Simple Inline Actions */}
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              {isBusy && (
+                                <button
+                                  type="button"
+                                  onClick={() => downloadManagerService.pauseItem(item.id)}
+                                  title="إيقاف مؤقت"
+                                  aria-label="إيقاف مؤقت"
+                                  className="min-w-[38px] min-h-[38px] rounded-xl bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-neutral-200 flex items-center justify-center transition cursor-pointer"
+                                >
+                                  <Pause size={15} />
+                                </button>
+                              )}
+
+                              {item.status === 'paused' && (
+                                <button
+                                  type="button"
+                                  onClick={() => downloadManagerService.resumeItem(item.id)}
+                                  title="استئناف"
+                                  aria-label="استئناف"
+                                  className="min-w-[38px] min-h-[38px] rounded-xl bg-[#FF1744] hover:bg-red-600 text-white flex items-center justify-center transition cursor-pointer"
+                                >
+                                  <Play size={15} fill="currentColor" />
+                                </button>
+                              )}
+
+                              {isFailed && (
+                                <button
+                                  type="button"
+                                  onClick={() => downloadManagerService.retryItem(item.id)}
+                                  title="إعادة المحاولة"
+                                  aria-label="إعادة المحاولة"
+                                  className="min-h-[38px] px-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-xs font-black text-white flex items-center gap-1 transition cursor-pointer"
+                                >
+                                  <RotateCcw size={14} />
+                                  <span className="hidden sm:inline">إعادة</span>
+                                </button>
+                              )}
+
+                              {isCompleted && item.hasOfflineFile && isChapter && (
+                                <button
+                                  type="button"
+                                  onClick={() => onOpenOfflineChapter?.(item)}
+                                  className="min-h-[38px] px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-xs font-black text-white flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap"
+                                >
+                                  <BookOpen size={14} />
+                                  <span>قراءة</span>
+                                </button>
+                              )}
+
+                              {isCompleted && item.hasOfflineFile && !isChapter && (
+                                <button
+                                  type="button"
+                                  onClick={() => void handlePlayOffline(item)}
+                                  className="min-h-[38px] px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-xs font-black text-white flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap"
+                                >
+                                  <Play size={14} fill="currentColor" />
+                                  <span>تشغيل</span>
+                                </button>
+                              )}
+
+                              {isCompleted && item.targetMode === 'internal' && !isChapter && (
+                                <button
+                                  type="button"
+                                  onClick={() => void handleSaveDevice(item)}
+                                  title="حفظ على الجهاز"
+                                  aria-label="حفظ على الجهاز"
+                                  className="min-w-[38px] min-h-[38px] rounded-xl bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-neutral-200 flex items-center justify-center transition cursor-pointer"
+                                >
+                                  <FolderDown size={15} />
+                                </button>
+                              )}
+
+                              {!isChapter && (item.externalDirectUrl || item.downloadUrl) && (
+                                <button
+                                  type="button"
+                                  onClick={() => void handleExternalHandoff(item)}
+                                  title="تنزيل خارجي"
+                                  aria-label="تنزيل خارجي"
+                                  className="min-w-[38px] min-h-[38px] rounded-xl bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-neutral-300 flex items-center justify-center transition cursor-pointer"
+                                >
+                                  <ExternalLink size={15} />
+                                </button>
+                              )}
+
+                              <button
+                                type="button"
+                                onClick={() => downloadManagerService.removeItem(item.id)}
+                                title="حذف"
+                                aria-label="حذف"
+                                className="min-w-[38px] min-h-[38px] rounded-full hover:bg-red-950/50 text-neutral-400 hover:text-red-400 flex items-center justify-center transition cursor-pointer"
+                              >
+                                <Trash2 size={15} />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </section>
               );
             })}
           </div>

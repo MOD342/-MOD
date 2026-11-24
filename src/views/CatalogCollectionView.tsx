@@ -4,6 +4,8 @@ import { clientCache } from '../utils/clientCache';
 import { cloudCatalogService } from '../services/cloudCatalogService';
 import { cleanAnimeTitle } from '../utils/animeTitleCleaner';
 import PullToRefresh from '../components/PullToRefresh';
+import { LongPressCopy } from '../components/LongPressCopy';
+import { FALLBACK_POSTER_DATA_URL } from '../utils/posterFallback';
 import {
   useGlobalLayoutMode,
   LayoutModeToggleButton,
@@ -39,13 +41,15 @@ export default function CatalogCollectionView({ mode, onBack, onAnimeClick }: Ca
       setLoading(true);
     }
 
-    const cacheKey = `catalog_collection_v1_${mode}_p_${safePage}`;
+    const cacheKey = `client_catalog_collection_v1_${mode}_p_${safePage}`;
     if (!forceBypass) {
       const cached = clientCache.get<{ items: any[]; hasNext: boolean }>(cacheKey);
       if (cached && Array.isArray(cached.items) && cached.items.length > 0) {
         setItems(cached.items);
         setHasNext(Boolean(cached.hasNext));
         setLoading(false);
+        setRefreshing(false);
+        return;
       }
     }
 
@@ -197,7 +201,7 @@ export default function CatalogCollectionView({ mode, onBack, onAnimeClick }: Ca
                     >
                       <div className="w-24 sm:w-28 shrink-0 bg-neutral-950 border-l border-white/10 relative overflow-hidden">
                         <img
-                          src={anime.posterUrl || 'https://via.placeholder.com/200x300?text=Anime'}
+                          src={anime.posterUrl || FALLBACK_POSTER_DATA_URL}
                           referrerPolicy="no-referrer"
                           loading="lazy"
                           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
@@ -215,7 +219,7 @@ export default function CatalogCollectionView({ mode, onBack, onAnimeClick }: Ca
                           className="w-full font-black text-sm sm:text-base text-white group-hover:text-amber-400 transition-colors line-clamp-1 leading-snug text-right"
                           dir="auto"
                         >
-                          {anime.title}
+                          <LongPressCopy text={anime.title}>{anime.title}</LongPressCopy>
                         </h5>
 
                         <div className="flex flex-wrap items-center justify-start gap-1.5 text-[10px] sm:text-xs font-bold">
@@ -264,7 +268,7 @@ export default function CatalogCollectionView({ mode, onBack, onAnimeClick }: Ca
                     className="theme-keep-dark cursor-pointer group relative aspect-[3/4] overflow-hidden bg-neutral-950 border-b border-l border-white/10"
                   >
                     <img
-                      src={anime.posterUrl || 'https://via.placeholder.com/200x300?text=Anime'}
+                      src={anime.posterUrl || FALLBACK_POSTER_DATA_URL}
                       referrerPolicy="no-referrer"
                       loading="lazy"
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
@@ -291,12 +295,12 @@ export default function CatalogCollectionView({ mode, onBack, onAnimeClick }: Ca
 
                     <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 via-black/70 to-transparent pt-8 pb-2 px-2 pointer-events-none flex flex-col justify-end">
                       <h5
-                        className={`font-black ${
+                        className={`pointer-events-auto font-black ${
                           isLargeGrid ? 'text-xs sm:text-sm' : 'text-[10px] sm:text-xs'
                         } text-white group-hover:text-amber-400 transition-colors line-clamp-2 text-center leading-tight drop-shadow`}
                         dir="ltr"
                       >
-                        {anime.title}
+                        <LongPressCopy text={anime.title}>{anime.title}</LongPressCopy>
                       </h5>
                     </div>
                   </div>

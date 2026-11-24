@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express";
 import { serverCache } from "../../services/cacheService";
 import { anilistService } from "../../services/anilistService";
 import { cleanAnimeTitle } from "../../utils/animeTitleCleaner";
+import { splitAniListGenresAndTags } from "../../utils/genreTaxonomy";
 import {
   CURATED_ANIME_LIST,
   CURATED_GENRES_LIST,
@@ -14,15 +15,15 @@ import { IS_EXTERNAL_FETCH_DISABLED, scraper, handleAsync } from "../helpers/sha
 import { fetchWithTimeout, fetchJikan } from "../helpers/jikanClient";
 import {
   translateToArabic,
-  getArabicTitle,
-  translateTitleToEnglish,
-  translateItemsList,
+  needsArabicTranslation,
   translateGenresListToArabic,
   translateDescriptionInBackground,
   smartQueryTranslator,
 } from "../helpers/translation";
 
 const router = Router();
+const inFlightAnimeDetails = new Map<string, Promise<any>>();
+const inFlightCharacters = new Map<string, Promise<any[]>>();
 
 
 
@@ -36,7 +37,7 @@ router.post(
     try {
       const translated = await translateToArabic(text);
       if (animeId && translated && translated !== text) {
-        const cacheKey = `anime-details-v8-${animeId}`;
+        const cacheKey = `anime-details-v9-${animeId}`;
         const cached = await serverCache.get<any>(cacheKey);
         if (cached) {
           cached.description = translated;
@@ -91,8 +92,8 @@ router.get(
         // Harvest any numeric IDs already warmed in RAM cache so random pool grows organically
         const poolSet = new Set<string>(RANDOM_ANIME_POOL);
         for (const k of serverCache.getKeys()) {
-          if (k.startsWith("anime-details-v8-")) {
-            const candidate = k.replace("anime-details-v8-", "");
+          if (k.startsWith("anime-details-v9-")) {
+            const candidate = k.replace("anime-details-v9-", "");
             if (/^\d+$/.test(candidate)) poolSet.add(candidate);
           }
         }
@@ -109,8 +110,8 @@ router.get(
         const cachedCandidates: string[] = [];
         const availableSet = new Set(available);
         for (const k of serverCache.getKeys()) {
-          if (k.startsWith("anime-details-v8-")) {
-            const candidate = k.replace("anime-details-v8-", "");
+          if (k.startsWith("anime-details-v9-")) {
+            const candidate = k.replace("anime-details-v9-", "");
             if (availableSet.has(candidate)) {
               cachedCandidates.push(candidate);
             }
@@ -126,7 +127,7 @@ router.get(
       }
 
       // Now check cache AFTER resolving random ID!
-      const cached = await serverCache.get<any>(`anime-details-v8-${id}`);
+      const cached = await serverCache.get<any>(`anime-details-v9-${id}`);
       if (
         cached !== null &&
         cached.description &&
@@ -135,7 +136,7 @@ router.get(
         (cached.episodes.length > 0 || cached.status === "قادم")
       ) {
         cached.genres = translateGenresListToArabic(cached.genres || []);
-        const hasEnglishDescription = /[a-zA-Z]{10,}/.test(cached.description);
+        const hasEnglishDescription = needsArabicTranslation(cached.description);
         if (hasEnglishDescription) {
           const cleanedDesc = cached.description
             .replace(/<[^>]*>/g, " ")
@@ -145,7 +146,7 @@ router.get(
           const translated = await raceTimeout(translateToArabic(cleanedDesc), 2500, "");
           if (translated && /[\u0600-\u06FF]/.test(translated)) {
             cached.description = translated;
-            await serverCache.set(`anime-details-v8-${id}`, cached, 12 * 60 * 60 * 1000);
+            await serverCache.set(`anime-details-v9-${id}`, cached, 12 * 60 * 60 * 1000);
           }
         }
         return res.json({ success: true, resolvedId: cached._id || id, data: cached });
@@ -240,12 +241,16 @@ router.get(
 
           const candidates = Array.from(new Set([enCandidate, romajiCandidate].filter(Boolean)));
           if (candidates.length > 0) {
-            const searchResults = await Promise.all(
-              candidates.map((c) => raceTimeout(scraper.searchAnime(c).catch(() => null), scraperSearchTimeout, null))
-            );
-            const matchedSlug = searchResults.find((s) => Boolean(s));
-            if (matchedSlug) {
-              animelekId = matchedSlug;
+            for (const cand of candidates) {
+              const matchedSlug = await raceTimeout(
+                scraper.searchAnime(cand).catch(() => null),
+                scraperSearchTimeout,
+                null
+              );
+              if (matchedSlug) {
+                animelekId = matchedSlug;
+                break;
+              }
             }
           }
         }
@@ -282,15 +287,21 @@ router.get(
         requestedSeasonNum = extractSeasonNumFromText(decodeURIComponent(id));
       }
 
-      // 2. Scrape real Arabic series/episodes/seasons from OkAnime (#1) + AnimeDar (#2) with strict timeout
+      // 2. Scrape real Arabic series/episodes/seasons from OkAnime (#1) + AnimeDar (#2) with strict timeout & single-flight
       let data: any = null;
       try {
         if (animelekId && animelekId !== "random" && !/^\d+$/.test(animelekId)) {
-          data = await raceTimeout(
-            scraper.getAnimeDetails(animelekId, requestedSeasonNum),
-            scraperDetailsTimeout,
-            null
-          );
+          const detailKey = `route_scrape:${animelekId}:s${requestedSeasonNum || "auto"}`;
+          let p = inFlightAnimeDetails.get(detailKey);
+          if (!p) {
+            p = raceTimeout(
+              scraper.getAnimeDetails(animelekId, requestedSeasonNum),
+              scraperDetailsTimeout,
+              null
+            ).finally(() => inFlightAnimeDetails.delete(detailKey));
+            inFlightAnimeDetails.set(detailKey, p);
+          }
+          data = await p;
         }
       } catch (e) {
         console.log(`[getAnimeDetails] Scraper fallback for ${animelekId}`);
@@ -521,6 +532,7 @@ router.get(
 
       data.characters = characters;
       data.related = related.sort((a, b) => (a.mal_id || 0) - (b.mal_id || 0));
+      data.relatedGraphVersion = 2;
       data.jikanRecommendations = jikanRecommendations;
       if (aniPictures.length > 0) {
         data.pictures = aniPictures;
@@ -544,7 +556,7 @@ router.get(
           .replace(/\s+/g, " ")
           .trim();
 
-        const hasEnglishDescription = /[a-zA-Z]{10,}/.test(data.description);
+        const hasEnglishDescription = needsArabicTranslation(data.description);
         if (hasEnglishDescription) {
           try {
             const fastTranslate = await Promise.race([
@@ -566,7 +578,7 @@ router.get(
         const resolvedKeyId = data._id && data._id !== "random" ? String(data._id) : id;
         if (resolvedKeyId && resolvedKeyId !== "random") {
           await serverCache.set(
-            `anime-details-v8-${resolvedKeyId}`,
+            `anime-details-v9-${resolvedKeyId}`,
             data,
             12 * 60 * 60 * 1000,
           );
@@ -574,14 +586,14 @@ router.get(
         const requestParamId = req.params.id;
         if (requestParamId && requestParamId !== "random" && requestParamId !== resolvedKeyId) {
           await serverCache.set(
-            `anime-details-v8-${requestParamId}`,
+            `anime-details-v9-${requestParamId}`,
             data,
             12 * 60 * 60 * 1000,
           );
         }
         if (data.malId && String(data.malId) !== resolvedKeyId) {
           await serverCache.set(
-            `anime-details-v8-${data.malId}`,
+            `anime-details-v9-${data.malId}`,
             data,
             12 * 60 * 60 * 1000,
           );
@@ -682,18 +694,17 @@ router.get(
       }
 
       const genresParam = (genres as string) || "";
-      const selectedGenreIds = genresParam
-        ? genresParam.split(",").map(Number).filter(Boolean)
+      const genreTokens = genresParam
+        ? genresParam.split(",").map((t) => t.trim()).filter(Boolean)
         : [];
-      const selectedGenreNamesEn = selectedGenreIds
-        .map((gid) => CURATED_GENRES_LIST.find((g) => g.mal_id === gid)?.name)
-        .filter(Boolean) as string[];
+      const splitGenres = splitAniListGenresAndTags(genreTokens);
 
       // Primary: Fast AniList GraphQL Search
       try {
         const aniSearch = await anilistService.searchAnime({
           q: resolvedQuery || (q as string),
-          genres: selectedGenreNamesEn,
+          genres: splitGenres.genreIn,
+          tags: splitGenres.tagIn,
           minScore: min_score ? parseFloat(min_score as string) : undefined,
           status: status as string,
           year: year ? Number(year) : undefined,
@@ -741,7 +752,8 @@ router.get(
       if (resolvedQuery) {
         url += `&q=${encodeURIComponent(resolvedQuery)}`;
       }
-      if (genres) url += `&genres=${genres}`;
+      if (splitGenres.malIds.length > 0) url += `&genres=${splitGenres.malIds.join(",")}`;
+      else if (genres) url += `&genres=${genres}`;
       if (min_score) url += `&min_score=${min_score}`;
       if (status) url += `&status=${status}`;
       if (order_by) url += `&order_by=${order_by}`;
@@ -959,7 +971,10 @@ router.get(
         return res.json({ success: true, data: cached });
       }
 
-      const gqlQuery = `
+      let flight = inFlightCharacters.get(cacheKey);
+      if (!flight) {
+        flight = (async (): Promise<any[]> => {
+          const gqlQuery = `
         query ($page: Int, $search: String) {
           Page(page: $page, perPage: 24) {
             characters(sort: [FAVOURITES_DESC], search: $search) {
@@ -1011,105 +1026,114 @@ router.get(
         }
       `;
 
-      const variables: Record<string, any> = { page };
-      if (searchQuery) {
-        variables.search = searchQuery;
-      }
+          const variables: Record<string, any> = { page };
+          if (searchQuery) {
+            variables.search = searchQuery;
+          }
 
-      const aniRes = await fetch("https://graphql.anilist.co", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify({ query: gqlQuery, variables }),
-      });
-
-      if (aniRes.ok) {
-        const json = await aniRes.json();
-        const chars = json?.data?.Page?.characters || [];
-        if (chars.length > 0) {
-          const mapped = chars.map((ch: any, idx: number) => {
-            const topEdge = ch.media?.edges?.[0];
-            const primaryAnime = topEdge?.node;
-            const primaryVA = topEdge?.voiceActors?.[0];
-            const cleanDesc = (ch.description || "")
-              .replace(/~!.*?!~/gs, "")
-              .replace(/__+/g, "")
-              .replace(/\*\*+/g, "")
-              .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-              .trim();
-
-            return {
-              id: String(ch.id),
-              rank: (page - 1) * 24 + idx + 1,
-              name: ch.name?.full || "Unknown",
-              nativeName: ch.name?.native || "",
-              imageUrl: ch.image?.large || "",
-              favorites: ch.favourites || 0,
-              gender: ch.gender || "",
-              age: ch.age || "",
-              role: topEdge?.characterRole === "MAIN" ? "بطل رئيسي" : "شخصية محورية",
-              about: cleanDesc.slice(0, 420),
-              voiceActor: primaryVA
-                ? {
-                    name: primaryVA.name?.full || "",
-                    nativeName: primaryVA.name?.native || "",
-                    imageUrl: primaryVA.image?.large || "",
-                  }
-                : null,
-              anime: primaryAnime
-                ? {
-                    id: String(primaryAnime.idMal || primaryAnime.id),
-                    title: primaryAnime.title?.english || primaryAnime.title?.romaji || "",
-                    posterUrl: primaryAnime.coverImage?.extraLarge || primaryAnime.coverImage?.large || "",
-                    rating: primaryAnime.averageScore ? Number((primaryAnime.averageScore / 10).toFixed(1)) : 0,
-                    type: primaryAnime.format || "TV",
-                    year: primaryAnime.seasonYear || null,
-                  }
-                : null,
-              appearances: (ch.media?.edges || [])
-                .filter((e: any) => e?.node?.idMal)
-                .map((e: any) => ({
-                  id: String(e.node.idMal),
-                  title: e.node.title?.english || e.node.title?.romaji || "",
-                  posterUrl: e.node.coverImage?.large || "",
-                  rating: e.node.averageScore ? Number((e.node.averageScore / 10).toFixed(1)) : 0,
-                })),
-            };
+          const aniRes = await fetch("https://graphql.anilist.co", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json",
+            },
+            body: JSON.stringify({ query: gqlQuery, variables }),
+            signal: AbortSignal.timeout(6000),
           });
 
-          await serverCache.set(cacheKey, mapped, 6 * 60 * 60 * 1000);
-          return res.json({ success: true, data: mapped });
-        }
+          if (aniRes.ok) {
+            const json = await aniRes.json();
+            const chars = json?.data?.Page?.characters || [];
+            if (chars.length > 0) {
+              const mapped = chars.map((ch: any, idx: number) => {
+                const topEdge = ch.media?.edges?.[0];
+                const primaryAnime = topEdge?.node;
+                const primaryVA = topEdge?.voiceActors?.[0];
+                const cleanDesc = (ch.description || "")
+                  .replace(/~!.*?!~/gs, "")
+                  .replace(/__+/g, "")
+                  .replace(/\*\*+/g, "")
+                  .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+                  .trim();
+
+                return {
+                  id: String(ch.id),
+                  rank: (page - 1) * 24 + idx + 1,
+                  name: ch.name?.full || "Unknown",
+                  nativeName: ch.name?.native || "",
+                  imageUrl: ch.image?.large || "",
+                  favorites: ch.favourites || 0,
+                  gender: ch.gender || "",
+                  age: ch.age || "",
+                  role: topEdge?.characterRole === "MAIN" ? "بطل رئيسي" : "شخصية محورية",
+                  about: cleanDesc.slice(0, 420),
+                  voiceActor: primaryVA
+                    ? {
+                        name: primaryVA.name?.full || "",
+                        nativeName: primaryVA.name?.native || "",
+                        imageUrl: primaryVA.image?.large || "",
+                      }
+                    : null,
+                  anime: primaryAnime
+                    ? {
+                        id: String(primaryAnime.idMal || primaryAnime.id),
+                        title: primaryAnime.title?.english || primaryAnime.title?.romaji || "",
+                        posterUrl: primaryAnime.coverImage?.extraLarge || primaryAnime.coverImage?.large || "",
+                        rating: primaryAnime.averageScore ? Number((primaryAnime.averageScore / 10).toFixed(1)) : 0,
+                        type: primaryAnime.format || "TV",
+                        year: primaryAnime.seasonYear || null,
+                      }
+                    : null,
+                  appearances: (ch.media?.edges || [])
+                    .filter((e: any) => e?.node?.idMal)
+                    .map((e: any) => ({
+                      id: String(e.node.idMal),
+                      title: e.node.title?.english || e.node.title?.romaji || "",
+                      posterUrl: e.node.coverImage?.large || "",
+                      rating: e.node.averageScore ? Number((e.node.averageScore / 10).toFixed(1)) : 0,
+                    })),
+                };
+              });
+
+              await serverCache.set(cacheKey, mapped, 12 * 60 * 60 * 1000);
+              return mapped;
+            }
+          }
+
+          // Jikan fallback
+          const jikanUrl = searchQuery
+            ? `https://api.jikan.moe/v4/characters?q=${encodeURIComponent(searchQuery)}&order_by=favorites&sort=desc&limit=24&page=${page}`
+            : `https://api.jikan.moe/v4/top/characters?page=${page}&limit=24`;
+          const jikanData = await fetchJikan(jikanUrl);
+          const fallbackChars = (jikanData?.data || []).map((ch: any, idx: number) => ({
+            id: String(ch.mal_id),
+            rank: (page - 1) * 24 + idx + 1,
+            name: ch.name || "Unknown",
+            nativeName: ch.name_kanji || "",
+            imageUrl: ch.images?.jpg?.image_url || "",
+            favorites: ch.favorites || 0,
+            gender: "",
+            age: "",
+            role: "بطل رئيسي",
+            about: (ch.about || "").slice(0, 420),
+            voiceActor: null,
+            anime: null,
+            appearances: [],
+          }));
+
+          if (fallbackChars.length > 0) {
+            await serverCache.set(cacheKey, fallbackChars, 12 * 60 * 60 * 1000);
+          }
+
+          return fallbackChars;
+        })().finally(() => {
+          inFlightCharacters.delete(cacheKey);
+        });
+        inFlightCharacters.set(cacheKey, flight);
       }
 
-      // Jikan fallback
-      const jikanUrl = searchQuery
-        ? `https://api.jikan.moe/v4/characters?q=${encodeURIComponent(searchQuery)}&order_by=favorites&sort=desc&limit=24&page=${page}`
-        : `https://api.jikan.moe/v4/top/characters?page=${page}&limit=24`;
-      const jikanData = await fetchJikan(jikanUrl);
-      const fallbackChars = (jikanData?.data || []).map((ch: any, idx: number) => ({
-        id: String(ch.mal_id),
-        rank: (page - 1) * 24 + idx + 1,
-        name: ch.name || "Unknown",
-        nativeName: ch.name_kanji || "",
-        imageUrl: ch.images?.jpg?.image_url || "",
-        favorites: ch.favorites || 0,
-        gender: "",
-        age: "",
-        role: "بطل رئيسي",
-        about: (ch.about || "").slice(0, 420),
-        voiceActor: null,
-        anime: null,
-        appearances: [],
-      }));
-
-      if (fallbackChars.length > 0) {
-        await serverCache.set(cacheKey, fallbackChars, 6 * 60 * 60 * 1000);
-      }
-
-      return res.json({ success: true, data: fallbackChars });
+      const result = await flight;
+      return res.json({ success: true, data: result });
     } catch (error) {
       console.warn("Characters API warning:", error);
       return res.json({ success: true, data: [] });

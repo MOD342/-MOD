@@ -331,6 +331,18 @@ export class ScraperService {
     'Accept-Language': 'ar-EG,ar;q=0.9,en-US;q=0.8,en;q=0.7',
   };
 
+  private inFlightScrape = new Map<string, Promise<any>>();
+
+  private coalesceScrape<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const existing = this.inFlightScrape.get(key);
+    if (existing) return existing as Promise<T>;
+    const p = fn().finally(() => {
+      this.inFlightScrape.delete(key);
+    });
+    this.inFlightScrape.set(key, p);
+    return p;
+  }
+
   /**
    * جلب HTML من الموقع الأساسي #1: OkAnime (ww3.okanime.xyz)
    */
@@ -1041,6 +1053,12 @@ export class ScraperService {
       if (cached && cached.length > 0) return cached;
     }
 
+    return this.coalesceScrape(cacheKey, async () => {
+      if (!forceBypass) {
+        const cached = await this.getCached<AnimeItem[]>(cacheKey);
+        if (cached && cached.length > 0) return cached;
+      }
+
     try {
       const html = await this.fetchOkanimeHtml('/state/currently-airing', 6000);
       const $ = cheerio.load(html);
@@ -1111,12 +1129,13 @@ export class ScraperService {
       });
 
       if (items.length > 0) {
-        await this.setCache(cacheKey, items, 30 * 60 * 1000);
+        await this.setCache(cacheKey, items, 60 * 60 * 1000);
       }
       return items;
     } catch {
       return [];
     }
+    });
   }
 
   /**
@@ -1147,6 +1166,8 @@ export class ScraperService {
         await serverCache.delete('recent_episodes');
       }
     }
+
+    return this.coalesceScrape(`${cacheKey}${forceBypass ? ':force' : ''}`, async () => {
 
     try {
       const validItems: AnimeItem[] = [];
@@ -1248,9 +1269,9 @@ export class ScraperService {
       }
 
       if (validItems.length > 0) {
-        await this.setCache(cacheKey, validItems, 90 * 1000);
+        await this.setCache(cacheKey, validItems, 5 * 60 * 1000);
         if (safePage === 1) {
-          await this.setCache('recent_episodes', validItems, 90 * 1000);
+          await this.setCache('recent_episodes', validItems, 5 * 60 * 1000);
         }
         return validItems;
       }
@@ -1266,6 +1287,7 @@ export class ScraperService {
       if (safePage > 1) return [];
       return [];
     }
+    });
   }
 
   /**
@@ -1279,6 +1301,8 @@ export class ScraperService {
     } else {
       await serverCache.delete(cacheKey);
     }
+
+    return this.coalesceScrape(`${cacheKey}${forceBypass ? ':force' : ''}`, async () => {
 
     const sectionDayMap: Record<string, string> = {
       schedule_day_5: 'saturday',
@@ -1385,6 +1409,7 @@ export class ScraperService {
     const stale = await serverCache.get<Record<string, any[]>>(cacheKey, true);
     if (stale && Object.keys(stale).length > 0) return stale;
     return {};
+    });
   }
 
   public async getSchedule(day?: string, forceBypass = false): Promise<AnimeItem[]> {
@@ -1492,11 +1517,12 @@ export class ScraperService {
       await serverCache.delete(cacheKey);
     }
 
+    return this.coalesceScrape(`${cacheKey}${forceBypass ? ':force' : ''}`, async () => {
     try {
       const path = safePage > 1 ? `/anime-movies?page=${safePage}` : '/anime-movies';
       const result = await this.parseOkanimeCatalogListing(path, 'فيلم');
       if (result.items.length > 0) {
-        await this.setCache(cacheKey, result, 30 * 60 * 1000);
+        await this.setCache(cacheKey, result, 60 * 60 * 1000);
         return result;
       }
     } catch {}
@@ -1504,6 +1530,7 @@ export class ScraperService {
     const stale = await serverCache.get<{ items: any[]; hasNext: boolean }>(cacheKey, true);
     if (stale && stale.items?.length > 0) return stale;
     return { items: [], hasNext: false };
+    });
   }
 
   public async getTopAnime(page = 1, forceBypass = false): Promise<{ items: any[]; hasNext: boolean }> {
@@ -1516,11 +1543,12 @@ export class ScraperService {
       await serverCache.delete(cacheKey);
     }
 
+    return this.coalesceScrape(`${cacheKey}${forceBypass ? ':force' : ''}`, async () => {
     try {
       const path = safePage > 1 ? `/top-anime?page=${safePage}` : '/top-anime';
       const result = await this.parseOkanimeCatalogListing(path, 'مسلسل');
       if (result.items.length > 0) {
-        await this.setCache(cacheKey, result, 30 * 60 * 1000);
+        await this.setCache(cacheKey, result, 60 * 60 * 1000);
         return result;
       }
     } catch {}
@@ -1528,6 +1556,7 @@ export class ScraperService {
     const stale = await serverCache.get<{ items: any[]; hasNext: boolean }>(cacheKey, true);
     if (stale && stale.items?.length > 0) return stale;
     return { items: [], hasNext: false };
+    });
   }
 
   private cleanQueryForSearch(query: string): string {
@@ -1665,6 +1694,8 @@ export class ScraperService {
     const cached = await this.getCached<string | null>(cacheKey);
     if (cached !== null) return cached;
 
+    return this.coalesceScrape(cacheKey, async () => {
+
     // 1. البحث في الموقع الأساسي #1: ww3.okanime.xyz
     try {
       const okHtml = await this.fetchOkanimeHtml(`/search?q=${encodeURIComponent(query.trim())}`, 5500);
@@ -1748,6 +1779,7 @@ export class ScraperService {
     } catch {
       return null;
     }
+    });
   }
 
   /**
@@ -1770,6 +1802,8 @@ export class ScraperService {
     const cacheKey = `anime_okanime_primary_v1:${cleanSlug}:s${preferredSeasonNum || 'auto'}`;
     const cached = await this.getCached<any>(cacheKey);
     if (cached) return cached;
+
+    return this.coalesceScrape(cacheKey, async () => {
 
     // 1. المحاولة من الموقع الأساسي #1: ww3.okanime.xyz
     try {
@@ -1806,7 +1840,7 @@ export class ScraperService {
         const result = {
           _id: cleanSlug,
           title: parsed.title,
-          posterUrl: parsed.posterUrl || 'https://via.placeholder.com/300x400?text=No+Poster',
+          posterUrl: parsed.posterUrl || 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 300 420%22%3E%3Crect width=%22300%22 height=%22420%22 fill=%22%2312131c%22/%3E%3C/svg%3E',
           description: parsed.description,
           episodes: formattedEpisodes,
           seasonsList: seasonsData,
@@ -1870,7 +1904,7 @@ export class ScraperService {
         const result = {
           _id: cleanSlug,
           title: parsed.title,
-          posterUrl: parsed.posterUrl || 'https://via.placeholder.com/300x400?text=No+Poster',
+          posterUrl: parsed.posterUrl || 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 300 420%22%3E%3Crect width=%22300%22 height=%22420%22 fill=%22%2312131c%22/%3E%3C/svg%3E',
           description: parsed.description,
           episodes: formattedEpisodes,
           seasonsList: seasonsData,
@@ -1890,6 +1924,7 @@ export class ScraperService {
     } catch {}
 
     return null;
+    });
   }
 
   /**
@@ -1967,6 +2002,7 @@ export class ScraperService {
       return cachedServers;
     }
 
+    return this.coalesceScrape(cacheKey, async () => {
     try {
       let resolvedPrimarySlug = '';
 
@@ -2246,5 +2282,6 @@ export class ScraperService {
     } catch {
       return [];
     }
+    });
   }
 }

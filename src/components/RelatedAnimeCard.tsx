@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Play } from 'lucide-react';
+import { LongPressCopy } from './LongPressCopy';
 
 const RELATION_TYPES_AR: Record<string, string> = {
   'sequel': 'تكملة',
@@ -86,9 +87,9 @@ export default function RelatedAnimeCard({ rel, onClick }: any) {
         <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-transparent pointer-events-none" />
 
         {/* اسم الأنمي في الأسفل بخط رفيع وأنيق مقصور على سطرين كحد أقصى وبدون عدد حلقات */}
-        <div className="absolute bottom-2 left-1.5 right-1.5 text-center z-10">
-          <h4 className="text-[10px] font-light text-white/95 line-clamp-2 leading-snug">
-            {rel.name}
+        <div className="absolute bottom-2 left-1.5 right-1.5 text-center z-10 pointer-events-auto">
+          <h4 className="text-[10px] font-light text-white/95 line-clamp-2 leading-snug" dir="auto">
+            <LongPressCopy text={String(rel.name || '')}>{rel.name}</LongPressCopy>
           </h4>
         </div>
 

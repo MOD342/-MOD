@@ -755,14 +755,16 @@ export async function getAnimeDetailsWithCloud(
   if (!id || id === 'random' || id === 'unknown') return null;
 
   const docId = toCanonicalKey('anime', id);
-  const localKey = `anime:${docId}`;
+  const localKey = `anime_v2:${docId}`;
   const force = options?.forceRefresh === true;
 
   if (!force) {
     const ramHit = ramGet<any>(localKey);
     if (ramHit?.data) {
       options?.onData?.(ramHit.data, 'ram');
-      if (Date.now() < ramHit.freshUntil) return ramHit.data;
+      if (Date.now() < ramHit.freshUntil && Number(ramHit.data.relatedGraphVersion || 0) >= 2) {
+        return ramHit.data;
+      }
       void syncAnimeBackground(id, docId, localKey, options?.onData);
       return ramHit.data;
     }
@@ -770,7 +772,9 @@ export async function getAnimeDetailsWithCloud(
     const idbHit = await idbGet<any>(localKey);
     if (idbHit?.data) {
       options?.onData?.(idbHit.data, 'idb');
-      if (Date.now() < idbHit.freshUntil) return idbHit.data;
+      if (Date.now() < idbHit.freshUntil && Number(idbHit.data.relatedGraphVersion || 0) >= 2) {
+        return idbHit.data;
+      }
       void syncAnimeBackground(id, docId, localKey, options?.onData);
       return idbHit.data;
     }
@@ -794,19 +798,22 @@ export async function getAnimeDetailsWithCloud(
           const now = Date.now();
           const freshUntil = Number(cloudDoc.freshUntil) || now + 3 * 3600 * 1000;
           const staleUntil = Number(cloudDoc.staleUntil) || now + 7 * 24 * 3600 * 1000;
-          await idbSet({
-            key: localKey,
-            data: assembled,
-            freshUntil,
-            staleUntil,
-            contentHash: String(cloudDoc.contentHash || ''),
-            updatedAt: now,
-          });
+          const hasV2Graph = Number(assembled.relatedGraphVersion || 0) >= 2;
+          if (hasV2Graph) {
+            await idbSet({
+              key: localKey,
+              data: assembled,
+              freshUntil,
+              staleUntil,
+              contentHash: String(cloudDoc.contentHash || ''),
+              updatedAt: now,
+            });
+          }
           options?.onData?.(assembled, 'cloud');
-          if (now < freshUntil && Number(cloudDoc.failReports || 0) === 0) {
+          if (hasV2Graph && now < freshUntil && Number(cloudDoc.failReports || 0) === 0) {
             return assembled;
           }
-          // Stale cloud entry -> refresh silently in background
+          // Stale cloud entry or pre-v2 relations graph -> refresh silently in background
           void fetchLiveAnimeAndSync(id, docId, localKey, cloudDoc, force, options?.onData);
           return assembled;
         }
@@ -863,7 +870,7 @@ async function syncAnimeBackground(
       Number(cloudDoc.failReports || 0) === 0
     ) {
       const assembled = await reassembleAnimeFromCloudDoc(docId, cloudDoc);
-      if (assembled) {
+      if (assembled && Number(assembled.relatedGraphVersion || 0) >= 2) {
         await idbSet({
           key: localKey,
           data: assembled,
@@ -926,7 +933,7 @@ async function fetchLiveAnimeAndSync(
 
     // Also store under resolved _id / malId alias locally if different
     if (data._id && String(data._id) !== String(rawId)) {
-      const aliasKey = `anime:${toCanonicalKey('anime', String(data._id))}`;
+      const aliasKey = `anime_v2:${toCanonicalKey('anime', String(data._id))}`;
       void idbSet({
         key: aliasKey,
         data,
@@ -1024,7 +1031,7 @@ async function syncCompactAnimeToCloud(
 export async function updateCachedAnimeSynopsis(rawId: string, translatedDesc: string): Promise<void> {
   if (!rawId || !translatedDesc || !/[\u0600-\u06FF]/.test(translatedDesc)) return;
   const docId = toCanonicalKey('anime', rawId);
-  const localKey = `anime:${docId}`;
+  const localKey = `anime_v2:${docId}`;
   const existingLocal = ramGet<any>(localKey) || (await idbGet<any>(localKey));
   if (existingLocal?.data) {
     const updated = { ...existingLocal.data, description: translatedDesc };
@@ -1040,6 +1047,26 @@ export async function updateCachedAnimeSynopsis(rawId: string, translatedDesc: s
 // ============================================================================
 // Domain 3: Unified Manga & Chapters (`catalog_manga`)
 // ============================================================================
+const MANGA_CLOUD_SCHEMA_VERSION = 4;
+
+function isMangaCacheIncomplete(details: any, chapters: any[], cloudData?: any): boolean {
+  if (!Array.isArray(chapters) || chapters.length === 0) return true;
+  if (cloudData && Number(cloudData?.schemaVersion || 0) < MANGA_CLOUD_SCHEMA_VERSION) {
+    return true;
+  }
+  const expected = Number(details?.chaptersCount || 0);
+  if (expected >= 15 && chapters.length < Math.floor(expected * 0.72)) {
+    return true;
+  }
+  const positiveNums = chapters
+    .map((c) => Number(c?.chapterNumber))
+    .filter((n) => Number.isFinite(n) && n >= 0);
+  if (chapters.length >= 10 && positiveNums.length > 0 && Math.min(...positiveNums) > 3) {
+    return true;
+  }
+  return false;
+}
+
 function compactMangaPayload(details: any, chapters: any[]): Record<string, any> {
   const cleanDetails = sanitizeFirestoreData(details) || {};
   const compactChapters = (Array.isArray(chapters) ? chapters : []).slice(0, 5000).map((ch: any) => ({
@@ -1052,6 +1079,7 @@ function compactMangaPayload(details: any, chapters: any[]): Record<string, any>
     publishedAt: ch?.publishedAt ? String(ch.publishedAt).slice(0, 40) : undefined,
   }));
   return sanitizeFirestoreData({
+    schemaVersion: MANGA_CLOUD_SCHEMA_VERSION,
     details: cleanDetails,
     chapters: compactChapters,
   });
@@ -1067,23 +1095,29 @@ export async function getMangaWithCloud(
   },
 ): Promise<{ details: any | null; chapters: any[] }> {
   const docId = toCanonicalKey('mangav3', mangaId);
-  const localKey = `manga_v4:${docId}`;
+  const localKey = `manga_v7:${docId}`;
   const force = options?.forceRefresh === true;
 
-  if (!force) {
+  if (force) {
+    await idbDelete(localKey);
+  } else {
     const localHit =
       ramGet<{ details: any; chapters: any[] }>(localKey) ||
       (await idbGet<{ details: any; chapters: any[] }>(localKey));
     if (localHit?.data?.details) {
       const cachedChapters = Array.isArray(localHit.data.chapters) ? localHit.data.chapters : [];
+      const incomplete = isMangaCacheIncomplete(localHit.data.details, cachedChapters);
       options?.onDetails?.(localHit.data.details, ramCatalog.has(localKey) ? 'ram' : 'idb');
       if (cachedChapters.length > 0) {
         options?.onChapters?.(cachedChapters, localHit.data.details.mangadexId, 'local');
-        if (Date.now() < localHit.freshUntil) {
+        if (!incomplete && Date.now() < localHit.freshUntil) {
           return localHit.data;
         }
-        // Stale local WITH valid chapters -> revalidate silently in background
-        void fetchLiveMangaAndSync(mangaId, docId, localKey, null, false, options, localHit.data.details);
+        const safeKnownDetails = incomplete
+          ? { ...localHit.data.details, mangadexId: undefined }
+          : localHit.data.details;
+        // Stale or incomplete local entry -> revalidate in background
+        void fetchLiveMangaAndSync(mangaId, docId, localKey, null, incomplete, options, safeKnownDetails);
         return localHit.data;
       }
       // Cached entry had 0 chapters -> NEVER return empty synchronously; await live chapter fetch
@@ -1100,27 +1134,31 @@ export async function getMangaWithCloud(
       const now = Date.now();
       const freshUntil = Number(cloudDoc.freshUntil) || now + 2 * 3600 * 1000;
       const staleUntil = Number(cloudDoc.staleUntil) || now + 14 * 24 * 3600 * 1000;
+      const incomplete = isMangaCacheIncomplete(details, chapters, cloudDoc.data);
 
       if (chapters.length > 0) {
-        await idbSet({
-          key: localKey,
-          data: { details, chapters },
-          freshUntil,
-          staleUntil,
-          contentHash: String(cloudDoc.contentHash || ''),
-          updatedAt: now,
-        });
+        if (!incomplete) {
+          await idbSet({
+            key: localKey,
+            data: { details, chapters },
+            freshUntil,
+            staleUntil,
+            contentHash: String(cloudDoc.contentHash || ''),
+            updatedAt: now,
+          });
+        }
         options?.onDetails?.(details, 'cloud');
         options?.onChapters?.(chapters, details.mangadexId, 'cloud');
-        if (now < freshUntil && Number(cloudDoc.failReports || 0) === 0) {
+        if (!incomplete && now < freshUntil && Number(cloudDoc.failReports || 0) === 0) {
           return { details, chapters };
         }
       } else {
         options?.onDetails?.(details, 'cloud');
       }
 
-      // If details arrived from cloud but chapters missing or stale -> fetch live
-      return await fetchLiveMangaAndSync(mangaId, docId, localKey, cloudDoc, force, options, details);
+      // If details arrived from cloud but chapters missing, stale, or incomplete -> fetch live (re-resolving details/UUID when incomplete)
+      const safeKnownDetails = incomplete ? undefined : details;
+      return await fetchLiveMangaAndSync(mangaId, docId, localKey, cloudDoc, incomplete || force, options, safeKnownDetails);
     }
   }
 
@@ -1145,7 +1183,8 @@ async function fetchLiveMangaAndSync(
     if (!details || force) {
       try {
         const res = await fetch(
-          `/api/manga/details/${encodeURIComponent(String(mangaId))}${force ? `?_t=${Date.now()}` : ''}`,
+          `/api/manga/details/${encodeURIComponent(String(mangaId))}${force ? `?refresh=1&_t=${Date.now()}` : ''}`,
+          force ? { cache: 'no-store' } : undefined,
         );
         const json = await safeParseJsonResponse(res);
         if (res.ok && json?.success && json?.data) {
@@ -1176,11 +1215,11 @@ async function fetchLiveMangaAndSync(
       qs.set('_t', String(Date.now()));
     }
 
-    const chRes = await fetch(`/api/manga/chapters?${qs.toString()}`);
+    const chRes = await fetch(`/api/manga/chapters?${qs.toString()}`, force ? { cache: 'no-store' } : undefined);
     const chJson = await safeParseJsonResponse(chRes);
     const chapters: any[] = chJson?.success && Array.isArray(chJson.chapters) ? chJson.chapters : [];
     const resolvedMdId = chJson?.mangadexId || details.mangadexId;
-    if (resolvedMdId && !details.mangadexId) {
+    if (resolvedMdId && details.mangadexId !== resolvedMdId) {
       details = { ...details, mangadexId: resolvedMdId };
     }
     options?.onChapters?.(chapters, resolvedMdId, 'live');
@@ -1212,10 +1251,14 @@ async function fetchLiveMangaAndSync(
       const prevCount = Number(existingCloudDoc?.chaptersCount || 0);
       const prevFail = Number(existingCloudDoc?.failReports || 0);
       const prevFresh = Number(existingCloudDoc?.freshUntil || 0);
+      const prevSchema = Number(existingCloudDoc?.data?.schemaVersion || 0);
       const canWrite =
         !existingCloudDoc ||
         (canAttemptCloudWrite() &&
-          (prevFail >= 1 || now >= prevFresh || chapters.length >= prevCount) &&
+          (prevSchema < MANGA_CLOUD_SCHEMA_VERSION ||
+            prevFail >= 1 ||
+            now >= prevFresh ||
+            chapters.length >= prevCount) &&
           hash !== existingCloudDoc?.contentHash);
 
       if (canWrite && JSON.stringify(compactData).length < 850_000) {
@@ -1245,17 +1288,20 @@ export async function getMangaChaptersOnlyWithCloud(
   const mangaId = String(manga?._id || manga?.id || '');
   if (!mangaId) return [];
   const docId = toCanonicalKey('mangav3', mangaId);
-  const localKey = `manga_v4:${docId}`;
+  const localKey = `manga_v7:${docId}`;
 
   const localHit =
     ramGet<{ details: any; chapters: any[] }>(localKey) ||
     (await idbGet<{ details: any; chapters: any[] }>(localKey));
-  if (localHit?.data?.chapters?.length) {
+  if (localHit?.data?.chapters?.length && !isMangaCacheIncomplete(localHit.data.details || manga, localHit.data.chapters)) {
     return localHit.data.chapters;
   }
 
   const cloudDoc = await safeCloudGet('catalog_manga', docId);
-  if (cloudDoc?.data?.chapters?.length) {
+  if (
+    cloudDoc?.data?.chapters?.length &&
+    !isMangaCacheIncomplete(cloudDoc.data.details || manga, cloudDoc.data.chapters, cloudDoc.data)
+  ) {
     return cloudDoc.data.chapters;
   }
 
@@ -1263,7 +1309,6 @@ export async function getMangaChaptersOnlyWithCloud(
     mangaId,
     title: String(manga.englishTitle || manga.title || ''),
   });
-  if (manga.mangadexId) qs.set('mangadexId', String(manga.mangadexId));
   if (manga.romajiTitle) qs.set('altTitle', String(manga.romajiTitle));
   if (Array.isArray(manga.synonyms) && manga.synonyms.length > 0) {
     const usableSyns = manga.synonyms
@@ -1832,10 +1877,12 @@ export const recentEpisodesLocal = {
       qs.set('_t', String(ts));
     }
 
-    const r = await fetch(`/api/anime/recent?${qs.toString()}`, {
-      cache: 'no-store',
-      headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
-    });
+    const r = await fetch(
+      `/api/anime/recent?${qs.toString()}`,
+      bypass
+        ? { cache: 'no-store', headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' } }
+        : undefined,
+    );
     if (!r.ok) return null;
     const json = await r.json();
     if (json?.success && Array.isArray(json.data) && json.data.length > 0) {
@@ -1847,9 +1894,9 @@ export const recentEpisodesLocal = {
   },
 
   formatRelativeTimeAr(fetchedAt?: number | null): string {
-    if (!fetchedAt) return 'غير محدّث';
+    if (!fetchedAt) return 'منذ لحظات';
     const diffSec = Math.max(0, Math.floor((Date.now() - fetchedAt) / 1000));
-    if (diffSec < 45) return 'الآن';
+    if (diffSec < 45) return 'منذ لحظات';
     const diffMin = Math.floor(diffSec / 60);
     if (diffMin < 60) return `منذ ${diffMin} د`;
     const diffHrs = Math.floor(diffMin / 60);

@@ -3,27 +3,48 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, Suspense, useEffect, useRef } from 'react';
+import { useState, Suspense, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Capacitor } from '@capacitor/core';
 import { App as CapacitorApp } from '@capacitor/app';
 import { StatusBar, Style } from '@capacitor/status-bar';
 import { AppLayout } from './components/AppLayout';
-import { Loader2, Sparkles, X, Trophy, Play, MessageSquare, Info, Bell, Flame, ShieldAlert } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import HomeView from './views/HomeView';
 import MoreView from './views/MoreView';
 import DiagnosticsView from './views/DiagnosticsView';
 import { useAuth } from './contexts/AuthContext';
-import { collection, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
+import { collection, doc, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
 import { db, auth } from './firebase';
 import { isStaffEmail } from './services/moderationService';
+import {
+  DEFAULT_DUAL_HOME_CONFIG,
+  normalizeDualHomeConfig,
+  type DualHomeConfig,
+} from './types/platformConfig';
 import { consumePendingDiagnosticsTab } from './utils/errorTelemetry';
 import { lazyWithRetry } from './utils/lazyWithRetry';
 import { ViewportPortal } from './components/ViewportPortal';
-import { dispatchNativeSystemNotification } from './utils/systemPermissions';
+import { SwipeableToastItem } from './components/SwipeableToastItem';
+import {
+  dispatchNativeSystemNotification,
+  registerNativeNotificationTapListener,
+} from './utils/systemPermissions';
+import {
+  initExternalDiscoveryNotifications,
+  shouldMirrorFirestoreNotificationToOS,
+} from './services/externalNotificationEngine';
 import { applyViewportAndCutoutMetrics } from './utils/viewportMetrics';
 import { ViewErrorBoundary } from './components/GlobalErrorBoundary';
 import { downloadManagerService } from './services/downloadManagerService';
+import OnboardingView from './components/OnboardingView';
+import {
+  getDefaultHomeMode,
+  isOnboardingCompleted,
+  HOME_MODE_CHANGED_EVENT,
+  ONBOARDING_RESET_EVENT,
+  type HomeMode,
+} from './utils/appPreferences';
 
 const ExploreView = lazyWithRetry(() => import('./views/ExploreView'), 'ExploreView');
 const CommunityView = lazyWithRetry(() => import('./views/CommunityView'), 'CommunityView');
@@ -52,6 +73,7 @@ const OtakuArenaHubView = lazyWithRetry(() => import('./views/OtakuArenaHubView'
 const MangaHubView = lazyWithRetry(() => import('./views/MangaHubView'), 'MangaHubView');
 const MangaDetailsView = lazyWithRetry(() => import('./views/MangaDetailsView'), 'MangaDetailsView');
 const MangaReaderView = lazyWithRetry(() => import('./views/MangaReaderView'), 'MangaReaderView');
+const LegalAboutView = lazyWithRetry(() => import('./views/LegalAboutView'), 'LegalAboutView');
 
 import { MascotLoadingScreen, MascotOfflineScreen } from './components/MascotScreens';
 import PermissionPromptModal from './components/PermissionPromptModal';
@@ -69,6 +91,9 @@ export default function App() {
   const [activeTab, setActiveTab ] = useState('home');
   const [showSplash, setShowSplash] = useState(false);
   const [askPermissions, setAskPermissions] = useState(false);
+  const [onboardingDone, setOnboardingDone] = useState<boolean>(isOnboardingCompleted);
+  const [homeMode, setHomeMode] = useState<HomeMode>(getDefaultHomeMode);
+  const [dualHomeConfig, setDualHomeConfig] = useState<DualHomeConfig>(DEFAULT_DUAL_HOME_CONFIG);
   const [viewStack, setViewStack] = useState<{name: string, props?: any}[]>(() => {
     if (typeof window !== 'undefined') {
       const pendingTab = consumePendingDiagnosticsTab();
@@ -83,25 +108,28 @@ export default function App() {
   });
   const [activeToasts, setActiveToasts] = useState<any[]>([]);
 
+  const dismissToast = useCallback((toastId: string) => {
+    setActiveToasts(prev => prev.filter(t => t.id !== toastId));
+  }, []);
+
   const triggerToast = (notif: any) => {
     setActiveToasts(prev => {
       if (prev.some(t => t.id === notif.id)) return prev;
       return [...prev, notif];
     });
 
-    // إرسال إشعار نظام حقيقي على أندرويد أو المتصفح عند تفعيل الصلاحية
-    void dispatchNativeSystemNotification({
-      id: notif.id,
-      title: notif.title || 'إشعار جديد ⚡',
-      body: notif.body || '',
-      imageUrl: notif.imageUrl,
-      onClick: () => handleToastClick(notif),
-    });
-
-    // Auto dismiss after 6 seconds
-    setTimeout(() => {
-      setActiveToasts(prev => prev.filter(t => t.id !== notif.id));
-    }, 6000);
+    // إرسال إشعار للنظام فقط عند استحقاقه كإشعار خارجي غير مكرر (وليس لتنبيهات المشاهدة/المكافآت الذاتية)
+    if (shouldMirrorFirestoreNotificationToOS(notif)) {
+      void dispatchNativeSystemNotification({
+        id: notif.id,
+        title: notif.title || 'أوتاكو MOD ⚡',
+        body: notif.body || '',
+        imageUrl: notif.imageUrl,
+        tag: `fs:${notif.id}`,
+        extra: { linkTo: notif.linkTo, metadata: notif.metadata },
+        onClick: () => handleToastClick(notif),
+      });
+    }
   };
 
   useEffect(() => {
@@ -272,41 +300,52 @@ export default function App() {
     };
   }, [user, userRole]);
 
-  const handleToastClick = (toast: any) => {
-    setActiveToasts(prev => prev.filter(t => t.id !== toast.id));
-    if (!toast.linkTo) return;
+  const navigateByLinkTo = useCallback((linkTo?: string, metadata?: any) => {
+    if (!linkTo) return;
 
-    if (toast.linkTo.startsWith('admin:')) {
-      const parts = toast.linkTo.split(':');
+    if (linkTo.startsWith('admin:')) {
+      const parts = linkTo.split(':');
       const tab = parts[1] || 'reports';
       navigateTo('admin', { initialTab: tab });
-    } else if (toast.linkTo === 'support_suggestions') {
+    } else if (linkTo === 'support_suggestions') {
       navigateTo('support_suggestions');
-    } else if (toast.linkTo === 'rewards') {
+    } else if (linkTo === 'rewards') {
       navigateTo('rewards');
-    } else if (toast.linkTo.startsWith('arena_room:')) {
-      const code = toast.linkTo.split(':')[1] || '';
+    } else if (linkTo === 'recent_episodes') {
+      navigateTo('recent_episodes');
+    } else if (linkTo === 'manga_hub') {
+      navigateTo('manga_hub');
+    } else if (linkTo === 'tournaments') {
+      navigateTo('tournaments');
+    } else if (linkTo.startsWith('arena_room:')) {
+      const code = linkTo.split(':')[1] || '';
       navigateTo('games', { initialTab: 'games', initialRoomCode: code });
-    } else if (toast.linkTo === 'games') {
+    } else if (linkTo === 'games') {
       navigateTo('games', { initialTab: 'games' });
-    } else if (toast.linkTo === 'leaderboard') {
+    } else if (linkTo === 'leaderboard') {
       navigateTo('leaderboard', { initialTab: 'leaderboard' });
-    } else if (toast.linkTo.startsWith('comment_view')) {
-      const parts = toast.linkTo.split(':');
-      const animeId = parts[1] || toast.metadata?.animeId;
-      const commentId = parts[2] || toast.metadata?.commentId;
+    } else if (linkTo.startsWith('comment_view')) {
+      const parts = linkTo.split(':');
+      const animeId = parts[1] || metadata?.animeId;
+      const commentId = parts[2] || metadata?.commentId;
       if (animeId) {
         navigateTo('anime_comments', { animeId, focusCommentId: commentId });
       }
-    } else if (toast.linkTo.startsWith('anime_details')) {
-      const parts = toast.linkTo.split(':');
-      const animeId = parts[1] || toast.metadata?.animeId;
+    } else if (linkTo.startsWith('manga_details')) {
+      const parts = linkTo.split(':');
+      const mangaId = parts[1] || metadata?.mangaId;
+      if (mangaId) {
+        navigateTo('manga_details', { id: mangaId });
+      }
+    } else if (linkTo.startsWith('anime_details')) {
+      const parts = linkTo.split(':');
+      const animeId = parts[1] || metadata?.animeId;
       if (animeId) {
         navigateTo('anime_details', { id: animeId });
       }
-    } else if (toast.linkTo.startsWith('watch_episode')) {
-      const parts = toast.linkTo.split(':');
-      const animeId = parts[1] || toast.metadata?.animeId;
+    } else if (linkTo.startsWith('watch_episode')) {
+      const parts = linkTo.split(':');
+      const animeId = parts[1] || metadata?.animeId;
       const epNum = parts[2] || '1';
       if (animeId) {
         navigateTo('anime_details', { id: animeId, autoplayEpisode: Number(epNum) });
@@ -314,7 +353,12 @@ export default function App() {
     } else {
       navigateTo('home');
     }
-  };
+  }, []);
+
+  const handleToastClick = useCallback((toast: any) => {
+    setActiveToasts(prev => prev.filter(t => t.id !== toast.id));
+    navigateByLinkTo(toast.linkTo, toast.metadata);
+  }, [navigateByLinkTo]);
 
   useEffect(() => {
     const handleOpenChat = () => {
@@ -334,30 +378,45 @@ export default function App() {
         return [...prev, { name: 'diagnostics', props: { initialTab } }];
       });
     };
+    const handleOpenLegal = (e: Event) => {
+      const section = (e as CustomEvent)?.detail?.section || 'privacy';
+      setViewStack(prev => [...prev, { name: 'legal_view', props: { section } }]);
+    };
+    const handleDefaultHomeChanged = (e: Event) => {
+      const nextMode = (e as CustomEvent)?.detail?.mode;
+      if (nextMode === 'anime' || nextMode === 'manga') {
+        setHomeMode(nextMode);
+      }
+    };
+    const handleOnboardingReset = () => {
+      setOnboardingDone(false);
+    };
     window.addEventListener('open-ai-chat', handleOpenChat);
     window.addEventListener('open-permissions-modal', handleOpenPermissions);
     window.addEventListener('otaku:open-diagnostics', handleOpenDiagnostics);
+    window.addEventListener('open-legal-view', handleOpenLegal);
+    window.addEventListener(HOME_MODE_CHANGED_EVENT, handleDefaultHomeChanged);
+    window.addEventListener(ONBOARDING_RESET_EVENT, handleOnboardingReset);
 
-    // Prompt for permissions on mount (since splash loading is removed)
-    if (typeof window !== 'undefined') {
+    // Prompt for permissions on mount only AFTER onboarding is completed
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    if (typeof window !== 'undefined' && isOnboardingCompleted()) {
       const prompted = localStorage.getItem('mod_permissions_prompted');
       if (prompted !== 'true') {
-        const timer = setTimeout(() => {
+        timer = setTimeout(() => {
           setAskPermissions(true);
         }, 800);
-        return () => {
-          window.removeEventListener('open-ai-chat', handleOpenChat);
-          window.removeEventListener('open-permissions-modal', handleOpenPermissions);
-          window.removeEventListener('otaku:open-diagnostics', handleOpenDiagnostics);
-          clearTimeout(timer);
-        };
       }
     }
 
     return () => {
+      if (timer) clearTimeout(timer);
       window.removeEventListener('open-ai-chat', handleOpenChat);
       window.removeEventListener('open-permissions-modal', handleOpenPermissions);
       window.removeEventListener('otaku:open-diagnostics', handleOpenDiagnostics);
+      window.removeEventListener('open-legal-view', handleOpenLegal);
+      window.removeEventListener(HOME_MODE_CHANGED_EVENT, handleDefaultHomeChanged);
+      window.removeEventListener(ONBOARDING_RESET_EVENT, handleOnboardingReset);
     };
   }, []);
 
@@ -367,6 +426,36 @@ export default function App() {
   const viewStackRef = useRef(viewStack);
   const activeTabRef = useRef(activeTab);
   const askPermissionsRef = useRef(askPermissions);
+  const homeModeRef = useRef<HomeMode>(homeMode);
+
+  useEffect(() => {
+    homeModeRef.current = homeMode;
+  }, [homeMode]);
+
+  // الاستماع اللحظي لإعدادات الإدارة الخاصة بالشاشتين الرئيسيتين (الأنمي والمانجا)
+  useEffect(() => {
+    const unsub = onSnapshot(
+      doc(db, 'globalSettings', 'slider'),
+      (snap) => {
+        if (!snap.exists()) return;
+        const cfg = normalizeDualHomeConfig((snap.data() as any)?.dualHomeConfig);
+        setDualHomeConfig(cfg);
+        if (!cfg.enableMangaHome) {
+          setHomeMode('anime');
+        } else if (!cfg.enableAnimeHome) {
+          setHomeMode('manga');
+        } else {
+          try {
+            if (!localStorage.getItem('anime_mod_default_home_mode')) {
+              setHomeMode(cfg.defaultVisitorHome);
+            }
+          } catch {}
+        }
+      },
+      () => {},
+    );
+    return () => unsub();
+  }, []);
 
   useEffect(() => {
     viewStackRef.current = viewStack;
@@ -379,6 +468,25 @@ export default function App() {
   useEffect(() => {
     askPermissionsRef.current = askPermissions;
   }, [askPermissions]);
+
+  // تشغيل محرك إشعارات الاكتشاف والحلقات/الأعمال الجديدة خارج التطبيق مع دعم التوجيه عند النقر
+  useEffect(() => {
+    const cleanupDiscovery = initExternalDiscoveryNotifications({
+      getHomeMode: () => homeModeRef.current,
+      onNavigateLink: (linkTo) => navigateByLinkTo(linkTo),
+    });
+
+    const cleanupNativeTap = registerNativeNotificationTapListener((extra) => {
+      if (extra?.linkTo) {
+        navigateByLinkTo(String(extra.linkTo), extra.metadata);
+      }
+    });
+
+    return () => {
+      cleanupDiscovery();
+      cleanupNativeTap();
+    };
+  }, [navigateByLinkTo]);
 
   // تفعيل وضع ملء الشاشة الأصلي في أندرويد (Capacitor StatusBar) مع قراءة أبعاد النتوء والشاشة
   useEffect(() => {
@@ -514,13 +622,32 @@ export default function App() {
         authLoading={loading} 
         onComplete={() => {
           setShowSplash(false);
-          if (typeof window !== 'undefined') {
+          if (typeof window !== 'undefined' && isOnboardingCompleted()) {
             const prompted = localStorage.getItem('mod_permissions_prompted');
             if (prompted !== 'true') {
               setAskPermissions(true);
             }
           }
         }} 
+      />
+    );
+  }
+
+  if (!onboardingDone) {
+    return (
+      <OnboardingView
+        onComplete={(chosenHome) => {
+          setHomeMode(chosenHome);
+          setOnboardingDone(true);
+          setActiveTab('home');
+          setViewStack([{ name: 'home' }]);
+          if (typeof window !== 'undefined') {
+            const prompted = localStorage.getItem('mod_permissions_prompted');
+            if (prompted !== 'true') {
+              setTimeout(() => setAskPermissions(true), 250);
+            }
+          }
+        }}
       />
     );
   }
@@ -557,25 +684,79 @@ export default function App() {
     );
   }
 
+  const canToggleHomeMode = dualHomeConfig.enableAnimeHome && dualHomeConfig.enableMangaHome;
+  const effectiveHomeMode: HomeMode = !dualHomeConfig.enableMangaHome
+    ? 'anime'
+    : !dualHomeConfig.enableAnimeHome
+    ? 'manga'
+    : homeMode;
+
   const renderView = () => {
     switch (currentView.name) {
       case 'home':
         return (
-          <HomeView
-            onAnimeClick={(id, epNum) => navigateTo('anime_details', { id, autoplayEpisode: epNum })}
-            onMangaClick={(id) => navigateTo('manga_details', { id })}
-            onNavigateToMangaHub={() => navigateTo('manga_hub')}
-            onReadMangaChapter={(params) => navigateTo('manga_reader', params)}
-            onSearchCategory={(cat) => { setActiveTab('watch'); navigateTo('watch', { initialQuery: cat }); }}
-            onNavigateToSchedule={(day) => navigateTo('schedule', { initialDay: day })}
-            onNavigateToRecent={() => navigateTo('recent_episodes')}
-            onNavigateToSeason={() => navigateTo('current_season')}
-            onNavigateToMovies={() => navigateTo('anime_movies')}
-            onNavigateToTopAnime={() => navigateTo('top_anime')}
-          />
+          <div className="w-full">
+            <AnimatePresence mode="wait">
+              {effectiveHomeMode === 'manga' ? (
+                <motion.div
+                  key="home-manga-screen"
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -6 }}
+                  transition={{ duration: 0.18 }}
+                >
+                  <Suspense fallback={<ViewFallback />}>
+                    <MangaHubView
+                      isHomeMode
+                      onMangaClick={(id) => navigateTo('manga_details', { id })}
+                      onReadMangaChapter={(params) => navigateTo('manga_reader', params)}
+                      onOpenSearch={(params) => {
+                        setActiveTab('watch');
+                        navigateTo('watch', { initialMediaKind: 'manga', ...params });
+                      }}
+                    />
+                  </Suspense>
+                </motion.div>
+              ) : (
+                <motion.div
+                  key="home-anime-screen"
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -6 }}
+                  transition={{ duration: 0.18 }}
+                >
+                  <HomeView
+                    onAnimeClick={(id, epNum) => navigateTo('anime_details', { id, autoplayEpisode: epNum })}
+                    onMangaClick={(id) => navigateTo('manga_details', { id })}
+                    onNavigateToMangaHub={() => setHomeMode('manga')}
+                    onReadMangaChapter={(params) => navigateTo('manga_reader', params)}
+                    onSearchCategory={(cat) => {
+                      setActiveTab('watch');
+                      navigateTo('watch', { initialGenre: cat, initialMediaKind: 'anime' });
+                    }}
+                    onNavigateToSchedule={(day) => navigateTo('schedule', { initialDay: day })}
+                    onNavigateToRecent={() => navigateTo('recent_episodes')}
+                    onNavigateToSeason={() => navigateTo('current_season')}
+                    onNavigateToMovies={() => navigateTo('anime_movies')}
+                    onNavigateToTopAnime={() => navigateTo('top_anime')}
+                  />
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
         );
       case 'watch': 
-        return <ExploreView onAnimeClick={(id) => navigateTo('anime_details', { id })} onMangaClick={(id) => navigateTo('manga_details', { id })} initialQuery={currentView.props?.initialQuery} onNavigate={navigateTo} />;
+        return (
+          <ExploreView
+            onAnimeClick={(id) => navigateTo('anime_details', { id })}
+            onMangaClick={(id) => navigateTo('manga_details', { id })}
+            initialQuery={currentView.props?.initialQuery}
+            initialGenre={currentView.props?.initialGenre}
+            initialMediaKind={currentView.props?.initialMediaKind}
+            initialOrigin={currentView.props?.initialOrigin}
+            onNavigate={navigateTo}
+          />
+        );
       case 'community':
         return (
           <CommunityView
@@ -590,7 +771,16 @@ export default function App() {
       case 'more':
         return <MoreView onNavigate={navigateTo} />;
       case 'manga_hub':
-        return <MangaHubView onBack={goBack} onMangaClick={(id) => navigateTo('manga_details', { id })} />;
+        return (
+          <MangaHubView
+            onBack={goBack}
+            onMangaClick={(id) => navigateTo('manga_details', { id })}
+            onOpenSearch={(params) => {
+              setActiveTab('watch');
+              navigateTo('watch', { initialMediaKind: 'manga', ...params });
+            }}
+          />
+        );
       case 'manga_details':
         return (
           <MangaDetailsView
@@ -602,6 +792,7 @@ export default function App() {
             onReadChapter={(params) => navigateTo('manga_reader', params)}
             onNavigateDownloads={() => navigateTo('downloads')}
             onUserClick={(userId) => navigateTo('other_profile', { userId })}
+            onNavigate={navigateTo}
           />
         );
       case 'manga_reader':
@@ -638,7 +829,7 @@ export default function App() {
             onLevelPerksClick={() => navigateTo('level_perks')}
             onOpenAccountSettings={() => navigateTo('account_settings')}
             onOpenAppearance={() => navigateTo('profile_appearance')}
-            onBack={viewStack.length > 1 ? goBack : undefined}
+            onBack={() => (viewStackRef.current.length > 1 ? goBack() : handleTabChange('home'))}
           />
         );
       case 'account_settings':
@@ -647,6 +838,7 @@ export default function App() {
             onBack={goBack}
             onOpenAppearance={() => navigateTo('profile_appearance')}
             onLogout={() => handleTabChange('home')}
+            onOpenLegal={(section) => navigateTo('legal_view', { section })}
           />
         );
       case 'profile_appearance':
@@ -823,6 +1015,16 @@ export default function App() {
         return <SupportPortalView onBack={goBack} initialTab="chat" />;
       case 'support_news':
         return <SupportPortalView onBack={goBack} initialTab="news" />;
+      case 'legal_privacy':
+        return <LegalAboutView onBack={goBack} initialSection="privacy" onOpenAccountSettings={() => navigateTo('account_settings')} />;
+      case 'legal_terms':
+        return <LegalAboutView onBack={goBack} initialSection="terms" onOpenAccountSettings={() => navigateTo('account_settings')} />;
+      case 'legal_about':
+        return <LegalAboutView onBack={goBack} initialSection="about" onOpenAccountSettings={() => navigateTo('account_settings')} />;
+      case 'legal_safety':
+        return <LegalAboutView onBack={goBack} initialSection="data_safety" onOpenAccountSettings={() => navigateTo('account_settings')} />;
+      case 'legal_view':
+        return <LegalAboutView onBack={goBack} initialSection={currentView.props?.section || 'about'} onOpenAccountSettings={() => navigateTo('account_settings')} />;
       default:
         return (
           <HomeView
@@ -840,8 +1042,8 @@ export default function App() {
     }
   };
 
-  // Do not show AppLayout (top/bottom navs) if we are in fullscreen views like details or watch
-  const isFullScreenView = currentView.name === 'account_settings' || currentView.name === 'profile_appearance' || currentView.name === 'diagnostics' || currentView.name === 'suggestions_hub' || currentView.name === 'ai_chat' || currentView.name === 'level_perks' || currentView.name === 'anime_details' || currentView.name === 'anime_comments' || currentView.name === 'watch_episode' || currentView.name === 'manga_hub' || currentView.name === 'manga_details' || currentView.name === 'manga_reader' || currentView.name === 'admin' || currentView.name === 'games' || currentView.name === 'leaderboard' || currentView.name === 'store' || currentView.name === 'schedule' || currentView.name === 'tournaments' || currentView.name === 'recent_episodes' || currentView.name === 'current_season' || currentView.name === 'anime_movies' || currentView.name === 'top_anime' || currentView.name === 'downloads' || currentView.name === 'rewards' || currentView.name === 'other_profile' || currentView.name === 'favorites' || currentView.name === 'notifications' || currentView.name === 'ad_support' || currentView.name === 'support_help' || currentView.name === 'support_suggestions' || currentView.name === 'support_donate' || currentView.name === 'support_chat' || currentView.name === 'support_news';
+  // Do not show AppLayout (top/bottom navs) if we are in fullscreen views like profile, details or watch
+  const isFullScreenView = currentView.name === 'profile' || currentView.name === 'account_settings' || currentView.name === 'profile_appearance' || currentView.name === 'diagnostics' || currentView.name === 'suggestions_hub' || currentView.name === 'ai_chat' || currentView.name === 'level_perks' || currentView.name === 'anime_details' || currentView.name === 'anime_comments' || currentView.name === 'watch_episode' || currentView.name === 'manga_hub' || currentView.name === 'manga_details' || currentView.name === 'manga_reader' || currentView.name === 'admin' || currentView.name === 'games' || currentView.name === 'leaderboard' || currentView.name === 'store' || currentView.name === 'schedule' || currentView.name === 'tournaments' || currentView.name === 'recent_episodes' || currentView.name === 'current_season' || currentView.name === 'anime_movies' || currentView.name === 'top_anime' || currentView.name === 'downloads' || currentView.name === 'rewards' || currentView.name === 'other_profile' || currentView.name === 'favorites' || currentView.name === 'notifications' || currentView.name === 'ad_support' || currentView.name === 'support_help' || currentView.name === 'support_suggestions' || currentView.name === 'support_donate' || currentView.name === 'support_chat' || currentView.name === 'support_news' || currentView.name === 'legal_privacy' || currentView.name === 'legal_terms' || currentView.name === 'legal_about' || currentView.name === 'legal_safety' || currentView.name === 'legal_view';
 
   return (
     <>
@@ -861,7 +1063,7 @@ export default function App() {
             </motion.div>
           )}
         </AnimatePresence>
-        {/* Real-time Toast Notifications Overlay pinned inside visible screen below camera cutout */}
+        {/* Real-time Swipeable Toast Notifications Overlay pinned inside visible screen below camera cutout */}
         <div
           style={{
             top: 'calc(var(--safe-top, 0px) + 0.75rem)',
@@ -871,142 +1073,15 @@ export default function App() {
           className="fixed right-3 left-3 sm:left-auto sm:right-6 sm:w-[380px] z-[99999] flex flex-col gap-2.5 pointer-events-none"
           dir="rtl"
         >
-        <AnimatePresence>
-          {activeToasts.map((toast, idx) => {
-            let badgeColor = "bg-[#FF1744]/10 border-[#FF1744]/30 text-[#FF1744]";
-            let iconColor = "text-[#FF1744]";
-            let borderColor = "border-[#FF1744]/20";
-            let glowColor = "shadow-[0_4px_24px_rgba(255,23,68,0.12)]";
-            let label = "إشعار جديد";
-            let icon = <Bell size={15} />;
-
-            const titleText = toast.title || '';
-            const isLike = titleText.includes('إعجاب') || titleText.includes('عجب');
-
-            if (isLike && toast.type === 'social') {
-              badgeColor = "bg-orange-500/10 border-orange-500/25 text-orange-400";
-              iconColor = "text-orange-400";
-              borderColor = "border-orange-500/20";
-              glowColor = "shadow-[0_4px_24px_rgba(249,115,22,0.1)]";
-              label = "تفاعل مجتمعي";
-              icon = <Flame size={15} />;
-            } else if (toast.isGlobal) {
-              badgeColor = "bg-amber-500/10 border-amber-500/25 text-amber-400";
-              iconColor = "text-amber-400";
-              borderColor = "border-amber-500/20";
-              glowColor = "shadow-[0_4px_24px_rgba(245,158,11,0.12)]";
-              label = "إعلان رسمي";
-              icon = <Sparkles size={15} />;
-            } else if (toast.type === 'admin_report') {
-              badgeColor = "bg-rose-500/15 border-rose-500/30 text-rose-400";
-              iconColor = "text-rose-400";
-              borderColor = "border-rose-500/25";
-              glowColor = "shadow-[0_4px_24px_rgba(239,68,68,0.15)]";
-              label = "رادار المخالفات 🛡️";
-              icon = <ShieldAlert size={14} className="animate-pulse" />;
-            } else if (toast.type === 'admin_suggestion') {
-              badgeColor = "bg-sky-500/15 border-sky-500/30 text-sky-400";
-              iconColor = "text-sky-400";
-              borderColor = "border-sky-500/25";
-              glowColor = "shadow-[0_4px_24px_rgba(14,165,233,0.15)]";
-              label = "بريد المقترحات 💡";
-              icon = <MessageSquare size={14} />;
-            } else if (toast.type === 'admin_recommendation') {
-              badgeColor = "bg-amber-500/15 border-amber-500/30 text-amber-400";
-              iconColor = "text-amber-400";
-              borderColor = "border-amber-500/25";
-              glowColor = "shadow-[0_4px_24px_rgba(245,158,11,0.15)]";
-              label = "مراجعة المحتوى 📖";
-              icon = <Trophy size={14} />;
-            } else {
-              switch (toast.type) {
-                case 'tournament':
-                  badgeColor = "bg-yellow-500/10 border-yellow-500/25 text-yellow-400";
-                  iconColor = "text-yellow-400";
-                  borderColor = "border-yellow-500/20";
-                  glowColor = "shadow-[0_4px_24px_rgba(234,179,8,0.1)]";
-                  label = "بطولة نشطة";
-                  icon = <Trophy size={15} />;
-                  break;
-                case 'episode':
-                  badgeColor = "bg-[#FF1744]/10 border-[#FF1744]/25 text-[#FF1744]";
-                  iconColor = "text-[#FF1744]";
-                  borderColor = "border-[#FF1744]/20";
-                  glowColor = "shadow-[0_4px_24px_rgba(255,23,68,0.12)]";
-                  label = "حلقة جديدة";
-                  icon = <Play size={13} className="fill-current" />;
-                  break;
-                case 'social':
-                  badgeColor = "bg-emerald-500/10 border-emerald-500/25 text-emerald-400";
-                  iconColor = "text-emerald-400";
-                  borderColor = "border-emerald-500/20";
-                  glowColor = "shadow-[0_4px_24px_rgba(16,185,129,0.1)]";
-                  label = "تفاعل";
-                  icon = <MessageSquare size={14} />;
-                  break;
-                case 'system':
-                  badgeColor = "bg-blue-500/10 border-blue-500/25 text-blue-400";
-                  iconColor = "text-blue-400";
-                  borderColor = "border-blue-500/20";
-                  glowColor = "shadow-[0_4px_24px_rgba(59,130,246,0.1)]";
-                  label = "النظام";
-                  icon = <Info size={14} />;
-                  break;
-              }
-            }
-
-            return (
-              <motion.div
-                key={`toast-${toast.id || 'item'}-${idx}`}
-                initial={{ opacity: 0, y: -20, scale: 0.92 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.85, transition: { duration: 0.18 } }}
-                className={`pointer-events-auto w-full bg-[#0a0d14]/95 backdrop-blur-md rounded-2xl border ${borderColor} p-3.5 ${glowColor} flex gap-3.5 relative overflow-hidden select-none cursor-pointer transition duration-300 hover:bg-[#0e121c]/95 active:scale-98`}
-                onClick={() => handleToastClick(toast)}
-              >
-                {/* Subtle visual light bar */}
-                <div className={`absolute top-0 right-0 bottom-0 w-1 ${iconColor} bg-current`} />
-
-                {/* Content Image/Icon Thumbnail */}
-                <div className="w-10 h-10 rounded-xl bg-[#141a29] border border-white/5 flex items-center justify-center shrink-0 overflow-hidden relative">
-                  {toast.imageUrl ? (
-                    <img src={toast.imageUrl} alt="" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
-                  ) : (
-                    <span className={iconColor}>{icon}</span>
-                  )}
-                </div>
-
-                {/* Info Text */}
-                <div className="flex-1 min-w-0 pr-1">
-                  <div className="flex items-center gap-1.5 mb-0.5">
-                    <span className={`text-[8px] font-black tracking-wider uppercase px-1.5 py-0.5 rounded-full border ${badgeColor}`}>
-                      {label}
-                    </span>
-                    <span className="text-[9px] text-neutral-500 font-bold">الآن</span>
-                  </div>
-                  
-                  <h5 className="text-[12px] font-black text-white truncate leading-snug">
-                    {toast.title}
-                  </h5>
-                  <p className="text-[10px] sm:text-[11px] font-bold text-neutral-300 leading-normal line-clamp-2 mt-0.5">
-                    {toast.body}
-                  </p>
-                </div>
-
-                {/* Dismiss Controller */}
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setActiveToasts(prev => prev.filter(t => t.id !== toast.id));
-                  }}
-                  className="w-6 h-6 hover:bg-white/5 rounded-lg text-neutral-500 hover:text-white transition flex items-center justify-center cursor-pointer select-none self-start shrink-0 relative -top-1 -left-1"
-                >
-                  <X size={12} />
-                </button>
-              </motion.div>
-            );
-          })}
+        <AnimatePresence mode="popLayout">
+          {activeToasts.map((toast, idx) => (
+            <SwipeableToastItem
+              key={toast.id || `toast-${idx}`}
+              toast={toast}
+              onDismiss={dismissToast}
+              onClick={handleToastClick}
+            />
+          ))}
         </AnimatePresence>
       </div>
       </ViewportPortal>
@@ -1039,9 +1114,20 @@ export default function App() {
           </ViewErrorBoundary>
         </motion.div>
       ) : (
-        <AppLayout activeTab={activeTab} setActiveTab={handleTabChange} onNavigateTo={navigateTo}>
+        <AppLayout
+          activeTab={activeTab}
+          setActiveTab={handleTabChange}
+          onNavigateTo={navigateTo}
+          homeMode={effectiveHomeMode}
+          canToggleHomeMode={canToggleHomeMode}
+          onToggleHomeMode={
+            canToggleHomeMode
+              ? () => setHomeMode((prev) => (prev === 'anime' ? 'manga' : 'anime'))
+              : undefined
+          }
+        >
           <motion.div
-            key={`${currentView.name}-${viewStack.length}-${currentView.props?.initialQuery || currentView.props?.focusCommentId || ''}`}
+            key={`${currentView.name}-${viewStack.length}-${currentView.props?.initialQuery || currentView.props?.initialGenre || currentView.props?.initialMediaKind || currentView.props?.focusCommentId || ''}`}
             initial={{ opacity: 0.7 }}
             animate={{ opacity: 1 }}
             transition={{ duration: 0.12, ease: 'easeOut' }}
@@ -1049,7 +1135,7 @@ export default function App() {
           >
             <ViewErrorBoundary
               viewName={currentView.name}
-              resetKey={`${currentView.name}-${viewStack.length}-${currentView.props?.initialQuery || ''}`}
+              resetKey={`${currentView.name}-${viewStack.length}-${currentView.props?.initialQuery || currentView.props?.initialGenre || currentView.props?.initialMediaKind || ''}`}
               onGoHome={() => handleTabChange('home')}
             >
               <Suspense fallback={<ViewFallback />}>

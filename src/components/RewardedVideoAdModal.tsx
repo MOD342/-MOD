@@ -78,7 +78,7 @@ const SHOWCASE_SCENES = [
   },
   {
     badge: 'إعلان دعم داخلي · 04',
-    title: 'شكراً لكونك جزءاً من عائلة أنمي MOD',
+    title: 'شكراً لكونك جزءاً من عائلة أوتاكو MOD',
     subtitle: 'لحظات وتكتمل مدة الإعلان لإضافة الكوينز ونقاط الخبرة مباشرة لرصيدك.',
     accent: '#10B981',
     secondary: '#34D399'
@@ -134,7 +134,8 @@ export default function RewardedVideoAdModal({
     !activeVideoSrc &&
     !hasScriptBanner &&
     (monetization.mode === 'direct_link' || monetization.mode === 'hybrid') &&
-    Boolean(sponsorUrl?.trim());
+    Boolean(sponsorUrl?.trim()) &&
+    /^https:\/\//i.test(sponsorUrl.trim());
 
   const elapsedSeconds = Math.max(0, effectiveDuration - countdown);
   const progressPercent = Math.min(100, Math.max(0, (elapsedSeconds / effectiveDuration) * 100));
@@ -600,7 +601,7 @@ export default function RewardedVideoAdModal({
                       <iframe
                         src={sponsorUrl}
                         title="Sponsor Content"
-                        sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+                        sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"
                         referrerPolicy="no-referrer"
                         onLoad={() => setIframeLoaded(true)}
                         className="w-full h-full border-0 relative z-10 bg-transparent"

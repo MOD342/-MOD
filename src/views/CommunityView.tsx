@@ -168,7 +168,7 @@ export default function CommunityView({ onAnimeClick, onNavigate }: CommunityVie
 
   const loadMoodTab = async (forceBypass = false) => {
     const preset = MOOD_PRESETS.find((m) => m.id === selectedMood) || MOOD_PRESETS[0];
-    const cacheKey = `elite_mood_v2_${preset.id}`;
+    const cacheKey = `client_elite_mood_v2_${preset.id}`;
     setTabError(false);
 
     if (!forceBypass) {
@@ -193,7 +193,7 @@ export default function CommunityView({ onAnimeClick, onNavigate }: CommunityVie
         forceBypass ? { cache: 'no-store' } : undefined
       ).then((r) => r.json());
       if (res.success && Array.isArray(res.data) && res.data.length > 0) {
-        clientCache.set(cacheKey, res.data, 10 * 60 * 1000);
+        clientCache.set(cacheKey, res.data, 2 * 60 * 60 * 1000);
         setMoodAnimeList(res.data);
         setSpotlightAnime(res.data[Math.floor(Math.random() * res.data.length)]);
       } else if (moodAnimeList.length === 0) {
@@ -228,7 +228,7 @@ export default function CommunityView({ onAnimeClick, onNavigate }: CommunityVie
   };
 
   const loadHallOfFameTab = async (forceBypass = false) => {
-    const cacheKey = `elite_fame_v2_${fameFilter}`;
+    const cacheKey = `client_elite_fame_v2_${fameFilter}`;
     setTabError(false);
 
     if (!forceBypass) {
@@ -254,7 +254,7 @@ export default function CommunityView({ onAnimeClick, onNavigate }: CommunityVie
     try {
       const res = await fetch(url, forceBypass ? { cache: 'no-store' } : undefined).then((r) => r.json());
       if (res.success && Array.isArray(res.data) && res.data.length > 0) {
-        clientCache.set(cacheKey, res.data, 15 * 60 * 1000);
+        clientCache.set(cacheKey, res.data, 2 * 60 * 60 * 1000);
         setFameAnimeList(res.data);
       } else if (fameAnimeList.length === 0) {
         setTabError(true);
@@ -275,7 +275,7 @@ export default function CommunityView({ onAnimeClick, onNavigate }: CommunityVie
   }, [activeTab, fameFilter]);
 
   const loadCharactersTab = async (forceBypass = false) => {
-    const cacheKey = `elite_chars_v2_${debouncedCharSearch || 'all'}`;
+    const cacheKey = `client_elite_chars_v2_${debouncedCharSearch || 'all'}`;
     setTabError(false);
 
     if (!forceBypass) {
@@ -298,7 +298,7 @@ export default function CommunityView({ onAnimeClick, onNavigate }: CommunityVie
     try {
       const res = await fetch(url, forceBypass ? { cache: 'no-store' } : undefined).then((r) => r.json());
       if (res.success && Array.isArray(res.data) && res.data.length > 0) {
-        clientCache.set(cacheKey, res.data, 15 * 60 * 1000);
+        clientCache.set(cacheKey, res.data, 2 * 60 * 60 * 1000);
         setCharactersList(res.data);
       } else if (charactersList.length === 0) {
         setTabError(true);

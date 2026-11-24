@@ -5,6 +5,7 @@ import { cloudCatalogService } from '../services/cloudCatalogService';
 import { LongPressCopy } from '../components/LongPressCopy';
 import { getCuratedSeasonAnime } from '../data/curatedAnimeDatabase';
 import PullToRefresh from '../components/PullToRefresh';
+import { FALLBACK_POSTER_DATA_URL } from '../utils/posterFallback';
 
 const SEASONS = [
   { value: 'now', label: 'الموسم الحالي' },
@@ -43,6 +44,8 @@ export default function CurrentSeasonView({ onBack, onAnimeClick }: { onBack: ()
     } else if (cached && Array.isArray(cached) && cached.length > 0) {
       setAnimeList(cached);
       setLoading(false);
+      setRefreshing(false);
+      return;
     } else {
       setLoading(true);
     }
@@ -157,7 +160,7 @@ export default function CurrentSeasonView({ onBack, onAnimeClick }: { onBack: ()
                 onMouseEnter={() => clientCache.prefetchDetails(anime._id)}
                 className="theme-keep-dark cursor-pointer relative rounded-2xl overflow-hidden group border border-neutral-800 hover:border-purple-500/50 transition-all duration-300 aspect-[3/4] bg-neutral-900 hover:shadow-lg hover:shadow-purple-500/10"
               >
-                <img src={anime.posterUrl || 'https://via.placeholder.com/200x300?text=Anime'} loading="lazy" className="w-full h-full object-cover opacity-80 group-hover:opacity-100 group-hover:scale-[1.03] transition-all duration-500" alt="poster" />
+                <img src={anime.posterUrl || FALLBACK_POSTER_DATA_URL} loading="lazy" className="w-full h-full object-cover opacity-80 group-hover:opacity-100 group-hover:scale-[1.03] transition-all duration-500" alt="poster" />
                 <div className="absolute inset-0 bg-gradient-to-t from-black via-black/20 to-transparent flex flex-col justify-end p-3 pointer-events-none">
                   <span className="absolute top-2 right-2 bg-black/60 backdrop-blur-md text-white px-2 py-1 rounded text-xs font-bold shadow-lg flex items-center gap-1"><Star size={10} className="text-yellow-400" /> {anime.rating || 'N/A'}</span>
                   {selectedSeason === 'now' && (

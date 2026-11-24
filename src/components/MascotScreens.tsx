@@ -8,7 +8,7 @@ import ViewportPortal from './ViewportPortal';
 const loadingPhrases = [
   'جاري مزامنة قاعدة البيانات مع خوادم الأوتاكو الفاخرة... 📡',
   'البحث عن أحدث حلقات ومصادر التشغيل المستقرة... ⚔️',
-  'تحديث الهوية الجديدة لمنصة أنمي MOD وتجهيز الواجهة... ✨',
+  'تحديث الهوية الجديدة لمنصة أوتاكو MOD وتجهيز الواجهة... ✨',
   'تهيئة مساحات التفاعل والألعاب والجوائز اليومية... 🛡️',
   'جاري تحميل الملفات المؤقتة وتسريع الأداء الذكي... 🚀'
 ];
@@ -122,7 +122,7 @@ export function MascotLoadingScreen({ authLoading, onComplete }: MascotLoadingSc
               <div className="w-full h-full bg-gradient-to-br from-[#FF1744] via-purple-700 to-blue-800 rounded-[1.4rem] flex flex-col items-center justify-center text-white border border-white/5 relative overflow-hidden">
                 <div className="absolute inset-0 bg-black/10 backdrop-blur-[1px] pointer-events-none" />
                 <Sparkles className="text-yellow-300 animate-pulse mb-1 relative z-10" size={34} />
-                <span className="text-sm font-black tracking-tight relative z-10">أنمي MOD</span>
+                <span className="text-sm font-black tracking-tight relative z-10">أوتاكو MOD</span>
                 <span className="text-[8px] font-mono text-white/50 font-bold uppercase tracking-widest relative z-10 mt-0.5">MOD-342</span>
               </div>
             ) : (
@@ -159,7 +159,7 @@ export function MascotLoadingScreen({ authLoading, onComplete }: MascotLoadingSc
         {/* Brand identity */}
         <div className="space-y-1">
           <h1 className="text-xl sm:text-2xl font-black text-white px-2 tracking-tight">
-            أنمي <span className="text-transparent bg-clip-text bg-gradient-to-l from-[#FF1744] to-blue-400">MOD</span>
+            أوتاكو <span className="text-transparent bg-clip-text bg-gradient-to-l from-[#FF1744] to-blue-400">MOD</span>
           </h1>
           <p className="text-[10px] text-neutral-400 font-sans tracking-wide">
             منصة مجتمع الأوتوكو الحصرية

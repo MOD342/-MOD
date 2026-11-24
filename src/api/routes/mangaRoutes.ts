@@ -1,32 +1,52 @@
 import { Router, Request, Response } from "express";
 import { mangaService, MANGA_GENRES_LIST, MangaOriginFilter } from "../../services/mangaService";
 import { handleAsync } from "../helpers/shared";
+import { fetchWithSafeRedirects, validateSafePublicHttpUrl } from "../helpers/urlSafety";
 
 const router = Router();
 
-function isSafeExternalImageUrl(rawUrl: string): URL | null {
-  try {
-    const parsed = new URL(rawUrl);
-    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return null;
-    const host = parsed.hostname.toLowerCase();
-    // Block loopback, RFC1918 private ranges, and link-local metadata endpoints
-    if (
-      host === "localhost" ||
-      host === "127.0.0.1" ||
-      host === "0.0.0.0" ||
-      host === "::1" ||
-      host.startsWith("10.") ||
-      host.startsWith("192.168.") ||
-      host.startsWith("169.254.") ||
-      /^172\.(1[6-9]|2\d|3[0-1])\./.test(host) ||
-      host.endsWith(".local")
-    ) {
-      return null;
-    }
-    return parsed;
-  } catch {
+interface CachedProxyImage {
+  buffer: Buffer;
+  contentType: string;
+  expiresAt: number;
+}
+const proxyImageCache = new Map<string, CachedProxyImage>();
+const inFlightProxyImages = new Map<string, Promise<{ status: number; contentType?: string; buffer?: Buffer }>>();
+let proxyImageCacheBytes = 0;
+const MAX_PROXY_IMAGE_CACHE_BYTES = 32 * 1024 * 1024; // 32MB strict RAM ceiling
+const MAX_SINGLE_PROXY_IMAGE_BYTES = 1_500_000; // Skip caching individual images > 1.5MB
+const PROXY_IMAGE_TTL_MS = 10 * 60 * 1000;
+
+function getCachedProxyImage(key: string): CachedProxyImage | null {
+  const hit = proxyImageCache.get(key);
+  if (!hit) return null;
+  if (Date.now() > hit.expiresAt) {
+    proxyImageCache.delete(key);
+    proxyImageCacheBytes = Math.max(0, proxyImageCacheBytes - hit.buffer.byteLength);
     return null;
   }
+  proxyImageCache.delete(key);
+  proxyImageCache.set(key, hit);
+  return hit;
+}
+
+function setCachedProxyImage(key: string, entry: CachedProxyImage): void {
+  const size = entry.buffer.byteLength;
+  if (size <= 0 || size > MAX_SINGLE_PROXY_IMAGE_BYTES) return;
+  const prev = proxyImageCache.get(key);
+  if (prev) {
+    proxyImageCache.delete(key);
+    proxyImageCacheBytes = Math.max(0, proxyImageCacheBytes - prev.buffer.byteLength);
+  }
+  while (proxyImageCacheBytes + size > MAX_PROXY_IMAGE_CACHE_BYTES && proxyImageCache.size > 0) {
+    const oldestKey = proxyImageCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    const oldest = proxyImageCache.get(oldestKey);
+    proxyImageCache.delete(oldestKey);
+    if (oldest) proxyImageCacheBytes = Math.max(0, proxyImageCacheBytes - oldest.buffer.byteLength);
+  }
+  proxyImageCache.set(key, entry);
+  proxyImageCacheBytes += size;
 }
 
 router.get(
@@ -95,7 +115,8 @@ router.get(
 router.get(
   "/manga/details/:id",
   handleAsync(async (req: Request, res: Response) => {
-    const details = await mangaService.getMangaDetails(req.params.id);
+    const bypassCache = req.query.refresh === "1" || req.query.refresh === "true";
+    const details = await mangaService.getMangaDetails(req.params.id, bypassCache);
     if (!details) {
       return res.status(404).json({ success: false, message: "لم يتم العثور على هذا العمل." });
     }
@@ -156,50 +177,80 @@ router.get(
   "/manga/image-proxy",
   handleAsync(async (req: Request, res: Response) => {
     const rawUrl = String(req.query.url || "").trim();
-    const parsed = isSafeExternalImageUrl(rawUrl);
+    const parsed = await validateSafePublicHttpUrl(rawUrl);
     if (!parsed) {
       return res.status(400).json({ success: false, message: "رابط الصورة غير صالح." });
     }
 
+    const targetUrl = parsed.toString();
+    const cached = getCachedProxyImage(targetUrl);
+    if (cached) {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Content-Type", cached.contentType);
+      res.setHeader("Cache-Control", "public, max-age=86400, immutable");
+      res.setHeader("Content-Length", String(cached.buffer.byteLength));
+      return res.status(200).send(cached.buffer);
+    }
+
     try {
-      const hostLower = parsed.hostname.toLowerCase();
-      const referer = hostLower.includes("olympustaff")
-        ? "https://olympustaff.com/"
-        : hostLower.includes("azorafly") || hostLower.includes("azoramoon")
-          ? "https://azoramoon.com/"
-          : hostLower.includes("3asq")
-            ? "https://3asq.online/"
-            : `${parsed.origin}/`;
+      let flight = inFlightProxyImages.get(targetUrl);
+      if (!flight) {
+        flight = (async () => {
+          const hostLower = parsed.hostname.toLowerCase();
+          const referer = hostLower.includes("olympustaff")
+            ? "https://olympustaff.com/"
+            : hostLower.includes("azorafly") || hostLower.includes("azoramoon")
+              ? "https://azoramoon.com/"
+              : hostLower.includes("3asq")
+                ? "https://3asq.online/"
+                : `${parsed.origin}/`;
 
-      const upstream = await fetch(parsed.toString(), {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/125.0.0.0",
-          Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-          Referer: referer,
-        },
-        signal: AbortSignal.timeout(15_000),
-      });
+          const upstream = await fetchWithSafeRedirects(targetUrl, {
+            headers: {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/125.0.0.0",
+              Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+              Referer: referer,
+            },
+            signal: AbortSignal.timeout(15_000),
+          });
 
-      if (!upstream.ok) {
-        return res.status(upstream.status).end();
+          if (!upstream.ok) {
+            return { status: upstream.status };
+          }
+
+          const contentType = upstream.headers.get("content-type") || "image/jpeg";
+          if (contentType.includes("text/html")) {
+            return { status: 502 };
+          }
+
+          const arrayBuf = await upstream.arrayBuffer();
+          const buffer = Buffer.from(arrayBuf);
+          if (buffer.byteLength === 0) {
+            return { status: 502 };
+          }
+
+          setCachedProxyImage(targetUrl, {
+            buffer,
+            contentType,
+            expiresAt: Date.now() + PROXY_IMAGE_TTL_MS,
+          });
+          return { status: 200, contentType, buffer };
+        })().finally(() => {
+          inFlightProxyImages.delete(targetUrl);
+        });
+        inFlightProxyImages.set(targetUrl, flight);
       }
 
-      const contentType = upstream.headers.get("content-type") || "image/jpeg";
-      if (contentType.includes("text/html")) {
-        return res.status(502).end();
-      }
-
-      const arrayBuf = await upstream.arrayBuffer();
-      const buffer = Buffer.from(arrayBuf);
-      if (buffer.byteLength === 0) {
-        return res.status(502).end();
+      const result = await flight;
+      if (result.status !== 200 || !result.buffer) {
+        return res.status(result.status).end();
       }
 
       res.setHeader("Access-Control-Allow-Origin", "*");
-      res.setHeader("Content-Type", contentType);
+      res.setHeader("Content-Type", result.contentType || "image/jpeg");
       res.setHeader("Cache-Control", "public, max-age=86400, immutable");
-      res.setHeader("Content-Length", String(buffer.byteLength));
-      return res.status(200).send(buffer);
+      res.setHeader("Content-Length", String(result.buffer.byteLength));
+      return res.status(200).send(result.buffer);
     } catch {
       return res.status(504).end();
     }

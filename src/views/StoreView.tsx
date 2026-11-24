@@ -45,7 +45,9 @@ import {
 } from '../data/storeItems';
 import ViewportPortal from '../components/ViewportPortal';
 import PullToRefresh from '../components/PullToRefresh';
+import ImageLightboxModal from '../components/ImageLightboxModal';
 import { useDeviceDisplay } from '../hooks/useDeviceDisplay';
+import { clientCache } from '../utils/clientCache';
 
 interface StoreViewProps {
   onBack: () => void;
@@ -194,9 +196,10 @@ export default function StoreView({ onBack }: StoreViewProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<'default' | 'price_asc' | 'price_desc' | 'level_asc'>('default');
 
-  // Preview + Detail Inspection
+  // Preview + Detail Inspection + Fullscreen Image Lightbox
   const [previewItem, setPreviewItem] = useState<StoreItem | null>(null);
   const [detailItem, setDetailItem] = useState<StoreItem | null>(null);
+  const [lightboxSrc, setLightboxSrc] = useState<{ src: string; caption?: string } | null>(null);
 
   // Toast feedback
   const [storeNotice, setStoreNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -215,7 +218,25 @@ export default function StoreView({ onBack }: StoreViewProps) {
   };
 
   const fetchSeasonalStore = useCallback(async (forceBypass = false) => {
+    const cacheKey = 'client_store_seasonal_v1';
     setSeasonalError(false);
+
+    if (!forceBypass) {
+      const cachedPayload = clientCache.get<any>(cacheKey);
+      if (cachedPayload) {
+        const evaluated = evaluateSeasonalStoreItems(cachedPayload);
+        if (evaluated.length > 0) {
+          setSeasonalItems(evaluated);
+          if (cachedPayload.seasonLabel) {
+            setSeasonLabel(cachedPayload.seasonLabel);
+          }
+          setLoadingSeasonal(false);
+          setRefreshingStore(false);
+          return;
+        }
+      }
+    }
+
     if (forceBypass) setRefreshingStore(true);
     else setLoadingSeasonal(true);
     try {
@@ -230,7 +251,11 @@ export default function StoreView({ onBack }: StoreViewProps) {
         if (json.data.seasonLabel) {
           setSeasonLabel(json.data.seasonLabel);
         }
-        if (evaluated.length === 0) setSeasonalError(true);
+        if (evaluated.length > 0) {
+          clientCache.set(cacheKey, json.data, 12 * 60 * 60 * 1000);
+        } else {
+          setSeasonalError(true);
+        }
       } else {
         setSeasonalError(true);
       }
@@ -619,9 +644,10 @@ export default function StoreView({ onBack }: StoreViewProps) {
 
   const renderItemVisual = (item: StoreItem, large = false) => {
     if (item.type === 'frame' || item.type === 'aura') {
+      // Matches ProfileView avatar scale (w-20 h-20) with ample stage padding so outer aura glows never clip
       return (
         <div
-          className={`w-full ${large ? 'h-44' : 'aspect-[4/3]'} bg-[#0a0a0f] flex items-center justify-center relative overflow-hidden`}
+          className={`w-full ${large ? 'h-48 p-6' : 'h-36 p-4'} bg-[#0a0a0f] flex items-center justify-center relative overflow-hidden`}
         >
           <GeometricAvatar
             avatarUrl={
@@ -629,33 +655,101 @@ export default function StoreView({ onBack }: StoreViewProps) {
             }
             frame={item.type === 'frame' ? item : undefined}
             aura={item.type === 'aura' ? item : undefined}
-            size={large ? 'w-24 h-24' : 'w-16 h-16'}
+            size={large ? 'w-24 h-24' : 'w-20 h-20'}
           />
         </div>
       );
     }
 
     if (item.type === 'comment_card') {
+      // Wide discussion comment box proportions without text truncation
       return (
         <div
-          className={`w-full ${large ? 'p-5' : 'aspect-[4/3] p-3'} bg-[#0a0a0f] flex items-center justify-center overflow-hidden`}
+          className={`w-full ${large ? 'p-5 min-h-[132px]' : 'min-h-[124px] p-3.5'} bg-[#0a0a0f] flex items-center justify-center overflow-hidden`}
         >
           <div
-            className={`w-full rounded-xl p-3 ${item.commentCardStyle || 'bg-neutral-900 border border-neutral-800'}`}
+            className={`w-full rounded-xl p-3.5 ${item.commentCardStyle || 'bg-neutral-900 border border-neutral-800'}`}
           >
             <div className="flex items-center justify-between gap-2 mb-1.5">
-              <span className="text-[11px] font-bold text-white truncate">
+              <span className="text-xs font-bold text-white truncate">
                 {userData?.displayName || 'عضو'}
               </span>
               {item.commentCardBadge && (
-                <span className="text-[10px] font-bold text-amber-300 shrink-0">
+                <span className="text-[11px] font-bold text-amber-300 shrink-0">
                   {item.commentCardBadge}
                 </span>
               )}
             </div>
-            <p className="text-[11px] text-neutral-300 line-clamp-2 leading-relaxed">
-              {large ? item.desc : 'مثال لمظهر تعليقك داخل صفحات النقاش'}
+            <p className="text-xs text-neutral-200 leading-relaxed">
+              {large ? item.desc : 'مثال لمظهر تعليقك داخل صفحات النقاشات والأنمي'}
             </p>
+          </div>
+        </div>
+      );
+    }
+
+    if (item.type === 'banner' && item.img) {
+      // Horizontal profile cover proportions (21:9) filled completely edge-to-edge without letterbox gaps
+      return (
+        <div
+          onClick={
+            large
+              ? () => setLightboxSrc({ src: item.img!, caption: item.name })
+              : undefined
+          }
+          className={`theme-keep-dark w-full aspect-[21/9] ${large ? 'min-h-[170px] sm:min-h-[200px] cursor-zoom-in' : 'min-h-[112px]'} bg-neutral-950 relative overflow-hidden`}
+        >
+          <img
+            src={item.img}
+            alt={item.name}
+            className={`w-full h-full object-cover object-center transition-transform duration-300 ${!large ? 'group-hover:scale-[1.03]' : ''} ${item.imageStyle || ''}`}
+            referrerPolicy="no-referrer"
+          />
+        </div>
+      );
+    }
+
+    if (item.type === 'avatar' && item.img) {
+      if (large) {
+        // Detail view shows complete uncropped image with click-to-zoom lightbox
+        return (
+          <div
+            onClick={() => setLightboxSrc({ src: item.img!, caption: item.name })}
+            className="theme-keep-dark w-full h-64 bg-neutral-950 relative overflow-hidden flex items-center justify-center p-3 cursor-zoom-in"
+          >
+            <img
+              src={item.img}
+              alt=""
+              aria-hidden="true"
+              className="absolute inset-0 w-full h-full object-cover blur-2xl scale-110 opacity-30 pointer-events-none"
+              referrerPolicy="no-referrer"
+            />
+            <img
+              src={item.img}
+              alt={item.name}
+              className="relative z-10 max-h-full max-w-full w-auto h-auto rounded-xl object-contain shadow-2xl"
+              referrerPolicy="no-referrer"
+            />
+          </div>
+        );
+      }
+      // Grid card mirrors ProfileView circular w-20 h-20 avatar size & upper-body framing
+      return (
+        <div className="theme-keep-dark w-full h-36 bg-[#0a0a0f] relative overflow-hidden flex items-center justify-center p-3">
+          <img
+            src={item.img}
+            alt=""
+            aria-hidden="true"
+            className="absolute inset-0 w-full h-full object-cover blur-2xl scale-110 opacity-25 pointer-events-none"
+            referrerPolicy="no-referrer"
+          />
+          <div className="relative z-10 w-20 h-20 rounded-full overflow-hidden ring-2 ring-white/20 shadow-xl bg-neutral-950 shrink-0 transition-transform duration-300 group-hover:scale-105">
+            <img
+              src={item.img}
+              alt={item.name}
+              className="w-full h-full object-cover object-[center_18%]"
+              referrerPolicy="no-referrer"
+            />
           </div>
         </div>
       );
@@ -664,24 +758,46 @@ export default function StoreView({ onBack }: StoreViewProps) {
     if (item.img) {
       return (
         <div
-          className={`theme-keep-dark w-full ${large ? 'h-52' : 'aspect-[4/3]'} bg-neutral-950 relative overflow-hidden`}
+          onClick={
+            large
+              ? () => setLightboxSrc({ src: item.img!, caption: item.name })
+              : undefined
+          }
+          className={`theme-keep-dark w-full ${large ? 'h-56 p-3 cursor-zoom-in' : 'h-36 p-2'} bg-neutral-950 relative overflow-hidden flex items-center justify-center`}
         >
           <img
             src={item.img}
             alt={item.name}
-            className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
+            className="max-h-full max-w-full w-auto h-auto object-contain transition-transform duration-300 group-hover:scale-[1.03]"
             referrerPolicy="no-referrer"
           />
-          <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent pointer-events-none" />
         </div>
       );
     }
 
-    // Fallback for boosters, titles, badges
+    if (item.type === 'title' || item.type === 'badge') {
+      const IconComp = item.icon || Sparkles;
+      return (
+        <div
+          className={`w-full ${large ? 'h-40 p-5' : 'h-32 p-3.5'} bg-[#0a0a0f] flex items-center justify-center`}
+        >
+          <div className="w-full rounded-xl bg-white/[0.03] border border-white/[0.08] px-3 py-2.5 flex items-center justify-center gap-2 min-w-0">
+            <IconComp size={15} className={`${item.color || 'text-amber-400'} shrink-0`} />
+            <span className={`text-xs sm:text-sm font-bold truncate ${item.color || 'text-white'}`}>
+              {item.type === 'title'
+                ? item.name
+                : `${userData?.displayName || 'أوتاكو'} · ${item.name}`}
+            </span>
+          </div>
+        </div>
+      );
+    }
+
+    // Fallback for boosters
     const IconComp = item.icon || (item.type === 'booster' ? Zap : Sparkles);
     return (
       <div
-        className={`w-full ${large ? 'h-40' : 'aspect-[4/3]'} bg-[#0a0a0f] flex items-center justify-center`}
+        className={`w-full ${large ? 'h-40' : 'h-32'} bg-[#0a0a0f] flex items-center justify-center`}
       >
         <div
           className={`w-14 h-14 rounded-2xl ${item.bg || 'bg-white/[0.04]'} border ${item.border || 'border-white/10'} flex items-center justify-center`}
@@ -807,11 +923,13 @@ export default function StoreView({ onBack }: StoreViewProps) {
       <main className="max-w-6xl mx-auto px-3 sm:px-6 pt-5 space-y-6">
         {/* Compact Identity Preview Banner */}
         <section className="theme-keep-dark rounded-2xl overflow-hidden border border-white/[0.08] bg-[#101015]">
-          <div className="h-24 sm:h-28 relative">
+          <div className="h-24 sm:h-28 relative overflow-hidden">
             {previewData.bannerUrl ? (
-              <div
-                className={`absolute inset-0 w-full h-full bg-cover bg-center transition-all duration-300 ${previewData.bannerObj?.imageStyle || ''}`}
-                style={{ backgroundImage: `url(${previewData.bannerUrl})` }}
+              <img
+                src={previewData.bannerUrl}
+                alt="معاينة الغلاف"
+                referrerPolicy="no-referrer"
+                className={`absolute inset-0 w-full h-full object-cover object-center transition-all duration-300 ${previewData.bannerObj?.imageStyle || ''}`}
               />
             ) : (
               <div className="absolute inset-0 bg-gradient-to-l from-neutral-900 via-[#12121a] to-neutral-950" />
@@ -831,7 +949,7 @@ export default function StoreView({ onBack }: StoreViewProps) {
                     <h2
                       className={`text-sm sm:text-base font-bold truncate ${previewData.titleObj ? previewData.titleObj.color : 'text-white'}`}
                     >
-                      {userData?.displayName || 'عضو أنمي MOD'}
+                      {userData?.displayName || 'عضو أوتاكو MOD'}
                     </h2>
                     {previewData.titleObj?.icon && (
                       <previewData.titleObj.icon size={13} className="shrink-0" />
@@ -1063,12 +1181,25 @@ export default function StoreView({ onBack }: StoreViewProps) {
                         </div>
                         <div className="flex items-center gap-2.5 min-w-0">
                           {item.img ? (
-                            <img
-                              src={item.img}
-                              alt={item.name}
-                              className="w-10 h-10 rounded-lg object-cover shrink-0 bg-neutral-900"
-                              referrerPolicy="no-referrer"
-                            />
+                            item.type === 'banner' ? (
+                              <img
+                                src={item.img}
+                                alt={item.name}
+                                className="w-16 h-9 rounded-lg object-cover object-center shrink-0 bg-neutral-950 border border-white/10"
+                                referrerPolicy="no-referrer"
+                              />
+                            ) : (
+                              <img
+                                src={item.img}
+                                alt={item.name}
+                                className={`w-10 h-10 shrink-0 bg-neutral-900 ${
+                                  item.type === 'avatar'
+                                    ? 'rounded-full object-cover object-[center_18%] border border-white/15'
+                                    : 'rounded-lg object-cover'
+                                }`}
+                                referrerPolicy="no-referrer"
+                              />
+                            )
                           ) : (
                             <div className="w-10 h-10 rounded-lg bg-white/[0.04] flex items-center justify-center shrink-0">
                               <Zap size={16} className="text-amber-400" />
@@ -1164,7 +1295,13 @@ export default function StoreView({ onBack }: StoreViewProps) {
                 className={`grid gap-3.5 sm:gap-4 ${
                   display.isCoverScreen
                     ? 'grid-cols-1'
-                    : 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5'
+                    : activeTab === 'banner' ||
+                        activeTab === 'comment_card' ||
+                        (activeTab === 'seasonal' && seasonalSubFilter === 'banner') ||
+                        (activeTab === 'inventory' &&
+                          (inventorySubTab === 'banner' || inventorySubTab === 'comment_card'))
+                      ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'
+                      : 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5'
                 }`}
               >
                 {filteredItems.map((item) => {
@@ -1173,6 +1310,12 @@ export default function StoreView({ onBack }: StoreViewProps) {
                   const levelLock = Boolean(item.minLevel && userLevel < item.minLevel);
                   const { price: effectivePrice, originalPrice } = getEffectivePrice(item);
                   const subtitle = getItemSubtitle(item);
+                  const isWideItem = item.type === 'banner' || item.type === 'comment_card';
+                  const spanWideInMixedGrid =
+                    !display.isCoverScreen &&
+                    activeTab === 'seasonal' &&
+                    seasonalSubFilter !== 'banner' &&
+                    isWideItem;
 
                   return (
                     <article
@@ -1182,6 +1325,8 @@ export default function StoreView({ onBack }: StoreViewProps) {
                         setDetailItem(item);
                       }}
                       className={`rounded-2xl bg-[#101015] border transition overflow-hidden flex flex-col justify-between cursor-pointer group ${
+                        spanWideInMixedGrid ? 'col-span-2' : ''
+                      } ${
                         equipped
                           ? 'border-emerald-500/45'
                           : 'border-white/[0.07] hover:border-white/20'
@@ -1548,6 +1693,11 @@ export default function StoreView({ onBack }: StoreViewProps) {
           </div>
         )}
       </ViewportPortal>
+      <ImageLightboxModal
+        src={lightboxSrc?.src || null}
+        caption={lightboxSrc?.caption}
+        onClose={() => setLightboxSrc(null)}
+      />
     </div>
     </PullToRefresh>
   );

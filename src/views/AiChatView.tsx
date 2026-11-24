@@ -45,9 +45,9 @@ interface ChatMessage {
 
 const STARTER_SUGGESTIONS = [
   'رشّح لي أنمي يخطف الأنفاس من أول حلقة',
-  'أبغى أنمي قصير ومكتمل بنهاية فخمة',
-  'وش رأيك بأقوى آرك شفته في عالم الأنمي؟',
-  'أعطني أنمي غموض وتحقيق بمستوى Death Note',
+  'أبغى مانهوا فخمة وملونة بنفس جو Solo Leveling',
+  'دلّني على مانجا قصيرة ومكتملة بنهاية أسطورية',
+  'كيف أبدّل بين شاشة الأنمي وشاشة المانجا في التطبيق؟',
 ];
 
 const SESSION_KEY = 'otaku_friend_session_v1';
@@ -306,10 +306,10 @@ export default function AiChatView({
 
           <div className="min-w-0">
             <h1 className="font-black text-sm sm:text-base text-white truncate leading-tight">
-              صديقك الأوتاكو
+              مود (MOD)
             </h1>
             <p className="text-[11px] text-zinc-400 truncate">
-              {userDisplayName ? `يدردش مع ${userDisplayName}` : 'دردشة أنمي حرة وترشيحات فورية'}
+              {userDisplayName ? `يدردش مع ${userDisplayName}` : 'دردشة أنمي ومانجا حرة وترشيحات فورية'}
             </p>
           </div>
         </div>
@@ -357,9 +357,9 @@ export default function AiChatView({
             </div>
 
             <div className="space-y-1.5">
-              <h2 className="text-lg font-black text-white">صديقك الأوتاكو يفتح عند المستوى {MIN_LEVEL}</h2>
+              <h2 className="text-lg font-black text-white">مود (MOD) يفتح عند المستوى {MIN_LEVEL}</h2>
               <p className="text-xs text-zinc-400 leading-relaxed">
-                ارفع مستواك بالمشاركة في التعليقات وتحديات ساحة الأوتاكو لتفتح الدردشة الحرة والترشيحات السريعة.
+                ارفع مستواك بالمشاركة في التعليقات وتحديات حلبة الأوتاكو لتفتح الدردشة الحرة والترشيحات السريعة مع مود.
               </p>
             </div>
 
@@ -413,10 +413,10 @@ export default function AiChatView({
                       <Sparkles size={26} />
                     </div>
                     <h2 className="text-xl sm:text-2xl font-black text-white">
-                      {userDisplayName ? `هلا ${userDisplayName}!` : 'هلا بك يا صاحبي!'}
+                      {userDisplayName ? `هلا ${userDisplayName}! أنا مود (MOD)` : 'هلا بك! أنا مود (MOD)'}
                     </h2>
                     <p className="text-xs sm:text-sm text-zinc-400 leading-relaxed max-w-md mx-auto">
-                      سولف معي عن أي أنمي أو شخصية أو نظرية تخطر ببالك، ولو تبغى ترشيح بعطيك العمل ومعه بطاقته تدخل عليها فوراً.
+                      سولف معي عن أي أنمي أو مانجا أو مانهوا أو ميزات التطبيق، ولو تبغى ترشيح بعطيك العمل ومعه بطاقته تدخل عليها فوراً.
                     </p>
                   </div>
 

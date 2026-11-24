@@ -19,6 +19,10 @@ import {
   Loader2,
   Cloud,
   HardDrive,
+  FileText,
+  Info,
+  AlertTriangle,
+  X,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { auth, db } from '../firebase';
@@ -26,17 +30,21 @@ import { doc, getDoc, setDoc, updateDoc, deleteDoc } from 'firebase/firestore';
 import { isStaffEmail } from '../services/moderationService';
 import { useDeviceDisplay } from '../hooks/useDeviceDisplay';
 import ThemeModeSelector from '../components/ThemeModeSelector';
+import DefaultHomeSelector from '../components/DefaultHomeSelector';
+import { getDataSaverEnabled, setDataSaverEnabled, reopenOnboarding } from '../utils/appPreferences';
 
 interface AccountSecurityViewProps {
   onBack: () => void;
   onOpenAppearance?: () => void;
   onLogout?: () => void;
+  onOpenLegal?: (section: 'about' | 'privacy' | 'terms' | 'data_safety') => void;
 }
 
 export default function AccountSecurityView({
   onBack,
   onOpenAppearance,
   onLogout,
+  onOpenLegal,
 }: AccountSecurityViewProps) {
   const {
     user,
@@ -50,6 +58,7 @@ export default function AccountSecurityView({
     changeUserEmail,
     changeUserPassword,
     sendPasswordReset,
+    deleteUserAccount,
   } = useAuth();
   const display = useDeviceDisplay();
 
@@ -71,6 +80,13 @@ export default function AccountSecurityView({
 
   const [clearingCache, setClearingCache] = useState(false);
   const [cacheMessage, setCacheMessage] = useState<string | null>(null);
+  const [dataSaver, setDataSaver] = useState<boolean>(() => getDataSaverEnabled());
+
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deletePasswordInput, setDeletePasswordInput] = useState('');
+  const [deleteConfirmChecked, setDeleteConfirmChecked] = useState(false);
+  const [deletingAccount, setDeletingAccount] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
     if (userData || user) {
@@ -311,6 +327,34 @@ export default function AccountSecurityView({
     else onBack();
   };
 
+  const hasPasswordProvider = Boolean(user?.providerIds?.includes('password'));
+
+  const handleConfirmDeleteAccount = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (deletingAccount || !deleteConfirmChecked) return;
+    setDeleteError(null);
+    if (hasPasswordProvider && !deletePasswordInput.trim()) {
+      setDeleteError('يرجى إدخال كلمة المرور الحالية لتأكيد الحذف النهائي.');
+      return;
+    }
+
+    setDeletingAccount(true);
+    try {
+      const res = await deleteUserAccount(deletePasswordInput || undefined);
+      if (res.success) {
+        setShowDeleteModal(false);
+        setDeletePasswordInput('');
+        setDeleteConfirmChecked(false);
+        if (onLogout) onLogout();
+        else onBack();
+      } else {
+        setDeleteError(res.message);
+      }
+    } finally {
+      setDeletingAccount(false);
+    }
+  };
+
   if (!user) {
     return (
       <div
@@ -359,6 +403,32 @@ export default function AccountSecurityView({
               </button>
             </div>
           </div>
+
+          {onOpenLegal && (
+            <div className="max-w-md mx-auto bg-[#101016] border border-white/10 rounded-2xl p-4 flex flex-wrap items-center justify-center gap-2">
+              <button
+                type="button"
+                onClick={() => onOpenLegal('privacy')}
+                className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-xs font-bold text-emerald-400 cursor-pointer"
+              >
+                سياسة الخصوصية
+              </button>
+              <button
+                type="button"
+                onClick={() => onOpenLegal('terms')}
+                className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-xs font-bold text-sky-400 cursor-pointer"
+              >
+                اتفاقية الاستخدام
+              </button>
+              <button
+                type="button"
+                onClick={() => onOpenLegal('about')}
+                className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-xs font-bold text-neutral-300 cursor-pointer"
+              >
+                عن التطبيق
+              </button>
+            </div>
+          )}
         </main>
       </div>
     );
@@ -403,8 +473,13 @@ export default function AccountSecurityView({
         style={display.isBookPosture ? { gap: 'var(--fold-hinge-gap, 24px)' } : undefined}
       >
         {/* Global App Theme Mode Selector (Light / Dark / AMOLED / Auto) */}
-        <div className="lg:col-span-2">
+        <div className="lg:col-span-2 space-y-5">
           <ThemeModeSelector />
+          <DefaultHomeSelector
+            onReopenOnboarding={() => {
+              reopenOnboarding();
+            }}
+          />
         </div>
 
         {/* Account Connection Banner */}
@@ -770,6 +845,34 @@ export default function AccountSecurityView({
 
           <button
             type="button"
+            onClick={() => {
+              const next = !dataSaver;
+              setDataSaver(next);
+              setDataSaverEnabled(next);
+            }}
+            className="w-full min-h-[56px] flex items-center justify-between gap-3 bg-[#08080c] hover:bg-white/[0.03] border border-white/[0.06] rounded-xl px-3.5 py-2.5 text-right transition cursor-pointer"
+          >
+            <div className="min-w-0">
+              <div className="text-xs font-black text-white">وضع توفير البيانات (الإنترنت)</div>
+              <div className="text-[11px] text-neutral-400 mt-0.5 leading-snug">
+                جودة مضغوطة لصفحات المانجا وتقليل التحميل المسبق والتحديث بالخلفية
+              </div>
+            </div>
+            <div
+              className={`w-11 h-6 rounded-full transition-colors relative shrink-0 ${
+                dataSaver ? 'bg-emerald-500' : 'bg-neutral-700'
+              }`}
+            >
+              <span
+                className={`w-5 h-5 bg-white rounded-full shadow absolute top-0.5 transition-all ${
+                  dataSaver ? 'left-0.5' : 'right-0.5'
+                }`}
+              />
+            </div>
+          </button>
+
+          <button
+            type="button"
             onClick={handleClearCache}
             disabled={clearingCache}
             className="w-full min-h-[44px] bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/25 text-amber-300 rounded-xl px-4 text-xs font-black flex items-center justify-center gap-2 transition cursor-pointer disabled:opacity-50"
@@ -781,13 +884,158 @@ export default function AccountSecurityView({
           <button
             type="button"
             onClick={handleSignOut}
-            className="w-full min-h-[44px] bg-red-500/10 hover:bg-red-500/20 border border-red-500/25 text-red-400 rounded-xl px-4 text-xs font-black flex items-center justify-center gap-2 transition cursor-pointer"
+            className="w-full min-h-[44px] bg-white/5 hover:bg-white/10 border border-white/10 text-neutral-200 rounded-xl px-4 text-xs font-black flex items-center justify-center gap-2 transition cursor-pointer"
           >
             <LogOut size={15} />
             <span>تسجيل الخروج من الحساب</span>
           </button>
+
+          {onOpenLegal && (
+            <div className="grid grid-cols-3 gap-2 pt-2 border-t border-white/[0.06]">
+              <button
+                type="button"
+                onClick={() => onOpenLegal('privacy')}
+                className="min-h-[40px] rounded-xl bg-[#08080c] hover:bg-white/[0.04] border border-white/[0.06] text-[11px] font-bold text-emerald-400 flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <ShieldCheck size={13} />
+                <span>الخصوصية</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onOpenLegal('terms')}
+                className="min-h-[40px] rounded-xl bg-[#08080c] hover:bg-white/[0.04] border border-white/[0.06] text-[11px] font-bold text-sky-400 flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <FileText size={13} />
+                <span>الاتفاقية</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onOpenLegal('about')}
+                className="min-h-[40px] rounded-xl bg-[#08080c] hover:bg-white/[0.04] border border-white/[0.06] text-[11px] font-bold text-purple-400 flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <Info size={13} />
+                <span>عن التطبيق</span>
+              </button>
+            </div>
+          )}
+
+          {/* Danger Zone: Google Play Compliant Account Deletion */}
+          <div className="pt-2 border-t border-red-500/20 space-y-2">
+            <p className="text-[11px] text-neutral-400 leading-relaxed">
+              يمكنك حذف حسابك وجميع قوائمك وبياناتك الشخصية المخزنة سحابياً نهائياً في أي وقت.
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                setDeleteError(null);
+                setDeletePasswordInput('');
+                setDeleteConfirmChecked(false);
+                setShowDeleteModal(true);
+              }}
+              className="w-full min-h-[44px] bg-red-600/15 hover:bg-red-600/25 border border-red-500/35 text-red-400 rounded-xl px-4 text-xs font-black flex items-center justify-center gap-2 transition cursor-pointer"
+              id="btn_open_delete_account_modal"
+            >
+              <Trash2 size={15} />
+              <span>حذف الحساب والبيانات نهائياً</span>
+            </button>
+          </div>
         </section>
       </main>
+
+      {/* Permanent Account Deletion Modal */}
+      {showDeleteModal && (
+        <div
+          className="fixed inset-0 z-[130] flex items-center justify-center p-4 bg-black/85 backdrop-blur-md"
+          dir="rtl"
+        >
+          <form
+            onSubmit={handleConfirmDeleteAccount}
+            className="relative w-full max-w-md bg-[#0f0f15] border border-red-500/30 rounded-3xl p-5 sm:p-6 space-y-4 shadow-2xl text-right"
+          >
+            <button
+              type="button"
+              onClick={() => !deletingAccount && setShowDeleteModal(false)}
+              className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 text-neutral-400 hover:text-white flex items-center justify-center absolute top-4 left-4 cursor-pointer"
+              aria-label="إغلاق"
+            >
+              <X size={15} />
+            </button>
+
+            <div className="flex items-center gap-2.5 text-red-400">
+              <div className="w-10 h-10 rounded-xl bg-red-500/15 border border-red-500/30 flex items-center justify-center shrink-0">
+                <AlertTriangle size={20} />
+              </div>
+              <div>
+                <h3 className="text-sm font-black text-white">تأكيد حذف الحساب نهائياً</h3>
+                <p className="text-[11px] text-neutral-400">هذا الإجراء دائم ولا يمكن التراجع عنه</p>
+              </div>
+            </div>
+
+            <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-3 text-xs text-red-200 leading-relaxed space-y-1">
+              <p className="font-black">سيتم مسح البيانات التالية فوراً:</p>
+              <ul className="list-disc pr-5 text-[11px] text-red-200/90 space-y-0.5">
+                <li>سجل الدخول والبريد الإلكتروني المرتبط بالحساب</li>
+                <li>قوائم الأنمي والمانجا، المفضلات، التنبيهات، والمقتنيات</li>
+                <li>الاسم المعروض وحجز المعرّف (@Username)</li>
+              </ul>
+            </div>
+
+            {hasPasswordProvider && (
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-neutral-300 block">
+                  كلمة المرور الحالية للتأكيد
+                </label>
+                <input
+                  type="password"
+                  required
+                  dir="ltr"
+                  value={deletePasswordInput}
+                  onChange={(e) => setDeletePasswordInput(e.target.value)}
+                  placeholder="••••••••"
+                  className="w-full min-h-[44px] bg-[#07070b] border border-white/10 focus:border-red-500 rounded-xl px-3.5 text-sm text-white outline-none text-left"
+                />
+              </div>
+            )}
+
+            <label className="flex items-start gap-2.5 bg-[#07070b] border border-white/10 rounded-xl p-3 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={deleteConfirmChecked}
+                onChange={(e) => setDeleteConfirmChecked(e.target.checked)}
+                className="mt-0.5 w-4 h-4 accent-red-600 shrink-0"
+              />
+              <span className="text-xs font-bold text-neutral-300 leading-snug">
+                أدرك أن جميع بياناتي وقوائمي ستُحذف نهائياً ولا يمكن استعادتها لاحقاً.
+              </span>
+            </label>
+
+            {deleteError && (
+              <div className="p-3 rounded-xl bg-red-500/15 border border-red-500/30 text-xs font-bold text-red-300">
+                {deleteError}
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-2.5 pt-1">
+              <button
+                type="button"
+                disabled={deletingAccount}
+                onClick={() => setShowDeleteModal(false)}
+                className="min-h-[44px] rounded-xl bg-white/5 hover:bg-white/10 text-neutral-200 text-xs font-black transition cursor-pointer"
+              >
+                إلغاء
+              </button>
+              <button
+                type="submit"
+                disabled={deletingAccount || !deleteConfirmChecked}
+                className="min-h-[44px] rounded-xl bg-red-600 hover:bg-red-500 disabled:opacity-45 text-white text-xs font-black transition flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                {deletingAccount ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
+                <span>{deletingAccount ? 'جاري الحذف...' : 'حذف نهائي'}</span>
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 }

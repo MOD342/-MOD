@@ -833,3 +833,195 @@ export const listService = {
     }
   }
 };
+
+export interface LocalWatchHistoryItem {
+  id: string;
+  title: string;
+  posterUrl: string;
+  lastEpisode: string;
+  progress: number;
+  updatedAt: number;
+}
+
+function getWatchKeys(userId?: string | null) {
+  const uid = userId || 'guest';
+  return {
+    uid,
+    historyKey: `local_watch_history_${uid}`,
+    clearedKey: `local_watch_history_cleared_at_${uid}`,
+    dismissedKey: `local_watch_history_dismissed_${uid}`,
+  };
+}
+
+export const watchHistoryService = {
+  getClearedAt: (userId?: string | null, cloudPrivacy?: any): number => {
+    const { clearedKey } = getWatchKeys(userId);
+    let localVal = 0;
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localVal = Number(localStorage.getItem(clearedKey) || 0) || 0;
+      }
+    } catch {}
+    const cloudVal = Number(cloudPrivacy?.watchHistoryClearedAt || 0) || 0;
+    return Math.max(localVal, cloudVal);
+  },
+
+  getDismissedMap: (userId?: string | null, cloudPrivacy?: any): Record<string, number> => {
+    const { dismissedKey } = getWatchKeys(userId);
+    const localMap = readLocalJson<Record<string, number>>(dismissedKey, {});
+    const cloudMap =
+      cloudPrivacy?.watchDismissedMap && typeof cloudPrivacy.watchDismissedMap === 'object'
+        ? (cloudPrivacy.watchDismissedMap as Record<string, number>)
+        : {};
+    const merged: Record<string, number> = {};
+    const keys = new Set([...Object.keys(cloudMap), ...(localMap && typeof localMap === 'object' ? Object.keys(localMap) : [])]);
+    keys.forEach((k) => {
+      const v = Math.max(Number(cloudMap[k] || 0) || 0, Number(localMap?.[k] || 0) || 0);
+      if (v > 0) merged[k] = v;
+    });
+    return merged;
+  },
+
+  filterItems: <T extends { id: string | number; updatedAt?: number }>(
+    items: T[],
+    userId?: string | null,
+    cloudPrivacy?: any,
+  ): T[] => {
+    const clearedAt = watchHistoryService.getClearedAt(userId, cloudPrivacy);
+    const dismissedMap = watchHistoryService.getDismissedMap(userId, cloudPrivacy);
+    return (Array.isArray(items) ? items : []).filter((item) => {
+      const ts = Number(item?.updatedAt) || 0;
+      if (clearedAt > 0 && ts <= clearedAt) return false;
+      const dTs = Number(dismissedMap[String(item?.id)] || 0);
+      if (dTs > 0 && ts <= dTs) return false;
+      return true;
+    });
+  },
+
+  getLocalHistory: (userId?: string | null, cloudPrivacy?: any): LocalWatchHistoryItem[] => {
+    const { historyKey } = getWatchKeys(userId);
+    const clearedAt = watchHistoryService.getClearedAt(userId, cloudPrivacy);
+    let localList: LocalWatchHistoryItem[] = [];
+    try {
+      if (typeof localStorage !== 'undefined') {
+        let raw = localStorage.getItem(historyKey);
+        if (!raw && !userId) {
+          const legacy = localStorage.getItem('local_watch_history');
+          if (legacy) {
+            if (clearedAt === 0) {
+              localStorage.setItem(historyKey, legacy);
+              raw = legacy;
+            }
+            localStorage.removeItem('local_watch_history');
+          }
+        }
+        const parsed = raw ? JSON.parse(raw) : [];
+        if (Array.isArray(parsed)) localList = parsed;
+      }
+    } catch {}
+    return watchHistoryService.filterItems(localList, userId, cloudPrivacy);
+  },
+
+  recordWatch: (userId: string | null | undefined, item: Omit<LocalWatchHistoryItem, 'updatedAt'> & { updatedAt?: number }) => {
+    const { uid, historyKey, dismissedKey } = getWatchKeys(userId);
+    const clearedAt = watchHistoryService.getClearedAt(userId);
+    const nowTs = Math.max(Date.now(), clearedAt + 1000);
+
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const list = readLocalJson<LocalWatchHistoryItem[]>(historyKey, []);
+        const filtered = (Array.isArray(list) ? list : []).filter(
+          (entry) => String(entry.id) !== String(item.id),
+        );
+        const nextItem: LocalWatchHistoryItem = {
+          id: String(item.id),
+          title: item.title || 'أنمي',
+          posterUrl: item.posterUrl || '',
+          lastEpisode: String(item.lastEpisode || '1'),
+          progress: Number(item.progress || 35),
+          updatedAt: nowTs,
+        };
+        writeLocalJson(historyKey, [nextItem, ...filtered].slice(0, 20));
+
+        const dismissed = readLocalJson<Record<string, number>>(dismissedKey, {});
+        if (dismissed && Object.prototype.hasOwnProperty.call(dismissed, String(item.id))) {
+          delete dismissed[String(item.id)];
+          writeLocalJson(dismissedKey, dismissed);
+          if (userId && isAuthenticatedOwner(uid)) {
+            updateDoc(doc(db, 'users', uid), {
+              'privacySettings.watchDismissedMap': dismissed,
+            }).catch(() => {});
+          }
+        }
+      }
+    } catch {}
+  },
+
+  removeItem: (userId: string | null | undefined, itemId: string | number, itemUpdatedAt?: number, cloudPrivacy?: any) => {
+    const { uid, historyKey, dismissedKey } = getWatchKeys(userId);
+    const dismissTs = Math.max(Date.now(), Number(itemUpdatedAt) || 0) + 1000;
+    const idStr = String(itemId);
+
+    const removeFromKey = (hKey: string, dKey: string) => {
+      const current = readLocalJson<LocalWatchHistoryItem[]>(hKey, []);
+      if (Array.isArray(current)) {
+        writeLocalJson(
+          hKey,
+          current.filter((h) => String(h.id) !== idStr),
+        );
+      }
+      const dMap = readLocalJson<Record<string, number>>(dKey, {});
+      const nextMap = { ...(dMap && typeof dMap === 'object' ? dMap : {}), [idStr]: dismissTs };
+      writeLocalJson(dKey, nextMap);
+      return nextMap;
+    };
+
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const nextMap = removeFromKey(historyKey, dismissedKey);
+        if (uid !== 'guest') {
+          removeFromKey('local_watch_history_guest', 'local_watch_history_dismissed_guest');
+        }
+        localStorage.removeItem('local_watch_history');
+
+        if (userId && isAuthenticatedOwner(uid)) {
+          const mergedCloudMap = {
+            ...(cloudPrivacy?.watchDismissedMap && typeof cloudPrivacy.watchDismissedMap === 'object'
+              ? cloudPrivacy.watchDismissedMap
+              : {}),
+            ...nextMap,
+          };
+          updateDoc(doc(db, 'users', uid), {
+            'privacySettings.watchDismissedMap': mergedCloudMap,
+          }).catch(() => {});
+        }
+      }
+    } catch {}
+  },
+
+  clearAll: (userId: string | null | undefined, currentItems: Array<{ id: string | number; updatedAt?: number }> = []) => {
+    const { uid, historyKey, clearedKey, dismissedKey } = getWatchKeys(userId);
+    const maxItemTs = currentItems.reduce((mx, it) => Math.max(mx, Number(it?.updatedAt) || 0), 0);
+    const prevCleared = watchHistoryService.getClearedAt(userId);
+    const clearedAt = Math.max(Date.now(), maxItemTs, prevCleared) + 1000;
+
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem(historyKey);
+        localStorage.removeItem('local_watch_history_guest');
+        localStorage.removeItem('local_watch_history');
+        localStorage.setItem(clearedKey, String(clearedAt));
+        localStorage.setItem('local_watch_history_cleared_at_guest', String(clearedAt));
+        localStorage.removeItem(dismissedKey);
+        localStorage.removeItem('local_watch_history_dismissed_guest');
+
+        if (userId && isAuthenticatedOwner(uid)) {
+          updateDoc(doc(db, 'users', uid), {
+            'privacySettings.watchHistoryClearedAt': clearedAt,
+            'privacySettings.watchDismissedMap': {},
+          }).catch(() => {});
+        }
+      }
+    } catch {}
+  },
+};

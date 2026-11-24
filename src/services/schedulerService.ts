@@ -106,11 +106,6 @@ class SchedulerService {
       this.runCacheMaintenanceJob().catch(() => {});
     });
     this.tasks.set('cache-maintenance-1h', task1h);
-
-    // Non-blocking background warm-up 1.5s after boot
-    setTimeout(() => {
-      this.runInitialWarmup().catch(() => {});
-    }, 1500);
   }
 
   /**
@@ -168,21 +163,23 @@ class SchedulerService {
     console.log(`\n🔗 [Cron 12h] Starting scheduled task: "${meta.name}" at ${new Date().toLocaleTimeString()}...`);
 
     try {
-      // 1. Get recent episodes list
-      const recentList = await this.scraper.getRecentEpisodes();
-      const sampleEpisodes = (recentList || []).slice(0, 10);
+      // 1. Only inspect cached recent episodes (avoid scraping recent page just to warm old episodes)
+      const cachedRecent = await serverCache.get<any[]>('recent_episodes_okanime_primary_v1_page_1', true);
+      const sampleEpisodes = (cachedRecent || []).slice(0, 3);
       let refreshedCount = 0;
 
-      // 2. Pre-fetch and refresh servers for recent active episodes
+      // 2. Refresh at most 3 episodes that aren't already cached
       for (const item of sampleEpisodes) {
         if (item.link || item.id) {
+          const existingKey = `servers:${item.id}::${item.episode || ''}`;
+          const alreadyCached = await serverCache.get(existingKey);
+          if (alreadyCached) continue;
           try {
             const servers = await this.scraper.getEpisodeServers(item.id, undefined, item.episode);
             if (servers && servers.length > 0) {
               refreshedCount++;
-              // Cache streaming servers for 12 hours (43,200,000 ms)
               const ttl12Hours = 12 * 60 * 60 * 1000;
-              await serverCache.set(`servers:${item.id}::${item.episode || ''}`, servers, ttl12Hours);
+              await serverCache.set(existingKey, servers, ttl12Hours);
             }
           } catch (e: any) {
             console.warn(`[Cron 12h] Could not refresh server links for episode ${item.id}:`, e.message);
@@ -229,18 +226,6 @@ class SchedulerService {
       meta.status = 'failed';
       meta.lastError = err.message;
       meta.lastDurationMs = Date.now() - startTime;
-    }
-  }
-
-  /**
-   * Safe initial background warm-up on server start.
-   */
-  private async runInitialWarmup() {
-    console.log('[SchedulerService] Running initial cache pre-warming...');
-    try {
-      await this.runRecentAnimeJob();
-    } catch (e: any) {
-      console.warn('[SchedulerService] Initial warm-up completed with warning:', e.message);
     }
   }
 

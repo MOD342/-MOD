@@ -12,6 +12,7 @@ import {
   X,
   ZoomIn,
   ZoomOut,
+  Columns2,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { mangaListService } from '../services/mangaListService';
@@ -21,6 +22,8 @@ import { cloudCatalogService } from '../services/cloudCatalogService';
 import { getComments, addComment, type Comment } from '../services/animeInteractionService';
 import ViewportPortal from '../components/ViewportPortal';
 import AnimeCommentItem from '../components/AnimeCommentItem';
+import { useDeviceDisplay } from '../hooks/useDeviceDisplay';
+import { getDataSaverEnabled } from '../utils/appPreferences';
 
 type ReaderMode = 'webtoon' | 'paged-rtl' | 'paged-ltr';
 type ReaderBg = 'amoled' | 'dark' | 'sepia';
@@ -32,6 +35,7 @@ interface ReaderPrefs {
   quality: ReaderQuality;
   brightness: number;
   keepAwake: boolean;
+  doublePage?: boolean;
 }
 
 const PREFS_KEY = 'manga_reader_prefs_v1';
@@ -58,19 +62,23 @@ export default function MangaReaderView({
   onUserClick,
 }: MangaReaderViewProps) {
   const { user, userData, signIn } = useAuth();
+  const display = useDeviceDisplay();
+  const isWideScreen = display.isWideOrUnfolded;
 
   const [prefs, setPrefs] = useState<ReaderPrefs>(() => {
     const defaultMode: ReaderMode =
       manga?.defaultReadingMode === 'webtoon' ? 'webtoon' : 'paged-rtl';
+    const defaultQuality: ReaderQuality = getDataSaverEnabled() ? 'saver' : 'high';
     try {
       const saved = localStorage.getItem(PREFS_KEY);
       if (saved) {
         return {
           mode: defaultMode,
           bg: 'amoled',
-          quality: 'high',
+          quality: defaultQuality,
           brightness: 100,
           keepAwake: true,
+          doublePage: false,
           ...JSON.parse(saved),
         };
       }
@@ -78,9 +86,10 @@ export default function MangaReaderView({
     return {
       mode: defaultMode,
       bg: 'amoled',
-      quality: 'high',
+      quality: defaultQuality,
       brightness: 100,
       keepAwake: true,
+      doublePage: false,
     };
   });
 
@@ -104,9 +113,12 @@ export default function MangaReaderView({
   const [isSpoiler, setIsSpoiler] = useState(false);
   const [submittingComment, setSubmittingComment] = useState(false);
 
+  const mainScrollRef = useRef<HTMLElement | null>(null);
   const webtoonRefs = useRef<Record<number, HTMLDivElement | null>>({});
   const recordedRef = useRef<string | null>(null);
   const blobUrlsRef = useRef<string[]>([]);
+
+  const isDoublePageActive = Boolean(prefs.doublePage && prefs.mode !== 'webtoon' && isWideScreen);
 
   const updatePrefs = (patch: Partial<ReaderPrefs>) => {
     setPrefs((prev) => {
@@ -245,10 +257,12 @@ export default function MangaReaderView({
     };
   }, [loadPages]);
 
-  // Preload next 3 upcoming pages cleanly
+  // Preload next upcoming pages cleanly (throttled when Data Saver is active)
   useEffect(() => {
     if (pages.length === 0) return;
-    for (let offset = 1; offset <= 3; offset++) {
+    const dataSaver = getDataSaverEnabled() || prefs.quality === 'saver';
+    const count = dataSaver ? 1 : isDoublePageActive ? 4 : 3;
+    for (let offset = 1; offset <= count; offset++) {
       const target = pages[currentPage - 1 + offset];
       if (target?.url && !target.url.startsWith('blob:')) {
         const img = new Image();
@@ -256,7 +270,7 @@ export default function MangaReaderView({
         img.src = target.url;
       }
     }
-  }, [currentPage, pages]);
+  }, [currentPage, pages, isDoublePageActive, prefs.quality]);
 
   // Persist reading progress & award chapter XP at >= 80% progress
   useEffect(() => {
@@ -296,7 +310,7 @@ export default function MangaReaderView({
     }
   }, [currentPage, pages.length, manga, chapter, user?.id, sortedChapters.length]);
 
-  // Webtoon scroll observer
+  // Webtoon scroll observer scoped inside pinned mainScrollRef
   useEffect(() => {
     if (prefs.mode !== 'webtoon' || pages.length === 0) return;
     const obs = new IntersectionObserver(
@@ -308,7 +322,7 @@ export default function MangaReaderView({
           }
         }
       },
-      { threshold: 0.4 },
+      { root: mainScrollRef.current, threshold: 0.35 },
     );
 
     Object.values(webtoonRefs.current).forEach((el) => {
@@ -316,6 +330,27 @@ export default function MangaReaderView({
     });
     return () => obs.disconnect();
   }, [prefs.mode, pages]);
+
+  const pageStep = isDoublePageActive ? 2 : 1;
+
+  const goNextPage = useCallback(() => {
+    const lastVisiblePage = isDoublePageActive ? Math.min(pages.length, currentPage + 1) : currentPage;
+    if (lastVisiblePage < pages.length) {
+      setCurrentPage((p) => Math.min(pages.length, p + pageStep));
+      setZoomed(false);
+    } else if (nextChapter) {
+      onSelectChapter(nextChapter);
+    }
+  }, [currentPage, isDoublePageActive, nextChapter, onSelectChapter, pageStep, pages.length]);
+
+  const goPrevPage = useCallback(() => {
+    if (currentPage > 1) {
+      setCurrentPage((p) => Math.max(1, p - pageStep));
+      setZoomed(false);
+    } else if (prevChapter) {
+      onSelectChapter(prevChapter);
+    }
+  }, [currentPage, onSelectChapter, pageStep, prevChapter]);
 
   // Keyboard navigation in paged modes
   useEffect(() => {
@@ -331,23 +366,16 @@ export default function MangaReaderView({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [prefs.mode, currentPage, pages.length, showComments, showSettings]);
+  }, [prefs.mode, showComments, showSettings, goNextPage, goPrevPage]);
 
-  const goNextPage = () => {
-    if (currentPage < pages.length) {
-      setCurrentPage((p) => p + 1);
-      setZoomed(false);
-    } else if (nextChapter) {
-      onSelectChapter(nextChapter);
-    }
-  };
-
-  const goPrevPage = () => {
-    if (currentPage > 1) {
-      setCurrentPage((p) => p - 1);
-      setZoomed(false);
-    } else if (prevChapter) {
-      onSelectChapter(prevChapter);
+  const handleToggleDoublePage = () => {
+    if (isDoublePageActive) {
+      updatePrefs({ doublePage: false });
+    } else {
+      updatePrefs({
+        doublePage: true,
+        mode: prefs.mode === 'webtoon' ? 'paged-rtl' : prefs.mode,
+      });
     }
   };
 
@@ -476,31 +504,73 @@ export default function MangaReaderView({
   };
 
   const activePagedObj = pages[currentPage - 1];
+  const secondPagedObj = isDoublePageActive ? pages[currentPage] : undefined;
+  const pageRangeText =
+    isDoublePageActive && secondPagedObj
+      ? `${currentPage}-${currentPage + 1}`
+      : `${currentPage}`;
+
+  const renderPagedSlot = (pageObj: { index: number; url: string; fallbackUrl?: string }) => {
+    if (brokenPageSet[pageObj.index]) {
+      return (
+        <div
+          onClick={(e) => e.stopPropagation()}
+          className="flex flex-col items-center justify-center gap-3 p-6 w-full h-full"
+        >
+          <p className="text-xs font-bold opacity-80 tabular-nums">
+            تعذر تحميل الصفحة {pageObj.index}
+          </p>
+          <button
+            type="button"
+            onClick={() => handleRetryPage(pageObj.index)}
+            className="min-h-[42px] px-5 rounded-xl bg-[#FF1744] text-white text-xs font-black flex items-center gap-2 cursor-pointer"
+          >
+            <RefreshCw size={14} />
+            <span>إعادة المحاولة</span>
+          </button>
+        </div>
+      );
+    }
+
+    return (
+      <img
+        src={getPageSrc(pageObj)}
+        alt={`صفحة ${pageObj.index}`}
+        referrerPolicy="no-referrer"
+        onError={() => handlePageError(pageObj)}
+        className={
+          zoomed
+            ? 'max-w-4xl w-full h-auto object-contain select-none'
+            : 'max-w-full max-h-full w-auto h-auto object-contain select-none'
+        }
+      />
+    );
+  };
 
   return (
     <div
-      className={`min-h-[var(--vv-height,100dvh)] w-full ${bgClass} relative select-none`}
+      className={`h-[var(--vv-height,100dvh)] w-full ${bgClass} relative overflow-hidden select-none`}
       style={{ filter: prefs.brightness !== 100 ? `brightness(${prefs.brightness}%)` : undefined }}
       dir="rtl"
     >
-      {/* Top Floating HUD */}
+      {/* Top Pinned Dynamic Bar */}
       <AnimatePresence>
         {hudVisible && (
           <motion.header
-            initial={{ opacity: 0, y: -16 }}
+            initial={{ opacity: 0, y: -18 }}
             animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -16 }}
+            exit={{ opacity: 0, y: -18 }}
             transition={{ duration: 0.16 }}
-            style={{ paddingTop: 'calc(var(--safe-top, 0px) + 0.5rem)' }}
-            className="theme-keep-dark fixed top-0 inset-x-0 z-50 bg-black/90 backdrop-blur-md border-b border-white/10 px-3 sm:px-5 pb-2.5"
+            style={{ paddingTop: 'calc(var(--safe-top, 0px) + 0.45rem)' }}
+            className="theme-keep-dark fixed top-0 inset-x-0 z-40 bg-black/90 backdrop-blur-md border-b border-white/10 px-3 sm:px-5 pb-2.5"
           >
-            <div className="max-w-5xl mx-auto flex items-center justify-between gap-2">
+            <div className="max-w-6xl mx-auto flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 min-w-0">
                 <button
                   type="button"
                   onClick={onBack}
                   aria-label="رجوع"
-                  className="min-w-[44px] min-h-[44px] rounded-xl bg-neutral-900 hover:bg-neutral-800 border border-white/10 text-white flex items-center justify-center shrink-0 cursor-pointer"
+                  className="min-w-[42px] min-h-[42px] rounded-xl bg-neutral-900 hover:bg-neutral-800 border border-white/10 text-white flex items-center justify-center shrink-0 cursor-pointer"
                 >
                   <ChevronRight size={20} />
                 </button>
@@ -510,17 +580,35 @@ export default function MangaReaderView({
                   </h1>
                   <p className="text-[11px] text-neutral-400 font-bold tabular-nums truncate">
                     الفصل {chapter?.num}
-                    {pages.length > 0 ? ` · صفحة ${currentPage} من ${pages.length}` : ''}
+                    {pages.length > 0 ? ` · صفحة ${pageRangeText} من ${pages.length}` : ''}
                   </p>
                 </div>
               </div>
 
               <div className="flex items-center gap-1.5 shrink-0">
+                {isWideScreen && (
+                  <button
+                    type="button"
+                    onClick={handleToggleDoublePage}
+                    title="العرض المزدوج (صفحتان معاً)"
+                    aria-label="العرض المزدوج للشاشة الكبيرة"
+                    aria-pressed={isDoublePageActive}
+                    className={`min-h-[42px] px-2.5 sm:px-3 rounded-xl border text-xs font-black flex items-center gap-1.5 transition cursor-pointer ${
+                      isDoublePageActive
+                        ? 'bg-[#FF1744] border-[#FF1744] text-white shadow-md shadow-rose-950/40'
+                        : 'bg-neutral-900 hover:bg-neutral-800 border-white/10 text-neutral-200 hover:text-white'
+                    }`}
+                  >
+                    <Columns2 size={17} strokeWidth={2.2} />
+                    <span className="hidden md:inline">عرض مزدوج</span>
+                  </button>
+                )}
+
                 <button
                   type="button"
                   onClick={() => setZoomed((z) => !z)}
                   aria-label="تكبير أو تصغير"
-                  className="min-w-[44px] min-h-[44px] rounded-xl bg-neutral-900 hover:bg-neutral-800 border border-white/10 text-white flex items-center justify-center cursor-pointer"
+                  className="min-w-[42px] min-h-[42px] rounded-xl bg-neutral-900 hover:bg-neutral-800 border border-white/10 text-white flex items-center justify-center cursor-pointer"
                 >
                   {zoomed ? <ZoomOut size={18} /> : <ZoomIn size={18} />}
                 </button>
@@ -529,7 +617,7 @@ export default function MangaReaderView({
                   type="button"
                   onClick={() => setShowComments(true)}
                   aria-label="تعليقات الفصل"
-                  className="min-w-[44px] min-h-[44px] rounded-xl bg-neutral-900 hover:bg-neutral-800 border border-white/10 text-white flex items-center justify-center cursor-pointer"
+                  className="min-w-[42px] min-h-[42px] rounded-xl bg-neutral-900 hover:bg-neutral-800 border border-white/10 text-white flex items-center justify-center cursor-pointer"
                 >
                   <MessageCircle size={18} />
                 </button>
@@ -538,7 +626,7 @@ export default function MangaReaderView({
                   type="button"
                   onClick={() => setShowSettings(true)}
                   aria-label="إعدادات القراءة"
-                  className="min-w-[44px] min-h-[44px] rounded-xl bg-neutral-900 hover:bg-neutral-800 border border-white/10 text-white flex items-center justify-center cursor-pointer"
+                  className="min-w-[42px] min-h-[42px] rounded-xl bg-neutral-900 hover:bg-neutral-800 border border-white/10 text-white flex items-center justify-center cursor-pointer"
                 >
                   <SlidersHorizontal size={18} />
                 </button>
@@ -548,13 +636,20 @@ export default function MangaReaderView({
         )}
       </AnimatePresence>
 
-      {/* Main Reader Canvas */}
+      {/* Main Reader Canvas — Tap anywhere to toggle Top/Bottom HUD */}
       <main
+        ref={mainScrollRef}
         onClick={() => setHudVisible((v) => !v)}
-        className="w-full min-h-[var(--vv-height,100dvh)] flex flex-col items-center"
+        className={`w-full h-full relative flex flex-col ${
+          prefs.mode === 'webtoon'
+            ? 'overflow-y-auto overflow-x-hidden overscroll-contain'
+            : zoomed
+              ? 'overflow-auto'
+              : 'overflow-hidden'
+        }`}
       >
         {loading ? (
-          <div className="flex-1 flex flex-col items-center justify-center gap-3 py-24">
+          <div className="flex-1 flex flex-col items-center justify-center gap-3 py-16">
             <Loader2 className="animate-spin text-[#FF1744]" size={36} />
             <span className="text-xs font-bold opacity-75">جاري تحميل صفحات الفصل...</span>
           </div>
@@ -642,35 +737,24 @@ export default function MangaReaderView({
             </div>
           </div>
         ) : (
-          /* Paged RTL or LTR View */
-          <div className="relative w-full flex-1 flex items-center justify-center py-14 px-2">
-            {activePagedObj && brokenPageSet[activePagedObj.index] ? (
+          /* Paged RTL or LTR View (Single or Dual-Page Spread on Large Screens) */
+          <div className="relative w-full h-full flex-1 min-h-0 flex items-center justify-center px-2 py-2 sm:px-3">
+            {isDoublePageActive && activePagedObj && secondPagedObj ? (
               <div
-                onClick={(e) => e.stopPropagation()}
-                className="flex flex-col items-center gap-3 p-8"
+                dir={prefs.mode === 'paged-rtl' ? 'rtl' : 'ltr'}
+                className="w-full max-w-6xl h-full min-h-0 grid grid-cols-2 gap-1.5 md:gap-3 items-center justify-items-center"
               >
-                <p className="text-xs font-bold opacity-80 tabular-nums">
-                  تعذر تحميل الصفحة {activePagedObj.index}
-                </p>
-                <button
-                  type="button"
-                  onClick={() => handleRetryPage(activePagedObj.index)}
-                  className="min-h-[44px] px-5 rounded-xl bg-[#FF1744] text-white text-xs font-black flex items-center gap-2 cursor-pointer"
-                >
-                  <RefreshCw size={14} />
-                  <span>إعادة المحاولة</span>
-                </button>
+                <div className="w-full h-full min-h-0 flex items-center justify-center overflow-hidden">
+                  {renderPagedSlot(activePagedObj)}
+                </div>
+                <div className="w-full h-full min-h-0 flex items-center justify-center overflow-hidden">
+                  {renderPagedSlot(secondPagedObj)}
+                </div>
               </div>
             ) : activePagedObj ? (
-              <img
-                src={getPageSrc(activePagedObj)}
-                alt={`صفحة ${activePagedObj.index}`}
-                referrerPolicy="no-referrer"
-                onError={() => handlePageError(activePagedObj)}
-                className={`max-w-full ${
-                  zoomed ? 'max-h-none w-full max-w-4xl' : 'max-h-[86dvh] w-auto'
-                } object-contain select-none`}
-              />
+              <div className="w-full h-full min-h-0 flex items-center justify-center">
+                {renderPagedSlot(activePagedObj)}
+              </div>
             ) : null}
 
             {/* Left & Right Tap Zones for Paged Turning */}
@@ -681,7 +765,7 @@ export default function MangaReaderView({
                 e.stopPropagation();
                 prefs.mode === 'paged-rtl' ? goPrevPage() : goNextPage();
               }}
-              className="absolute top-16 bottom-20 right-0 w-1/4 cursor-pointer opacity-0"
+              className="absolute inset-y-16 right-0 w-1/4 cursor-pointer opacity-0"
             />
             <button
               type="button"
@@ -690,24 +774,24 @@ export default function MangaReaderView({
                 e.stopPropagation();
                 prefs.mode === 'paged-rtl' ? goNextPage() : goPrevPage();
               }}
-              className="absolute top-16 bottom-20 left-0 w-1/4 cursor-pointer opacity-0"
+              className="absolute inset-y-16 left-0 w-1/4 cursor-pointer opacity-0"
             />
           </div>
         )}
       </main>
 
-      {/* Bottom Floating HUD */}
+      {/* Bottom Pinned Dynamic Bar */}
       <AnimatePresence>
         {hudVisible && pages.length > 0 && (
           <motion.footer
-            initial={{ opacity: 0, y: 16 }}
+            initial={{ opacity: 0, y: 18 }}
             animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 16 }}
+            exit={{ opacity: 0, y: 18 }}
             transition={{ duration: 0.16 }}
-            style={{ paddingBottom: 'calc(var(--safe-bottom, 0px) + 0.5rem)' }}
-            className="theme-keep-dark fixed bottom-0 inset-x-0 z-50 bg-black/90 backdrop-blur-md border-t border-white/10 px-3 sm:px-5 pt-2.5"
+            style={{ paddingBottom: 'calc(var(--safe-bottom, 0px) + 0.45rem)' }}
+            className="theme-keep-dark fixed bottom-0 inset-x-0 z-40 bg-black/90 backdrop-blur-md border-t border-white/10 px-3 sm:px-5 pt-2.5"
           >
-            <div className="max-w-5xl mx-auto flex items-center gap-3">
+            <div className="max-w-6xl mx-auto flex items-center gap-3">
               <button
                 type="button"
                 disabled={!prevChapter}
@@ -732,8 +816,8 @@ export default function MangaReaderView({
                   aria-label="شريط التنقل بين الصفحات"
                   className="flex-1 accent-[#FF1744] h-2 cursor-pointer"
                 />
-                <span className="text-xs font-black text-white tabular-nums shrink-0 min-w-[54px] text-center">
-                  {currentPage} / {pages.length}
+                <span className="text-xs font-black text-white tabular-nums shrink-0 min-w-[58px] text-center">
+                  {pageRangeText} / {pages.length}
                 </span>
               </div>
 
@@ -805,6 +889,43 @@ export default function MangaReaderView({
                     ))}
                   </div>
                 </div>
+
+                {/* Large-screen Double Page Toggle */}
+                {isWideScreen && (
+                  <div className="space-y-2">
+                    <span className="text-xs font-black text-neutral-300">العرض للشاشة الكبيرة</span>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => updatePrefs({ doublePage: false })}
+                        className={`min-h-[44px] px-3 rounded-xl border text-xs font-black cursor-pointer transition ${
+                          !isDoublePageActive
+                            ? 'bg-[#FF1744] border-[#FF1744] text-white'
+                            : 'bg-neutral-900 border-neutral-800 text-neutral-300'
+                        }`}
+                      >
+                        صفحة واحدة
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updatePrefs({
+                            doublePage: true,
+                            mode: prefs.mode === 'webtoon' ? 'paged-rtl' : prefs.mode,
+                          })
+                        }
+                        className={`min-h-[44px] px-3 rounded-xl border text-xs font-black cursor-pointer transition flex items-center justify-center gap-1.5 ${
+                          isDoublePageActive
+                            ? 'bg-[#FF1744] border-[#FF1744] text-white'
+                            : 'bg-neutral-900 border-neutral-800 text-neutral-300'
+                        }`}
+                      >
+                        <Columns2 size={15} />
+                        <span>صفحتان معاً</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 {/* Canvas Background */}
                 <div className="space-y-2">

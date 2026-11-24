@@ -2,7 +2,10 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { ChevronRight, Loader2, Clock, Search, AlertCircle, Star, Tv, Calendar, Layers, RefreshCw } from 'lucide-react';
 import { cleanAnimeTitle } from '../utils/animeTitleCleaner';
 import { cloudCatalogService } from '../services/cloudCatalogService';
+import { clientCache } from '../utils/clientCache';
 import PullToRefresh from '../components/PullToRefresh';
+import { LongPressCopy } from '../components/LongPressCopy';
+import { FALLBACK_POSTER_DATA_URL } from '../utils/posterFallback';
 import {
   useGlobalLayoutMode,
   LayoutModeToggleButton,
@@ -113,7 +116,17 @@ export default function ScheduleView({ onBack, onAnimeClick, initialDay }: Sched
   const [layoutMode, cycleLayoutMode] = useGlobalLayoutMode();
 
   const fetchDailySchedule = useCallback(async (forceBypass = false) => {
+    const cacheKey = `client_sched_v1_${selectedDay}`;
     setFetchError(false);
+    if (!forceBypass) {
+      const cached = clientCache.get<any[]>(cacheKey);
+      if (Array.isArray(cached) && cached.length > 0) {
+        setSchedule(cached);
+        setLoading(false);
+        setRefreshing(false);
+        return;
+      }
+    }
     if (forceBypass) setRefreshing(true);
     else setLoading(true);
     try {
@@ -135,6 +148,9 @@ export default function ScheduleView({ onBack, onAnimeClick, initialDay }: Sched
         onData: (arr) => {
           if (Array.isArray(arr)) {
             setSchedule(arr);
+            if (arr.length > 0) {
+              clientCache.set(cacheKey, arr, 6 * 60 * 60 * 1000);
+            }
             setLoading(false);
           }
         },
@@ -158,30 +174,45 @@ export default function ScheduleView({ onBack, onAnimeClick, initialDay }: Sched
     const dataMap: Record<string, any[]> = {};
     try {
       const ts = forceBypass ? `&_t=${Date.now()}` : '';
-      await Promise.all(
-        DAYS.map(async (day) => {
-          try {
-            const list = await cloudCatalogService.getBundleWithCloud<any[]>({
-              bundleId: `sched_${day.id}`,
-              kind: 'schedule',
-              freshTtlMs: 24 * 60 * 60 * 1000,
-              staleTtlMs: 7 * 24 * 60 * 60 * 1000,
-              forceRefresh: forceBypass,
-              countItems: (arr) => (Array.isArray(arr) ? arr.length : 0),
-              fetchLive: async () => {
-                const res = await fetch(`/api/anime/jikan-schedule?day=${day.id}${ts}`, {
-                  cache: forceBypass ? 'no-store' : 'default',
-                });
-                const json = await res.json();
-                return json.success && Array.isArray(json.data) ? json.data : null;
-              },
-            });
-            dataMap[day.id] = Array.isArray(list) ? list : [];
-          } catch {
-            dataMap[day.id] = [];
-          }
-        })
-      );
+      for (let i = 0; i < DAYS.length; i += 2) {
+        const chunk = DAYS.slice(i, i + 2);
+        await Promise.all(
+          chunk.map(async (day) => {
+            const cacheKey = `client_sched_v1_${day.id}`;
+            if (!forceBypass) {
+              const cached = clientCache.get<any[]>(cacheKey);
+              if (Array.isArray(cached) && cached.length > 0) {
+                dataMap[day.id] = cached;
+                return;
+              }
+            }
+            try {
+              const list = await cloudCatalogService.getBundleWithCloud<any[]>({
+                bundleId: `sched_${day.id}`,
+                kind: 'schedule',
+                freshTtlMs: 24 * 60 * 60 * 1000,
+                staleTtlMs: 7 * 24 * 60 * 60 * 1000,
+                forceRefresh: forceBypass,
+                countItems: (arr) => (Array.isArray(arr) ? arr.length : 0),
+                fetchLive: async () => {
+                  const res = await fetch(`/api/anime/jikan-schedule?day=${day.id}${ts}`, {
+                    cache: forceBypass ? 'no-store' : 'default',
+                  });
+                  const json = await res.json();
+                  return json.success && Array.isArray(json.data) ? json.data : null;
+                },
+              });
+              const resolved = Array.isArray(list) ? list : [];
+              if (resolved.length > 0) {
+                clientCache.set(cacheKey, resolved, 6 * 60 * 60 * 1000);
+              }
+              dataMap[day.id] = resolved;
+            } catch {
+              dataMap[day.id] = [];
+            }
+          }),
+        );
+      }
       setAllWeekData(dataMap);
     } catch (e) {
       console.error('Failed loading full week', e);
@@ -233,7 +264,7 @@ export default function ScheduleView({ onBack, onAnimeClick, initialDay }: Sched
       anime.images?.jpg?.large_image_url ||
       anime.images?.jpg?.image_url ||
       anime.posterUrl ||
-      'https://via.placeholder.com/200x300?text=Anime';
+      FALLBACK_POSTER_DATA_URL;
     const dayLabel = DAYS.find((d) => d.id === dayId)?.label || '';
     const score = anime.score && Number(anime.score) > 0 ? Number(anime.score).toFixed(1) : null;
     const shortType = getShortTypeCode(anime.type || 'TV');
@@ -271,7 +302,7 @@ export default function ScheduleView({ onBack, onAnimeClick, initialDay }: Sched
               className="w-full font-black text-sm sm:text-base text-white group-hover:text-blue-400 transition-colors line-clamp-1 leading-snug text-right"
               dir="auto"
             >
-              {cleanTitle}
+              <LongPressCopy text={cleanTitle}>{cleanTitle}</LongPressCopy>
             </h3>
 
             <div className="flex flex-wrap items-center justify-start gap-1.5 text-[10px] sm:text-xs font-bold">
@@ -365,12 +396,12 @@ export default function ScheduleView({ onBack, onAnimeClick, initialDay }: Sched
 
         <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 via-black/70 to-transparent pt-8 pb-2 px-2 pointer-events-none flex flex-col justify-end">
           <h3
-            className={`font-black ${
+            className={`pointer-events-auto font-black ${
               isLargeGrid ? 'text-xs sm:text-sm' : 'text-[10px] sm:text-xs'
             } text-white group-hover:text-blue-400 transition-colors line-clamp-2 text-center leading-tight drop-shadow`}
-            dir="ltr"
+            dir="auto"
           >
-            {cleanTitle}
+            <LongPressCopy text={cleanTitle}>{cleanTitle}</LongPressCopy>
           </h3>
         </div>
       </div>

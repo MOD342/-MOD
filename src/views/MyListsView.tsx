@@ -33,6 +33,7 @@ import {
 import { clientCache } from '../utils/clientCache';
 import { cleanAnimeTitle } from '../utils/animeTitleCleaner';
 import PullToRefresh from '../components/PullToRefresh';
+import { LongPressCopy } from '../components/LongPressCopy';
 import {
   useGlobalLayoutMode,
   LayoutModeToggleButton,
@@ -40,6 +41,7 @@ import {
   getShortTypeCode,
   getArabicSeasonLabel,
 } from '../utils/useViewLayoutMode';
+import { FALLBACK_POSTER_DATA_URL } from '../utils/posterFallback';
 
 interface MyListsViewProps {
   onAnimeClick: (id: string) => void;
@@ -523,12 +525,14 @@ export default function MyListsView({ onAnimeClick, onMangaClick }: MyListsViewP
                       >
                         <div className="w-24 sm:w-28 shrink-0 bg-neutral-950 relative border-l border-white/10 overflow-hidden">
                           <img
-                            src={anime.posterUrl || 'https://via.placeholder.com/300x400?text=Media'}
+                            src={anime.posterUrl || FALLBACK_POSTER_DATA_URL}
                             alt={cleanTitle}
                             loading="lazy"
                             referrerPolicy="no-referrer"
                             onError={(e) => {
-                              e.currentTarget.src = 'https://via.placeholder.com/300x400?text=Media';
+                              if (e.currentTarget.src !== FALLBACK_POSTER_DATA_URL) {
+                                e.currentTarget.src = FALLBACK_POSTER_DATA_URL;
+                              }
                             }}
                             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                           />
@@ -539,7 +543,7 @@ export default function MyListsView({ onAnimeClick, onMangaClick }: MyListsViewP
                             className="w-full font-black text-sm sm:text-base text-white group-hover:text-purple-400 transition-colors line-clamp-1 leading-snug text-right"
                             dir="auto"
                           >
-                            {cleanTitle}
+                            <LongPressCopy text={cleanTitle}>{cleanTitle}</LongPressCopy>
                           </h3>
 
                           <div className="flex flex-wrap items-center justify-start gap-1.5 text-[10px] sm:text-xs font-bold">
@@ -598,12 +602,14 @@ export default function MyListsView({ onAnimeClick, onMangaClick }: MyListsViewP
                       className="theme-keep-dark cursor-pointer group relative aspect-[3/4] overflow-hidden bg-neutral-950 border-b border-l border-white/10"
                     >
                       <img
-                        src={anime.posterUrl || 'https://via.placeholder.com/300x400?text=Media'}
+                        src={anime.posterUrl || FALLBACK_POSTER_DATA_URL}
                         alt={cleanTitle}
                         loading="lazy"
                         referrerPolicy="no-referrer"
                         onError={(e) => {
-                          e.currentTarget.src = 'https://via.placeholder.com/300x400?text=Media';
+                          if (e.currentTarget.src !== FALLBACK_POSTER_DATA_URL) {
+                            e.currentTarget.src = FALLBACK_POSTER_DATA_URL;
+                          }
                         }}
                         className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                       />
@@ -637,12 +643,12 @@ export default function MyListsView({ onAnimeClick, onMangaClick }: MyListsViewP
                           </span>
                         )}
                         <h3
-                          className={`font-black ${
+                          className={`pointer-events-auto font-black ${
                             isLargeGrid ? 'text-xs sm:text-sm' : 'text-[10px] sm:text-xs'
                           } text-white group-hover:text-purple-400 transition-colors line-clamp-2 text-center leading-tight drop-shadow`}
-                          dir="ltr"
+                          dir="auto"
                         >
-                          {cleanTitle}
+                          <LongPressCopy text={cleanTitle}>{cleanTitle}</LongPressCopy>
                         </h3>
                       </div>
                     </div>

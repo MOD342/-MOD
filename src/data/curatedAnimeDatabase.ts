@@ -20,23 +20,13 @@ export interface CuratedAnime {
 // وضع الاتصال المباشر الحي 100%: تم تفريغ وحذف جميع قوائم الأنمي الثابتة القديمة من المشروع
 export const CURATED_ANIME_LIST: CuratedAnime[] = [];
 
-export const CURATED_GENRES_LIST = [
-  { mal_id: 1, name: "Action", nameAr: "أكشن" },
-  { mal_id: 2, name: "Adventure", nameAr: "مغامرات" },
-  { mal_id: 4, name: "Comedy", nameAr: "كوميدي" },
-  { mal_id: 8, name: "Drama", nameAr: "دراما" },
-  { mal_id: 10, name: "Fantasy", nameAr: "فانتازيا" },
-  { mal_id: 7, name: "Mystery", nameAr: "غموض" },
-  { mal_id: 22, name: "Romance", nameAr: "رومانسي" },
-  { mal_id: 24, name: "Sci-Fi", nameAr: "خيال علمي" },
-  { mal_id: 36, name: "Slice of Life", nameAr: "شريحة من الحياة" },
-  { mal_id: 30, name: "Sports", nameAr: "رياضي" },
-  { mal_id: 37, name: "Supernatural", nameAr: "خوارق" },
-  { mal_id: 41, name: "Suspense", nameAr: "إثارة" },
-  { mal_id: 62, name: "Isekai", nameAr: "إيسيكاي" },
-  { mal_id: 17, name: "Martial Arts", nameAr: "فنون قتالية" },
-  { mal_id: 13, name: "Historical", nameAr: "تاريخي" }
-];
+import { GENRE_TAXONOMY } from "../utils/genreTaxonomy";
+
+export const CURATED_GENRES_LIST = GENRE_TAXONOMY.map((g) => ({
+  mal_id: g.mal_id,
+  name: g.name,
+  nameAr: g.nameAr,
+}));
 
 export function getCuratedRecentEpisodes(): any[] {
   return CURATED_ANIME_LIST.map((anime, index) => ({

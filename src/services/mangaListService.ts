@@ -204,21 +204,166 @@ export const mangaListService = {
     notifyMangaLibraryUpdated(userId, mangaId);
   },
 
-  getReadingHistory: (userId?: string | null): ReadingHistoryItem[] => {
+  getReadingClearedAt: (userId?: string | null, cloudPrivacy?: any): number => {
+    const uid = userId || 'guest';
+    let localVal = 0;
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localVal = Number(localStorage.getItem(`local_reading_history_cleared_at_${uid}`) || 0) || 0;
+      }
+    } catch {}
+    const cloudVal = Number(cloudPrivacy?.readingHistoryClearedAt || 0) || 0;
+    return Math.max(localVal, cloudVal);
+  },
+
+  getReadingDismissedMap: (userId?: string | null, cloudPrivacy?: any): Record<string, number> => {
+    const uid = userId || 'guest';
+    const localMap = readLocalJson<Record<string, number>>(`local_reading_history_dismissed_${uid}`, {});
+    const cloudMap =
+      cloudPrivacy?.readingDismissedMap && typeof cloudPrivacy.readingDismissedMap === 'object'
+        ? (cloudPrivacy.readingDismissedMap as Record<string, number>)
+        : {};
+    const merged: Record<string, number> = {};
+    const keys = new Set([
+      ...Object.keys(cloudMap),
+      ...(localMap && typeof localMap === 'object' ? Object.keys(localMap) : []),
+    ]);
+    keys.forEach((k) => {
+      const v = Math.max(Number(cloudMap[k] || 0) || 0, Number(localMap?.[k] || 0) || 0);
+      if (v > 0) merged[k] = v;
+    });
+    return merged;
+  },
+
+  getReadingHistory: (userId?: string | null, cloudPrivacy?: any): ReadingHistoryItem[] => {
     const uid = userId || 'guest';
     const raw = readLocalJson<ReadingHistoryItem[]>(`local_reading_history_${uid}`, []);
     if (!Array.isArray(raw)) return [];
-    return raw.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).slice(0, 12);
+    const clearedAt = mangaListService.getReadingClearedAt(userId, cloudPrivacy);
+    const dismissedMap = mangaListService.getReadingDismissedMap(userId, cloudPrivacy);
+    return raw
+      .filter((item) => {
+        const ts = Number(item?.updatedAt) || 0;
+        if (clearedAt > 0 && ts <= clearedAt) return false;
+        const dTs = Number(dismissedMap[String(item?.mangaId)] || 0);
+        if (dTs > 0 && ts <= dTs) return false;
+        return true;
+      })
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+      .slice(0, 12);
   },
 
   recordReadingHistory: (userId: string | null | undefined, item: ReadingHistoryItem) => {
     const uid = userId || 'guest';
+    const clearedAt = mangaListService.getReadingClearedAt(userId);
+    const nowTs = Math.max(Date.now(), clearedAt + 1000);
     const current = readLocalJson<ReadingHistoryItem[]>(`local_reading_history_${uid}`, []);
     const filtered = (Array.isArray(current) ? current : []).filter(
       (x) => String(x.mangaId) !== String(item.mangaId),
     );
-    const next = [{ ...item, updatedAt: Date.now() }, ...filtered].slice(0, 16);
+    const next = [{ ...item, updatedAt: nowTs }, ...filtered].slice(0, 16);
     writeLocalJson(`local_reading_history_${uid}`, next);
+
+    const dismissedKey = `local_reading_history_dismissed_${uid}`;
+    const dismissed = readLocalJson<Record<string, number>>(dismissedKey, {});
+    const idStr = String(item.mangaId);
+    if (dismissed && Object.prototype.hasOwnProperty.call(dismissed, idStr)) {
+      delete dismissed[idStr];
+      writeLocalJson(dismissedKey, dismissed);
+      if (userId && isAuthenticatedOwner(uid)) {
+        updateDoc(doc(db, 'users', uid), {
+          'privacySettings.readingDismissedMap': dismissed,
+        }).catch(() => {});
+      }
+    }
+
+    if (typeof window !== 'undefined') {
+      try {
+        window.dispatchEvent(new CustomEvent('manga-history-updated'));
+      } catch {}
+    }
+  },
+
+  removeReadingHistoryItem: (
+    userId: string | null | undefined,
+    mangaId: string,
+    itemUpdatedAt?: number,
+    cloudPrivacy?: any,
+  ) => {
+    const uid = userId || 'guest';
+    const dismissTs = Math.max(Date.now(), Number(itemUpdatedAt) || 0) + 1000;
+    const idStr = String(mangaId);
+
+    const removeForScope = (scopeId: string) => {
+      const hKey = `local_reading_history_${scopeId}`;
+      const dKey = `local_reading_history_dismissed_${scopeId}`;
+      const current = readLocalJson<ReadingHistoryItem[]>(hKey, []);
+      if (Array.isArray(current)) {
+        writeLocalJson(
+          hKey,
+          current.filter((h) => String(h.mangaId) !== idStr),
+        );
+      }
+      const dMap = readLocalJson<Record<string, number>>(dKey, {});
+      const nextMap = { ...(dMap && typeof dMap === 'object' ? dMap : {}), [idStr]: dismissTs };
+      writeLocalJson(dKey, nextMap);
+      return nextMap;
+    };
+
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const nextMap = removeForScope(uid);
+        if (uid !== 'guest') {
+          removeForScope('guest');
+        }
+        if (userId && isAuthenticatedOwner(uid)) {
+          const mergedCloudMap = {
+            ...(cloudPrivacy?.readingDismissedMap && typeof cloudPrivacy.readingDismissedMap === 'object'
+              ? cloudPrivacy.readingDismissedMap
+              : {}),
+            ...nextMap,
+          };
+          updateDoc(doc(db, 'users', uid), {
+            'privacySettings.readingDismissedMap': mergedCloudMap,
+          }).catch(() => {});
+        }
+      }
+    } catch {}
+
+    if (typeof window !== 'undefined') {
+      try {
+        window.dispatchEvent(new CustomEvent('manga-history-updated'));
+      } catch {}
+    }
+  },
+
+  clearReadingHistory: (
+    userId: string | null | undefined,
+    currentItems: ReadingHistoryItem[] = [],
+  ) => {
+    const uid = userId || 'guest';
+    const maxItemTs = currentItems.reduce((mx, it) => Math.max(mx, Number(it?.updatedAt) || 0), 0);
+    const prevCleared = mangaListService.getReadingClearedAt(userId);
+    const clearedAt = Math.max(Date.now(), maxItemTs, prevCleared) + 1000;
+
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem(`local_reading_history_${uid}`);
+        localStorage.removeItem('local_reading_history_guest');
+        localStorage.setItem(`local_reading_history_cleared_at_${uid}`, String(clearedAt));
+        localStorage.setItem('local_reading_history_cleared_at_guest', String(clearedAt));
+        localStorage.removeItem(`local_reading_history_dismissed_${uid}`);
+        localStorage.removeItem('local_reading_history_dismissed_guest');
+
+        if (userId && isAuthenticatedOwner(uid)) {
+          updateDoc(doc(db, 'users', uid), {
+            'privacySettings.readingHistoryClearedAt': clearedAt,
+            'privacySettings.readingDismissedMap': {},
+          }).catch(() => {});
+        }
+      }
+    } catch {}
+
     if (typeof window !== 'undefined') {
       try {
         window.dispatchEvent(new CustomEvent('manga-history-updated'));

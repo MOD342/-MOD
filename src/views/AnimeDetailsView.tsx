@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Play, Star, List, MessageCircle, Heart, Share2, Info, ChevronRight, Loader2, Users, Youtube, X, Plus, LogIn, ThumbsUp, ThumbsDown, Copy, Reply, Flag, EyeOff, Eye, Edit2, Trash2, ShieldCheck, CheckSquare, PlayCircle, Trophy, Send, Flame, Download, Lightbulb, Home, RefreshCw, AlertCircle, BookOpen } from 'lucide-react';
+import { Play, Star, List, MessageCircle, Heart, Share2, Info, ChevronRight, Loader2, Users, Youtube, X, Plus, LogIn, ThumbsUp, ThumbsDown, Copy, Reply, Flag, EyeOff, Eye, Edit2, Trash2, ShieldCheck, CheckSquare, CheckCircle2, PlayCircle, Trophy, Send, Flame, Download, Lightbulb, Home, RefreshCw, AlertCircle, BookOpen } from 'lucide-react';
 import { Search } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { db } from '../firebase';
@@ -17,6 +17,7 @@ import ViewportPortal from '../components/ViewportPortal';
 import PullToRefresh from '../components/PullToRefresh';
 import BatchDownloadModal from '../components/BatchDownloadModal';
 import { useDeviceDisplay } from '../hooks/useDeviceDisplay';
+import { FALLBACK_POSTER_DATA_URL } from '../utils/posterFallback';
 
 function RecommendationItem({ rec, user, isMod, onDelete }: any) {
   const [likes, setLikes] = useState(rec.likes || 0);
@@ -167,6 +168,17 @@ function toArabicGenre(genre: string): string {
   return GENRES_AR_MAP[trimmed.toLowerCase()] || trimmed;
 }
 
+function needsSynopsisArabicTranslation(text?: string | null): boolean {
+  if (!text || typeof text !== 'string') return false;
+  const trimmed = text.trim();
+  if (trimmed.length < 15) return false;
+  const arabicChars = (trimmed.match(/[\u0600-\u06FF]/g) || []).length;
+  const latinWords = trimmed.match(/[A-Za-z]{3,}/g) || [];
+  if (latinWords.length < 4) return false;
+  const latinChars = (trimmed.match(/[A-Za-z]/g) || []).length;
+  return (arabicChars < 20 || latinWords.length >= 12) && arabicChars < latinChars * 0.45;
+}
+
 const RELATION_TYPES_AR: Record<string, string> = {
   'Sequel': 'تكملة',
   'Prequel': 'قصة سابقة',
@@ -254,6 +266,15 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
   const [selectedRecAnime, setSelectedRecAnime] = useState<any>(null);
   const [recReason, setRecReason] = useState('');
   const [submittingRec, setSubmittingRec] = useState(false);
+  const [recFeedback, setRecFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [confirmDeleteRecId, setConfirmDeleteRecId] = useState<string | null>(null);
+  const [deletingRec, setDeletingRec] = useState(false);
+
+  useEffect(() => {
+    if (!recFeedback) return;
+    const t = setTimeout(() => setRecFeedback(null), 4500);
+    return () => clearTimeout(t);
+  }, [recFeedback]);
 
   useEffect(() => {
     const q = recSearchQuery.trim();
@@ -317,6 +338,7 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
 
   const fetchGenerationRef = React.useRef(0);
   const fetchAbortRef = React.useRef<AbortController | null>(null);
+  const fetchedPicturesKeyRef = React.useRef<string | null>(null);
 
   const fetchDetails = useCallback(async (forceBypass = false) => {
     if (!id) return;
@@ -359,7 +381,7 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
             }
             setAnime(data);
             setLoadError(false);
-            if (data?.description && /[a-zA-Z]{10,}/.test(data.description)) {
+            if (needsSynopsisArabicTranslation(data?.description)) {
               fetch('/api/anime/translate-synopsis', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -424,7 +446,7 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
         setLoading(false);
         setLoadError(false);
         clientCache.set(`client_anime_details_v8_${id}`, data, 12 * 60 * 60 * 1000);
-        if (data?.description && /[a-zA-Z]{10,}/.test(data.description)) {
+        if (needsSynopsisArabicTranslation(data?.description)) {
           fetch('/api/anime/translate-synopsis', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -504,18 +526,24 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
     }
 
     if (activeTab === 'photos') {
-      if (basePics.length === 0) setLoadingPictures(true);
       const targetPicId =
         anime.malId ||
         (/^\d+$/.test(String(anime._id || '')) ? anime._id : '') ||
         (/^\d+$/.test(String(id || '')) ? id : '') ||
         anime._id ||
         id;
+      const picKey = String(targetPicId || '');
+      if (!picKey || fetchedPicturesKeyRef.current === picKey || basePics.length >= 6) {
+        return;
+      }
+      fetchedPicturesKeyRef.current = picKey;
+
+      if (basePics.length === 0) setLoadingPictures(true);
       const qs = new URLSearchParams();
       if (anime.malId) qs.set('malId', String(anime.malId));
       if (anime.englishTitle || anime.title) qs.set('title', String(anime.englishTitle || anime.title));
 
-      fetch(`/api/anime/pictures/${encodeURIComponent(String(targetPicId))}?${qs.toString()}`)
+      fetch(`/api/anime/pictures/${encodeURIComponent(picKey)}?${qs.toString()}`)
         .then(res => res.json())
         .then(data => {
           if (data.success && Array.isArray(data.pictures) && data.pictures.length > 0) {
@@ -966,22 +994,90 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
     }
   };
 
+  const normalizeRecTitle = (title?: string | null) =>
+    String(title || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const isAnimeAlreadyRecommended = (targetIdRaw: any, targetTitleRaw?: string | null): boolean => {
+    const tId = String(targetIdRaw || '').trim();
+    const tNorm = normalizeRecTitle(targetTitleRaw);
+    const currentId = String(anime?._id || id || '').trim();
+    const currentNorm = normalizeRecTitle(anime?.title);
+
+    if ((tId && currentId && tId === currentId) || (tNorm && currentNorm && tNorm === currentNorm)) {
+      return true;
+    }
+
+    for (const r of recommendations) {
+      const isSource = String(r.animeId) === currentId;
+      const otherId = String(isSource ? r.targetAnimeId : r.animeId).trim();
+      const otherTitleNorm = normalizeRecTitle(isSource ? r.targetAnimeTitle : r.animeTitle);
+      if ((tId && otherId === tId) || (tNorm && otherTitleNorm && otherTitleNorm === tNorm)) {
+        return true;
+      }
+    }
+
+    for (const jr of anime?.jikanRecommendations || []) {
+      const jrId = String(jr?.id || '').trim();
+      const jrNorm = normalizeRecTitle(jr?.title);
+      if ((tId && jrId && jrId === tId) || (tNorm && jrNorm && jrNorm === tNorm)) {
+        return true;
+      }
+    }
+
+    return false;
+  };
+
   const handleAddRec = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user || !anime || !selectedRecAnime || !recReason.trim()) return;
+    const targetId = selectedRecAnime._id || selectedRecAnime.id;
+
+    if (isAnimeAlreadyRecommended(targetId, selectedRecAnime.title)) {
+      setRecFeedback({
+        type: 'error',
+        message: 'هذه التوصية موجودة بالفعل لهذا الأنمي، تم تجاهل الإضافة المكررة.',
+      });
+      setShowAddRecModal(false);
+      setRecSearchQuery('');
+      setSelectedRecAnime(null);
+      setRecReason('');
+      return;
+    }
+
     setSubmittingRec(true);
     try {
-      await addRecommendation({
+      const result = await addRecommendation({
         animeId: anime._id || id,
         animeTitle: anime.title,
         animePosterUrl: anime.posterUrl,
-        targetAnimeId: selectedRecAnime._id || selectedRecAnime.id,
+        targetAnimeId: targetId,
         targetAnimeTitle: selectedRecAnime.title,
         targetAnimePosterUrl: selectedRecAnime.posterUrl,
         reason: recReason,
         userId: user.id,
       });
-      alert('تم تقديم توصيتك بنجاح! وسوف تظهر للجميع على الصفحة فور مراجعتها واعتمادها من قبل الإدارة. ✨');
+
+      if (result && result.added === false) {
+        setRecFeedback({
+          type: 'error',
+          message: 'هذه التوصية موجودة بالفعل أو قيد المراجعة، تم تجاهل التكرار.',
+        });
+        setShowAddRecModal(false);
+        setRecSearchQuery('');
+        setSelectedRecAnime(null);
+        setRecReason('');
+        return;
+      }
+
+      setRecFeedback({
+        type: 'success',
+        message: 'تم تقديم توصيتك بنجاح! ستظهر على الصفحة فور مراجعتها واعتمادها من الإدارة. ✨',
+      });
       // Create global notification for recommendation (only if admin or owner)
       if (userRole === 'admin' || userRole === 'owner' || isStaffEmail(user?.email)) {
         await notificationsService.createGlobalNotification({
@@ -998,6 +1094,10 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
       setRecReason('');
     } catch (error) {
       console.error(error);
+      setRecFeedback({
+        type: 'error',
+        message: 'تعذر إرسال التوصية حالياً، يرجى المحاولة مرة أخرى.',
+      });
     } finally {
       setSubmittingRec(false);
     }
@@ -1005,10 +1105,29 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
 
   // Removed handleAddComment and parseMentionsAndNotify
 
-  const handleDeleteRec = async (recId: string, trueRecId: string) => {
-    if (window.confirm("هل أنت متأكد من حذف هذه التوصية؟")) {
-      await moderationService.deleteRecommendation(trueRecId);
-      setRecommendations(recommendations.filter(r => r.id !== trueRecId));
+  const handleDeleteRec = (_recId: string, trueRecId: string) => {
+    setConfirmDeleteRecId(trueRecId);
+  };
+
+  const executeDeleteRec = async () => {
+    if (!confirmDeleteRecId) return;
+    setDeletingRec(true);
+    try {
+      await moderationService.deleteRecommendation(confirmDeleteRecId);
+      setRecommendations(prev => prev.filter(r => r.id !== confirmDeleteRecId));
+      setConfirmDeleteRecId(null);
+      setRecFeedback({
+        type: 'success',
+        message: 'تم حذف التوصية بنجاح.',
+      });
+    } catch (error) {
+      console.error(error);
+      setRecFeedback({
+        type: 'error',
+        message: 'حدث خطأ أثناء حذف التوصية.',
+      });
+    } finally {
+      setDeletingRec(false);
     }
   };
 
@@ -1129,13 +1248,18 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
       </div>
 
       {/* Header Image */}
-      <div className={`theme-keep-dark relative w-full bg-[#121212] flex-shrink-0 ${
-        display.isCoverScreen
-          ? 'h-[48vh] min-h-[300px]'
-          : display.isWideOrUnfolded
-          ? 'h-[44vh] md:h-[48vh] max-h-[520px]'
-          : 'h-[58vh] min-h-[360px]'
-      }`}>
+      <div
+        onClick={() => {
+          if (anime.posterUrl) setSelectedPhoto(anime.posterUrl);
+        }}
+        className={`theme-keep-dark relative w-full bg-[#121212] flex-shrink-0 cursor-zoom-in ${
+          display.isCoverScreen
+            ? 'h-[48vh] min-h-[300px]'
+            : display.isWideOrUnfolded
+            ? 'h-[44vh] md:h-[48vh] max-h-[520px]'
+            : 'h-[58vh] min-h-[360px]'
+        }`}
+      >
         <img
           src={anime.posterUrl || "https://images.unsplash.com/photo-1614583225154-5fc2d153c391?q=80&w=1000&auto=format&fit=crop"}
           onError={(e) => {
@@ -1144,32 +1268,48 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
               target.src = target.src.replace('-poster.', '-thumbnail.');
             }
           }}
-          alt="cover"
+          alt={anime.title}
           className="w-full h-full object-cover"
         />
-        <div className="absolute inset-0 bg-gradient-to-t from-black via-black/45 to-transparent" />
+        <div className="absolute inset-0 bg-gradient-to-t from-black via-black/45 to-transparent pointer-events-none" />
 
         {/* Info Overlay */}
-        <div className="absolute bottom-5 right-4 left-4 max-w-6xl mx-auto z-30 flex flex-col items-center md:items-start text-center md:text-right gap-3 md:flex-row md:gap-6">
+        <div className="absolute bottom-5 right-4 left-4 max-w-6xl mx-auto z-30 flex flex-col items-center md:items-start text-center md:text-right gap-3 md:flex-row md:gap-6 pointer-events-none">
           {display.isWideOrUnfolded && (
-            <div className="hidden md:block w-32 lg:w-36 aspect-[3/4] rounded-2xl overflow-hidden border border-white/15 shadow-2xl shrink-0 bg-neutral-900">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (anime.posterUrl) setSelectedPhoto(anime.posterUrl);
+              }}
+              aria-label="تكبير صورة الأنمي"
+              className="hidden md:block w-32 lg:w-36 aspect-[3/4] rounded-2xl overflow-hidden border border-white/15 shadow-2xl shrink-0 bg-neutral-900 pointer-events-auto cursor-zoom-in hover:border-white/40 transition"
+            >
               <img
                 src={anime.posterUrl}
                 alt={anime.title}
                 referrerPolicy="no-referrer"
                 className="w-full h-full object-cover"
               />
-            </div>
+            </button>
           )}
           <div className="space-y-2 flex-1 min-w-0">
-            <h1 className="text-xl sm:text-2xl md:text-3xl lg:text-4xl font-black text-white leading-tight drop-shadow-2xl">
+            <h1
+              onClick={(e) => e.stopPropagation()}
+              className="pointer-events-auto text-xl sm:text-2xl md:text-3xl lg:text-4xl font-black text-white leading-tight drop-shadow-2xl"
+            >
               <LongPressCopy text={anime.title}>
                 {anime.title}
               </LongPressCopy>
             </h1>
             {anime.englishTitle && anime.englishTitle !== anime.title && (
-              <p className="text-[11px] sm:text-xs text-neutral-300 font-semibold tracking-wider truncate">
-                {anime.englishTitle}
+              <p
+                onClick={(e) => e.stopPropagation()}
+                className="pointer-events-auto text-[11px] sm:text-xs text-neutral-300 font-semibold tracking-wider truncate"
+              >
+                <LongPressCopy text={anime.englishTitle}>
+                  {anime.englishTitle}
+                </LongPressCopy>
               </p>
             )}
             <div className="flex flex-row justify-center md:justify-start items-center gap-2 flex-wrap text-xs font-bold">
@@ -1300,9 +1440,19 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
                 <p className="text-neutral-300 text-xs leading-relaxed">{anime.description}</p>
                 <div className="flex flex-wrap gap-1.5">
                   {anime.genres?.map((g: string, idx: number) => (
-                    <span key={`${g}-${idx}`} className="text-[10px] bg-[#121212] border border-neutral-800 px-2.5 py-1 rounded-full text-neutral-300 font-bold">
+                    <button
+                      key={`${g}-${idx}`}
+                      type="button"
+                      onClick={() =>
+                        onNavigate?.('watch', {
+                          initialGenre: g,
+                          initialMediaKind: 'anime',
+                        })
+                      }
+                      className="min-h-[32px] text-[11px] bg-[#121212] border border-neutral-800 hover:border-purple-500/60 hover:text-purple-300 px-3 py-1 rounded-full text-neutral-300 font-bold transition cursor-pointer"
+                    >
                       {toArabicGenre(g)}
-                    </span>
+                    </button>
                   ))}
                 </div>
               </div>
@@ -1379,7 +1529,7 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
                 const currentNormTitle = normalizeTitleForCompare(anime.title || '');
                 const currentNormEng = normalizeTitleForCompare(anime.englishTitle || '');
 
-                // فلترة الأعمال المرتبطة لاستبعاد المانجا والشخصيات والكروس أوفر والأنميات الغريبة تماماً
+                // فلترة الأعمال المرتبطة لاستبعاد المانجا والشخصيات والكروس أوفر التجاري فقط دون حذف أجزاء السلسلة ذات العناوين المختلفة
                 const relatedItems = (anime.related || []).filter((rel: any) => {
                   const t = String(rel.type || rel.format || '').toLowerCase();
                   if (excludedTypes.includes(t)) return false;
@@ -1397,24 +1547,9 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
                     return false;
                   }
 
-                  // إذا لم تكن العلاقة موسم سابق أو لاحق مباشر، يجب أن تشترك في الاسم الأساسي للأنمي لمنع ظهور أنميات أخرى مثل Dragon Ball أو Sazae-san
-                  const isDirectTimeline =
-                    relTypeLower === 'prequel' ||
-                    relTypeLower === 'sequel' ||
-                    relTypeLower === 'parent story' ||
-                    relTypeLower === 'قصة سابقة' ||
-                    relTypeLower === 'تكملة' ||
-                    relTypeLower === 'القصة الرئيسية';
-
-                  if (franchiseKeywords.length > 0 && !isDirectTimeline) {
+                  // استبعاد أنمي شهير غير مرتبط تماماً إذا كانت العلاقة غير مباشرة ولا تشترك في كلمات السلسلة
+                  if (franchiseKeywords.length > 0 && (relTypeLower === 'other' || relTypeLower === 'إضافي')) {
                     const matchesFranchise = franchiseKeywords.some(kw => relFullText.includes(kw));
-                    if (!matchesFranchise) return false;
-                  }
-
-                  // حتى لو كانت العلاقة من الدرجة الثانية، نتحقق من انتمائها لنفس السلسلة
-                  if (franchiseKeywords.length > 0 && isDirectTimeline) {
-                    const matchesFranchise = franchiseKeywords.some(kw => relFullText.includes(kw));
-                    // نسمح بـ Prequel/Sequel فقط إذا كان يشترك في كلمة مفتاحية أو لم يكن من أنمي مشهور آخر غير مرتبط
                     const unrelatedFamous = /dragon ball|sazae|heidi|astro boy|kochikame|toriko|kiki|conan|lupin|gintama|naruto|bleach/i;
                     if (!matchesFranchise && unrelatedFamous.test(relFullText)) {
                       return false;
@@ -1447,11 +1582,13 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
                 const seenIds = new Set<string>();
                 if (currentMalId) seenIds.add(currentMalId);
                 if (currentId) seenIds.add(currentId);
+                if (anime.anilistId) seenIds.add(String(anime.anilistId));
 
                 const rawCombined: any[] = [];
                 for (const item of relatedItems) {
-                  const key = String(item.mal_id || item.name);
-                  if (seenIds.has(key)) continue;
+                  const key = String(item.mal_id || item.anilistId || item.name);
+                  const altKey = item.anilistId ? String(item.anilistId) : '';
+                  if (seenIds.has(key) || (altKey && seenIds.has(altKey))) continue;
 
                   const itemNorm = normalizeTitleForCompare(item.name || '');
                   // استبعاد البطاقة إذا كانت تطابق نفس الأنمي المفتوح ونفس النوع
@@ -1465,6 +1602,7 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
                   }
 
                   seenIds.add(key);
+                  if (altKey) seenIds.add(altKey);
                   rawCombined.push({ ...item });
                 }
 
@@ -1624,20 +1762,34 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
               </div>
               
               <div className="flex overflow-x-auto hide-scrollbar gap-3 pb-2">
-                {[
-                  ...recommendations.map(r => {
-                    const isSource = String(r.animeId) === String(anime._id);
-                    return {
-                      title: isSource ? r.targetAnimeTitle : (r.animeTitle || 'أنمي'),
-                      reason: r.reason,
-                      id: isSource ? r.targetAnimeId : r.animeId,
-                      trueId: r.id,
-                      isUser: true,
-                      posterUrl: isSource ? (r.targetAnimePosterUrl || null) : (r.animePosterUrl || null)
-                    };
-                  }),
-                  ...(anime.jikanRecommendations || []).map((jr: any) => ({ title: jr.title, posterUrl: jr.posterUrl, id: jr.id, trueId: null, isUser: false }))
-                ].map((rec, i) => (
+                {(() => {
+                  const combined = [
+                    ...recommendations.map(r => {
+                      const isSource = String(r.animeId) === String(anime._id);
+                      return {
+                        title: isSource ? r.targetAnimeTitle : (r.animeTitle || 'أنمي'),
+                        reason: r.reason,
+                        id: isSource ? r.targetAnimeId : r.animeId,
+                        trueId: r.id,
+                        isUser: true,
+                        posterUrl: isSource ? (r.targetAnimePosterUrl || null) : (r.animePosterUrl || null)
+                      };
+                    }),
+                    ...(anime.jikanRecommendations || []).map((jr: any) => ({ title: jr.title, posterUrl: jr.posterUrl, id: jr.id, trueId: null, isUser: false }))
+                  ];
+                  const seenIds = new Set<string>();
+                  const seenTitles = new Set<string>();
+                  return combined.filter((item) => {
+                    const idKey = String(item.id || '').trim();
+                    const titleKey = normalizeRecTitle(item.title);
+                    if ((idKey && seenIds.has(idKey)) || (titleKey && seenTitles.has(titleKey))) {
+                      return false;
+                    }
+                    if (idKey) seenIds.add(idKey);
+                    if (titleKey) seenTitles.add(titleKey);
+                    return true;
+                  });
+                })().map((rec, i) => (
                   <div 
                     key={i} 
                     onClick={() => { if (onAnimeClick && rec.id) onAnimeClick(rec.id.toString()); }}
@@ -1685,7 +1837,16 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
                 {anime.characters.map((char: any, idx: number) => (
                   <div key={`${char.id}-${idx}`} className="bg-[#121212] flex justify-between items-stretch rounded-xl overflow-hidden border border-neutral-800 shadow-sm h-16 relative group hover:border-[#FF1744] transition-colors">
                     <div className="flex gap-2 w-1/2 overflow-hidden">
-                       <img src={char.imageUrl || "https://via.placeholder.com/100x150"} alt={char.name} className="w-12 h-16 object-cover shrink-0" />
+                       <img
+                         src={char.imageUrl || FALLBACK_POSTER_DATA_URL}
+                         alt={char.name}
+                         onError={(e) => {
+                           if (e.currentTarget.src !== FALLBACK_POSTER_DATA_URL) {
+                             e.currentTarget.src = FALLBACK_POSTER_DATA_URL;
+                           }
+                         }}
+                         className="w-12 h-16 object-cover shrink-0"
+                       />
                        <div className="flex flex-col py-1.5 justify-between min-w-0 pr-1">
                           <h4 className="text-[10px] md:text-[11px] font-bold text-white truncate">{char.name}</h4>
                           <span className="text-[9px] text-[#FF1744] font-bold">{char.role}</span>
@@ -1697,7 +1858,16 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
                             <h4 className="text-[10px] md:text-[11px] font-bold text-neutral-200 truncate w-full text-left">{char.voiceActor.name}</h4>
                             <span className="text-[8px] text-neutral-500 font-bold">مؤدي ياباني</span>
                          </div>
-                         <img src={char.voiceActor.imageUrl || "https://via.placeholder.com/100x150"} alt={char.voiceActor.name} className="w-12 h-16 object-cover shrink-0" />
+                         <img
+                           src={char.voiceActor.imageUrl || FALLBACK_POSTER_DATA_URL}
+                           alt={char.voiceActor.name}
+                           onError={(e) => {
+                             if (e.currentTarget.src !== FALLBACK_POSTER_DATA_URL) {
+                               e.currentTarget.src = FALLBACK_POSTER_DATA_URL;
+                             }
+                           }}
+                           className="w-12 h-16 object-cover shrink-0"
+                         />
                       </div>
                     )}
                   </div>
@@ -1879,21 +2049,28 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
           >
             <div 
               onClick={(e) => e.stopPropagation()} 
-              className="relative max-w-3xl w-full flex flex-col items-center gap-4 bg-transparent animate-fadeIn text-right"
+              className="relative max-w-3xl w-full flex flex-col items-center gap-3 bg-transparent animate-fadeIn text-right"
               dir="rtl"
             >
-              <button 
-                onClick={() => setSelectedPhoto(null)}
-                className="absolute -top-12 right-2 w-10 h-10 flex items-center justify-center rounded-xl bg-neutral-900 border border-neutral-800 text-neutral-400 hover:text-white hover:bg-red-500/10 hover:border-red-500/20 transition cursor-pointer z-50 shadow-md"
-              >
-                <X size={20} />
-              </button>
+              <div className="w-full flex items-center justify-between gap-3 px-1">
+                <span className="text-xs sm:text-sm font-bold text-neutral-200 truncate">
+                  {anime.title}
+                </span>
+                <button 
+                  type="button"
+                  onClick={() => setSelectedPhoto(null)}
+                  aria-label="إغلاق"
+                  className="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-xl bg-neutral-900 border border-neutral-800 text-neutral-300 hover:text-white hover:bg-red-500/10 hover:border-red-500/20 transition cursor-pointer shrink-0 shadow-md"
+                >
+                  <X size={20} />
+                </button>
+              </div>
 
-              <div className="w-full max-h-[80vh] flex items-center justify-center rounded-2xl overflow-hidden bg-neutral-950/75 border border-neutral-800/80 shadow-2xl relative select-none p-1">
+              <div className="w-full max-h-[75vh] flex items-center justify-center rounded-2xl overflow-hidden bg-neutral-950/75 border border-neutral-800/80 shadow-2xl relative select-none p-1">
                 <img 
                   src={selectedPhoto} 
                   alt="Magnified Anime" 
-                  className="max-h-[75vh] w-auto max-w-full rounded-xl object-contain pointer-events-none shadow-2xl"
+                  className="max-h-[72vh] w-auto max-w-full rounded-xl object-contain pointer-events-none shadow-2xl"
                   referrerPolicy="no-referrer"
                 />
               </div>
@@ -1999,31 +2176,45 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
                               <span>جاري البحث عن الأنمي...</span>
                             </div>
                           ) : recSearchResults.length > 0 ? (
-                            recSearchResults.map((res, sIdx) => (
-                              <button
-                                type="button"
-                                key={`${res._id || ''}-${sIdx}`} 
-                                onClick={() => {
-                                  setSelectedRecAnime(res);
-                                  setRecSearchResults([]);
-                                  setRecSearchQuery(res.title);
-                                }}
-                                className="w-full flex items-center gap-3 p-2.5 hover:bg-neutral-800/80 active:bg-neutral-800 cursor-pointer transition text-right"
-                              >
-                                <img
-                                  src={res.posterUrl}
-                                  alt={res.title}
-                                  className="w-9 h-12 object-cover rounded-lg shrink-0 bg-neutral-900 border border-neutral-800"
-                                  referrerPolicy="no-referrer"
-                                />
-                                <div className="min-w-0 flex-1">
-                                  <p className="text-xs font-bold text-white line-clamp-1">{res.title}</p>
-                                  {res.status && (
-                                    <span className="text-[10px] text-neutral-400 font-semibold">{res.status}</span>
-                                  )}
-                                </div>
-                              </button>
-                            ))
+                            recSearchResults.map((res, sIdx) => {
+                              const resId = res._id || res.id;
+                              const alreadyAdded = isAnimeAlreadyRecommended(resId, res.title);
+                              return (
+                                <button
+                                  type="button"
+                                  disabled={alreadyAdded}
+                                  key={`${res._id || ''}-${sIdx}`}
+                                  onClick={() => {
+                                    if (alreadyAdded) return;
+                                    setSelectedRecAnime(res);
+                                    setRecSearchResults([]);
+                                    setRecSearchQuery(res.title);
+                                  }}
+                                  className={`w-full flex items-center gap-3 p-2.5 transition text-right ${
+                                    alreadyAdded
+                                      ? 'opacity-50 cursor-not-allowed bg-neutral-900/50'
+                                      : 'hover:bg-neutral-800/80 active:bg-neutral-800 cursor-pointer'
+                                  }`}
+                                >
+                                  <img
+                                    src={res.posterUrl}
+                                    alt={res.title}
+                                    className="w-9 h-12 object-cover rounded-lg shrink-0 bg-neutral-900 border border-neutral-800"
+                                    referrerPolicy="no-referrer"
+                                  />
+                                  <div className="min-w-0 flex-1">
+                                    <p className="text-xs font-bold text-white line-clamp-1">{res.title}</p>
+                                    <div className="flex items-center gap-2 mt-0.5">
+                                      {alreadyAdded ? (
+                                        <span className="text-[10px] text-amber-400 font-bold">موصى به بالفعل</span>
+                                      ) : res.status ? (
+                                        <span className="text-[10px] text-neutral-400 font-semibold">{res.status}</span>
+                                      ) : null}
+                                    </div>
+                                  </div>
+                                </button>
+                              );
+                            })
                           ) : !searchingRecs ? (
                             <div className="py-5 text-center text-xs text-neutral-500 font-bold">
                               لم يتم العثور على نتائج مطابقة
@@ -2307,7 +2498,7 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
                             إثبات مشاهدة {anime?.title} {currentSeasonNumber > 1 ? `(الموسم ${currentSeasonNumber})` : ''} بالكامل
                           </span>
                         </div>
-                        <p className="text-sm leading-relaxed font-bold text-white" dangerouslySetInnerHTML={{ __html: quizData.question }}></p>
+                        <p className="text-sm leading-relaxed font-bold text-white">{String(quizData.question || '').replace(/<[^>]*>/g, '')}</p>
                       </div>
                       <div className="space-y-2">
                         {quizData.options.map((opt: string, idx: number) => (
@@ -2355,7 +2546,93 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
             </div>
           </motion.div>
         )}
+        {confirmDeleteRecId && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => !deletingRec && setConfirmDeleteRecId(null)}
+            style={{
+              height: 'var(--vv-height, 100dvh)',
+              paddingTop: 'calc(var(--safe-top, 0px) + 1rem)',
+              paddingBottom: 'calc(var(--safe-bottom, 0px) + 1rem)',
+            }}
+            className="fixed inset-0 bg-black/85 z-[160] flex items-center justify-center p-4 backdrop-blur-sm"
+          >
+            <motion.div
+              initial={{ scale: 0.92, y: 12 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.92, y: 12 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-xs bg-[#16161b] border border-neutral-800 rounded-2xl p-5 shadow-2xl text-right space-y-4"
+            >
+              <div className="flex items-center gap-2.5 text-red-400">
+                <div className="w-9 h-9 rounded-xl bg-red-500/15 border border-red-500/30 flex items-center justify-center shrink-0">
+                  <Trash2 size={18} />
+                </div>
+                <h3 className="text-sm font-black text-white">حذف التوصية</h3>
+              </div>
+              <p className="text-xs text-neutral-300 leading-relaxed">
+                هل أنت متأكد من رغبتك في حذف هذه التوصية نهائياً؟
+              </p>
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  type="button"
+                  disabled={deletingRec}
+                  onClick={executeDeleteRec}
+                  className="flex-1 py-2.5 px-3 rounded-xl bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white text-xs font-black transition flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  {deletingRec ? <Loader2 size={14} className="animate-spin" /> : 'حذف التوصية'}
+                </button>
+                <button
+                  type="button"
+                  disabled={deletingRec}
+                  onClick={() => setConfirmDeleteRecId(null)}
+                  className="flex-1 py-2.5 px-3 rounded-xl bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-neutral-200 text-xs font-bold transition cursor-pointer"
+                >
+                  إلغاء
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
       </AnimatePresence>
+      </ViewportPortal>
+
+      <ViewportPortal>
+        <AnimatePresence>
+          {recFeedback && (
+            <motion.div
+              initial={{ opacity: 0, y: -16, scale: 0.96 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -16, scale: 0.96 }}
+              style={{ top: 'calc(var(--safe-top, 0px) + 1rem)' }}
+              className="fixed inset-x-4 sm:inset-x-auto sm:left-1/2 sm:-translate-x-1/2 z-[200] max-w-md mx-auto pointer-events-auto"
+            >
+              <div
+                className={`flex items-center gap-2.5 px-4 py-3 rounded-2xl border shadow-2xl backdrop-blur-md text-xs font-bold ${
+                  recFeedback.type === 'success'
+                    ? 'bg-emerald-950/95 border-emerald-500/40 text-emerald-100'
+                    : 'bg-red-950/95 border-red-500/40 text-red-100'
+                }`}
+              >
+                {recFeedback.type === 'success' ? (
+                  <CheckCircle2 size={16} className="text-emerald-400 shrink-0" />
+                ) : (
+                  <AlertCircle size={16} className="text-red-400 shrink-0" />
+                )}
+                <span className="flex-1 leading-relaxed">{recFeedback.message}</span>
+                <button
+                  type="button"
+                  onClick={() => setRecFeedback(null)}
+                  className="p-1 rounded-lg hover:bg-white/10 text-neutral-300 transition shrink-0 cursor-pointer"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </ViewportPortal>
       {anime && activeSeasonEpisodes && activeSeasonEpisodes.length > 0 && (
         <BatchDownloadModal
