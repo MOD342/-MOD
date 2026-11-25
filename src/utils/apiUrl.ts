@@ -1,4 +1,4 @@
-export const DEFAULT_PRODUCTION_API_URL = '';
+export const DEFAULT_PRODUCTION_API_URL = 'https://mod.z-mod342.workers.dev';
 
 export function isRunningInAPKOrExternalShell(): boolean {
   if (typeof window === 'undefined') return false;
@@ -63,7 +63,8 @@ export function isSameOriginFullStackWeb(): boolean {
     host.endsWith('.usercontent.goog') ||
     host.endsWith('.up.railway.app') ||
     host.endsWith('.onrender.com') ||
-    host.endsWith('.hf.space')
+    host.endsWith('.hf.space') ||
+    host.endsWith('.workers.dev')
   );
 }
 

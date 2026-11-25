@@ -32,7 +32,7 @@ interface LegalAboutViewProps {
 const DEVELOPER_EMAIL = '342.mod@gmail.com';
 const PACKAGE_ID = 'com.zoryx';
 const APP_VERSION = '2.6.0';
-const PUBLIC_WEB_FALLBACK = '';
+const PUBLIC_WEB_FALLBACK = 'https://mod.z-mod342.workers.dev';
 
 function resolveWebBaseOrigin(): string {
   const configured = (import.meta.env.VITE_API_URL || '').trim().replace(/\/+$/, '');

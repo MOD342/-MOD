@@ -29,29 +29,20 @@
 
 ---
 
-## 3. النشر الهجين المجاني الدائم (Vercel + Render أو Hugging Face Spaces)
+## 3. النشر المباشر على Cloudflare Workers (مُفعّل افتراضياً على GitHub)
+المستودع مهيأ مباشرة بملفي `wrangler.jsonc` و `src/workerEntry.ts` للنشر على **`https://mod.z-mod342.workers.dev/`**:
+1. في لوحة تحكم **Cloudflare Workers & Pages** تأكد من:
+   - **Build command**: `npm run build`
+   - **Deploy command**: `npx wrangler deploy`
+2. *(اختياري في Settings > Variables and Secrets)*:
+   - `GEMINI_API_KEY`: لتفعيل المحادثة من حافة الشبكة مباشرة عبر Worker.
+   - `BACKEND_API_URL`: رابط خادم خلفي على Render أو Hugging Face Spaces إن أردت تمرير طلبات البث والسكرابر عبره (وبدونه يعمل الوضع الهجين تلقائياً).
+3. أضف النطاق **`mod.z-mod342.workers.dev`** في **Firebase Console > Authentication > Settings > Authorized domains**.
 
-### الخطوة الأولى: نشر الخادم الخلفي (Backend)
-اختر أحد الخيارين التاليين:
-- **الخيار أ — Render (مجاني بدون بطاقة بنكية):**
-  1. أنشئ خدمة **Web Service** جديدة واربط مستودع المشروع (أو استخدم ملف `render.yaml` المرفق مباشرة عبر Blueprints).
-  2. أمر البناء: `npm install && npm run build` — وأمر التشغيل: `npm start`.
-  3. أضف المتغيرات في قسم Environment: `NODE_ENV=production` و `GEMINI_API_KEY`.
-  4. انسخ رابط الخدمة الناتج (مثل `https://zoryx-api.onrender.com`).
-
-- **الخيار ب — Hugging Face Spaces (Docker مجاني بذاكرة 16GB):**
-  1. أنشئ **Space** جديداً واختر **Docker** (Template: Blank) باسم مميز مثل `zoryx`.
-  2. ارفع ملفات المشروع (المستودع يتضمن ملف `Dockerfile` جاهز يعمل على المنفذ `7860`).
-  3. أضف `GEMINI_API_KEY` في **Settings > Variables and secrets**.
-  4. انسخ رابط الـ Space المباشر (مثل `https://yourname-zoryx.hf.space`).
-
-### الخطوة الثانية: نشر الواجهة على Vercel وربطها بالخادم
-1. استورد المشروع في **Vercel** (`Build Command`: `npm run build`، `Output Directory`: `dist`).
-2. في **Settings > Environment Variables** أضف:
-   ```env
-   VITE_API_URL=https://رابط-الخادم-الخلفي
-   ```
-3. أعد النشر (Redeploy)، وأضف نطاق Vercel في **Firebase Console > Authentication > Settings > Authorized domains**.
+### (اختياري) تشغيل خادم خلفي منفصل على Render أو Hugging Face Spaces
+- **Render**: استخدم ملف `render.yaml` (`npm install && npm run build` ثم `npm start`).
+- **Hugging Face Spaces**: استخدم ملف `Dockerfile` (منفذ `7860`).
+- بعد النشر، ضع رابط الخادم في متغير `BACKEND_API_URL` داخل Cloudflare Workers ليتكامل تلقائياً مع تطبيق الويب والـ APK.
 
 ---
 

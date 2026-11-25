@@ -176,7 +176,7 @@ export function consumePendingDiagnosticsTab(): DiagnosticsTabKey | null {
 }
 
 export interface DeploymentEnvironmentInfo {
-  platform: 'vercel' | 'aistudio-dev' | 'aistudio-pre' | 'capacitor-apk' | 'localhost' | 'custom-web';
+  platform: 'cloudflare-workers' | 'vercel' | 'aistudio-dev' | 'aistudio-pre' | 'capacitor-apk' | 'localhost' | 'custom-web';
   platformLabelAr: string;
   hostname: string;
   origin: string;
@@ -224,6 +224,9 @@ export function detectDeploymentEnvironment(): DeploymentEnvironmentInfo {
   if (isApkShell) {
     platform = 'capacitor-apk';
     platformLabelAr = 'تطبيق أندرويد (APK / Capacitor)';
+  } else if (hostname.endsWith('.workers.dev')) {
+    platform = 'cloudflare-workers';
+    platformLabelAr = 'استضافة Cloudflare Workers';
   } else if (hostname.includes('vercel.app') || hostname.includes('.vercel.')) {
     platform = 'vercel';
     platformLabelAr = 'استضافة Vercel';

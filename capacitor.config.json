@@ -7,6 +7,8 @@
     "androidScheme": "https",
     "cleartext": false,
     "allowNavigation": [
+      "*.workers.dev",
+      "mod.z-mod342.workers.dev",
       "*.vercel.app",
       "*.onrender.com",
       "*.hf.space",

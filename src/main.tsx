@@ -222,6 +222,12 @@ async function smartFetch(input: RequestInfo | URL, init?: RequestInit): Promise
         throw lastFetchErr || new Error('Network request failed');
       }
 
+      if (res.headers.get('x-hybrid-fallback') === '1') {
+        const { handleFrontendFallback } = await import('./utils/frontendFallback');
+        const fbRes = await handleFrontendFallback(apiRelativePath, init);
+        return fbRes || res;
+      }
+
       if (
         (isAiChatEndpoint || isNonFallbackResolveEndpoint || rawPathname === '/api/manga/pages') &&
         contentType.includes('application/json')
@@ -233,6 +239,11 @@ async function smartFetch(input: RequestInfo | URL, init?: RequestInit): Promise
         try {
           const cloned = res.clone();
           const parsed = await cloned.json();
+          if (parsed && parsed.hybridFallback === true) {
+            const { handleFrontendFallback } = await import('./utils/frontendFallback');
+            const fbRes = await handleFrontendFallback(apiRelativePath, init);
+            return fbRes || res;
+          }
           if (!isEmptyApiJsonPayload(apiRelativePath, parsed)) {
             return res;
           }
@@ -250,7 +261,7 @@ async function smartFetch(input: RequestInfo | URL, init?: RequestInit): Promise
         });
       }
     } catch (err: any) {
-      // في تطبيق الـ APK عند تعذر fetch بسبب CORS/شبكة، نجرب CapacitorHttp الأصلي لخادم Railway أولاً
+      // في تطبيق الـ APK عند تعذر fetch بسبب CORS/شبكة، نجرب CapacitorHttp الأصلي لخادم Cloudflare / الخادم الخلفي أولاً
       if (isNativeApk && resolvedUrlLabel.startsWith('http')) {
         try {
           const method = (init?.method || 'GET').toUpperCase();
