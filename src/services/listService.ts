@@ -27,7 +27,88 @@ function writeLocalJson<T>(key: string, value: T): void {
 export interface CustomList {
   id: string;
   name: string;
+  color?: string;
   createdAt: any;
+}
+
+export interface ListColorOption {
+  id: string;
+  labelAr: string;
+  hex: string;
+  dotClass: string;
+  activeClass: string;
+  inactiveClass: string;
+}
+
+export const CUSTOM_LIST_COLORS: ListColorOption[] = [
+  {
+    id: 'indigo',
+    labelAr: 'نيلي',
+    hex: '#6366f1',
+    dotClass: 'bg-indigo-400',
+    activeClass: 'bg-indigo-600 text-white border-indigo-400 shadow-lg shadow-indigo-600/25',
+    inactiveClass: 'bg-indigo-500/10 text-indigo-300 border-indigo-500/30 hover:bg-indigo-500/20',
+  },
+  {
+    id: 'rose',
+    labelAr: 'وردي',
+    hex: '#f43f5e',
+    dotClass: 'bg-rose-400',
+    activeClass: 'bg-rose-600 text-white border-rose-400 shadow-lg shadow-rose-600/25',
+    inactiveClass: 'bg-rose-500/10 text-rose-300 border-rose-500/30 hover:bg-rose-500/20',
+  },
+  {
+    id: 'emerald',
+    labelAr: 'أخضر',
+    hex: '#10b981',
+    dotClass: 'bg-emerald-400',
+    activeClass: 'bg-emerald-600 text-white border-emerald-400 shadow-lg shadow-emerald-600/25',
+    inactiveClass: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/20',
+  },
+  {
+    id: 'amber',
+    labelAr: 'ذهبي',
+    hex: '#f59e0b',
+    dotClass: 'bg-amber-400',
+    activeClass: 'bg-amber-500 text-black border-amber-300 shadow-lg shadow-amber-500/25',
+    inactiveClass: 'bg-amber-500/10 text-amber-300 border-amber-500/30 hover:bg-amber-500/20',
+  },
+  {
+    id: 'cyan',
+    labelAr: 'سماوي',
+    hex: '#06b6d4',
+    dotClass: 'bg-cyan-400',
+    activeClass: 'bg-cyan-600 text-white border-cyan-400 shadow-lg shadow-cyan-600/25',
+    inactiveClass: 'bg-cyan-500/10 text-cyan-300 border-cyan-500/30 hover:bg-cyan-500/20',
+  },
+  {
+    id: 'fuchsia',
+    labelAr: 'أرجواني',
+    hex: '#d946ef',
+    dotClass: 'bg-fuchsia-400',
+    activeClass: 'bg-fuchsia-600 text-white border-fuchsia-400 shadow-lg shadow-fuchsia-600/25',
+    inactiveClass: 'bg-fuchsia-500/10 text-fuchsia-300 border-fuchsia-500/30 hover:bg-fuchsia-500/20',
+  },
+  {
+    id: 'orange',
+    labelAr: 'برتقالي',
+    hex: '#f97316',
+    dotClass: 'bg-orange-400',
+    activeClass: 'bg-orange-600 text-white border-orange-400 shadow-lg shadow-orange-600/25',
+    inactiveClass: 'bg-orange-500/10 text-orange-300 border-orange-500/30 hover:bg-orange-500/20',
+  },
+  {
+    id: 'blue',
+    labelAr: 'أزرق',
+    hex: '#3b82f6',
+    dotClass: 'bg-blue-400',
+    activeClass: 'bg-blue-600 text-white border-blue-400 shadow-lg shadow-blue-600/25',
+    inactiveClass: 'bg-blue-500/10 text-blue-300 border-blue-500/30 hover:bg-blue-500/20',
+  },
+];
+
+export function getCustomListColorOption(colorId?: string): ListColorOption {
+  return CUSTOM_LIST_COLORS.find((c) => c.id === colorId) || CUSTOM_LIST_COLORS[0];
 }
 
 export type MainListStatus = 'watching' | 'completed' | 'plan_to_watch' | 'on_hold' | 'dropped' | 'none';
@@ -262,11 +343,13 @@ export const listService = {
     return activePromise;
   },
 
-  createCustomList: async (id: string, name: string): Promise<string> => {
+  createCustomList: async (id: string, name: string, color?: string): Promise<string> => {
+    const cleanName = String(name || '').trim().slice(0, 100);
+    const cleanColor = color ? String(color).trim().slice(0, 32) : CUSTOM_LIST_COLORS[0].id;
     if (!isAuthenticatedOwner(id)) {
       const listId = 'list_' + Date.now();
       const lists = readLocalJson<CustomList[]>(`local_custom_lists_${id}`, []);
-      lists.push({ id: listId, name, createdAt: new Date().toISOString() });
+      lists.push({ id: listId, name: cleanName, color: cleanColor, createdAt: new Date().toISOString() });
       writeLocalJson(`local_custom_lists_${id}`, lists);
       customListsCache.delete(id);
       notifyLibraryUpdated(id);
@@ -277,7 +360,8 @@ export const listService = {
       const listId = 'list_' + Date.now();
       const ref = doc(db, 'users', id, 'customLists', listId);
       await setDoc(ref, {
-        name,
+        name: cleanName,
+        color: cleanColor,
         createdAt: serverTimestamp(),
       });
       customListsCache.delete(id);
@@ -285,6 +369,33 @@ export const listService = {
       return listId;
     } catch (e) {
       handleFirestoreError(e, OperationType.CREATE, `users/${id}/customLists`);
+      throw e;
+    }
+  },
+
+  updateCustomList: async (id: string, listId: string, name: string, color?: string): Promise<void> => {
+    const cleanName = String(name || '').trim().slice(0, 100);
+    if (!cleanName) return;
+    const cleanColor = color ? String(color).trim().slice(0, 32) : CUSTOM_LIST_COLORS[0].id;
+
+    if (!isAuthenticatedOwner(id)) {
+      const lists = readLocalJson<CustomList[]>(`local_custom_lists_${id}`, []);
+      const next = lists.map((l) => (l.id === listId ? { ...l, name: cleanName, color: cleanColor } : l));
+      writeLocalJson(`local_custom_lists_${id}`, next);
+      customListsCache.delete(id);
+      notifyLibraryUpdated(id);
+      return;
+    }
+
+    try {
+      await updateDoc(doc(db, 'users', id, 'customLists', listId), {
+        name: cleanName,
+        color: cleanColor,
+      });
+      customListsCache.delete(id);
+      notifyLibraryUpdated(id);
+    } catch (e) {
+      handleFirestoreError(e, OperationType.UPDATE, `users/${id}/customLists/${listId}`);
       throw e;
     }
   },
@@ -691,6 +802,7 @@ export const listService = {
           try {
             await setDoc(doc(db, 'users', userId, 'customLists', list.id), {
               name: String(list.name).slice(0, 100),
+              ...(list.color ? { color: String(list.color).slice(0, 32) } : {}),
               createdAt: serverTimestamp(),
             });
             existingListIds.add(list.id);

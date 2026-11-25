@@ -41,12 +41,27 @@ export interface StoreItem {
 
 export function getAvatarShapeClass(shape?: 'circle' | 'squircle' | 'square' | 'hexagon' | 'octagon' | 'triangle' | 'rhombus') {
   if (shape === 'square') return 'rounded-xl';
-  if (shape === 'squircle') return 'rounded-[1.75rem]';
+  if (shape === 'squircle') return 'rounded-[26%]';
   if (shape === 'hexagon') return '[clip-path:polygon(50%_0%,100%_25%,100%_75%,50%_100%,0%_75%,0%_25%)]';
   if (shape === 'octagon') return '[clip-path:polygon(30%_0%,70%_0%,100%_30%,100%_70%,70%_100%,30%_100%,0%_70%,0%_30%)]';
   if (shape === 'triangle') return '[clip-path:polygon(50%_0%,100%_100%,0%_100%)]';
   if (shape === 'rhombus') return '[clip-path:polygon(50%_0%,100%_50%,50%_100%,0%_50%)]';
   return 'rounded-full';
+}
+
+export type AvatarSizePreset = 'compact' | 'normal' | 'large' | 'xlarge';
+
+export function getAvatarSizeClass(size?: string, context: 'profile' | 'preview' = 'profile') {
+  if (context === 'preview') {
+    if (size === 'compact') return 'w-14 h-14';
+    if (size === 'large') return 'w-20 h-20';
+    if (size === 'xlarge') return 'w-24 h-24';
+    return 'w-16 h-16';
+  }
+  if (size === 'compact') return 'w-16 h-16';
+  if (size === 'large') return 'w-24 h-24';
+  if (size === 'xlarge') return 'w-32 h-32';
+  return 'w-20 h-20';
 }
 
 export const RARITY_META: Record<StoreRarity, { label: string; color: string; bg: string; border: string; glow: string }> = {

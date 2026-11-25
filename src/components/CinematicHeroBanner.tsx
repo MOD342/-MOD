@@ -590,46 +590,42 @@ export default function CinematicHeroBanner({
               >
                 <UniformCinemaArtwork item={item} />
 
-                {/* Subtle top atmospheric band on home mobile so floating bar integrates natively */}
-                {isHomeMode && !useSideRail && (
-                  <div className="absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-black/70 via-black/25 to-transparent pointer-events-none" />
-                )}
+                <div
+                  className="absolute inset-x-0 bottom-0 z-10 pt-10 pb-8 sm:pb-10 px-4 sm:px-8 md:px-12 bg-gradient-to-t from-black/80 via-black/40 to-transparent"
+                  style={{ textShadow: '0 2px 12px rgba(0,0,0,0.95), 0 1px 4px rgba(0,0,0,0.9)' }}
+                >
+                  <div className="max-w-7xl mx-auto">
+                    <div className="max-w-xl space-y-1.5 sm:space-y-2.5">
+                      <p
+                        className={`text-[11px] sm:text-xs font-bold tracking-wide tabular-nums ${
+                          isManga ? 'text-amber-300' : 'text-rose-300'
+                        }`}
+                      >
+                        {renderKickerText(item, logicalIdx)}
+                      </p>
 
-                {/* Localized bottom-only gradient keeping center/upper artwork bright and vivid */}
-                <div className="absolute inset-x-0 bottom-0 h-[55%] bg-gradient-to-t from-black/92 via-black/48 to-transparent pointer-events-none" />
-                <div className="hidden sm:block absolute inset-y-0 right-0 w-[52%] bg-gradient-to-l from-black/65 via-black/20 to-transparent pointer-events-none" />
+                      <h2 className="text-xl sm:text-3xl md:text-[2.45rem] font-black text-white leading-[1.16] line-clamp-2 [text-wrap:balance] drop-shadow-[0_2px_10px_rgba(0,0,0,0.95)]">
+                        <LongPressCopy text={item.title}>{item.title}</LongPressCopy>
+                      </h2>
 
-                <div className="relative z-10 h-full max-w-7xl mx-auto px-4 sm:px-8 md:px-12 pb-8 sm:pb-10 flex flex-col justify-end">
-                  <div className="max-w-xl space-y-1.5 sm:space-y-2.5">
-                    <p
-                      className={`text-[11px] sm:text-xs font-bold tracking-wide tabular-nums ${
-                        isManga ? 'text-amber-300' : 'text-rose-300'
-                      }`}
-                    >
-                      {renderKickerText(item, logicalIdx)}
-                    </p>
-
-                    <h2 className="text-xl sm:text-3xl md:text-[2.45rem] font-black text-white leading-[1.16] line-clamp-2 [text-wrap:balance] drop-shadow-md">
-                      <LongPressCopy text={item.title}>{item.title}</LongPressCopy>
-                    </h2>
-
-                    <div className="flex items-center flex-wrap gap-x-2 gap-y-1 text-xs sm:text-[13px] text-neutral-200 font-semibold tabular-nums">
-                      {item.rating && item.rating > 0 ? (
-                        <span className="inline-flex items-center gap-1 text-yellow-400 font-bold">
-                          <Star size={13} fill="currentColor" />
-                          {Number(item.rating).toFixed(1)}
-                        </span>
-                      ) : null}
-                      {metaParts.map((part, pIdx) => (
-                        <React.Fragment key={pIdx}>
-                          {(pIdx > 0 || (item.rating && item.rating > 0)) && (
-                            <span className="text-neutral-400" aria-hidden="true">
-                              ·
-                            </span>
-                          )}
-                          <span className="truncate max-w-[160px] sm:max-w-xs">{part}</span>
-                        </React.Fragment>
-                      ))}
+                      <div className="flex items-center flex-wrap gap-x-2 gap-y-1 text-xs sm:text-[13px] text-neutral-100 font-semibold tabular-nums">
+                        {item.rating && item.rating > 0 ? (
+                          <span className="inline-flex items-center gap-1 text-yellow-400 font-bold">
+                            <Star size={13} fill="currentColor" />
+                            {Number(item.rating).toFixed(1)}
+                          </span>
+                        ) : null}
+                        {metaParts.map((part, pIdx) => (
+                          <React.Fragment key={pIdx}>
+                            {(pIdx > 0 || (item.rating && item.rating > 0)) && (
+                              <span className="text-neutral-300" aria-hidden="true">
+                                ·
+                              </span>
+                            )}
+                            <span className="truncate max-w-[160px] sm:max-w-xs">{part}</span>
+                          </React.Fragment>
+                        ))}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -694,13 +690,15 @@ export default function CinematicHeroBanner({
                     <BannerImage
                       src={getBackdropSrc(item)}
                       alt=""
-                      className="w-full h-full object-cover object-[center_20%] blur-[2px] brightness-80 saturate-115"
+                      className="w-full h-full object-cover object-[center_20%] blur-[2px] saturate-115"
                     />
-                    <div className="absolute inset-0 bg-gradient-to-l from-black/80 via-black/50 to-black/20" />
                   </div>
 
                   {/* Crisp Foreground Poster + Editorial Typography */}
-                  <div className="relative z-10 w-full p-4 sm:p-6 md:p-8 pb-9 sm:pb-10 flex items-center gap-4 sm:gap-7 md:gap-9">
+                  <div
+                    className="relative z-10 w-full p-4 sm:p-6 md:p-8 pb-9 sm:pb-10 flex items-center gap-4 sm:gap-7 md:gap-9"
+                    style={{ textShadow: '0 2px 12px rgba(0,0,0,0.95), 0 1px 4px rgba(0,0,0,0.9)' }}
+                  >
                     <div
                       className={`${
                         display.isCoverScreen ? 'w-22' : 'w-28 sm:w-36 md:w-44'
@@ -793,7 +791,6 @@ export default function CinematicHeroBanner({
               referrerPolicy="no-referrer"
               className="w-full h-full object-cover scale-125 blur-3xl saturate-150 opacity-30 transition-all duration-700"
             />
-            <div className="absolute inset-0 bg-gradient-to-b from-black/75 via-transparent to-black" />
           </div>
         )}
 
@@ -833,12 +830,12 @@ export default function CinematicHeroBanner({
                     }}
                     style={{ width: `${geo.cardWidth}px` }}
                     dir="rtl"
-                    className={`theme-keep-dark shrink-0 cursor-pointer relative aspect-[3/4] rounded-[24px] overflow-hidden border transition-[transform,opacity,filter,border-color,box-shadow] duration-300 bg-neutral-900 ${
+                    className={`theme-keep-dark shrink-0 cursor-pointer relative aspect-[3/4] rounded-[24px] overflow-hidden border transition-[transform,opacity,border-color,box-shadow] duration-300 bg-neutral-900 ${
                       isCentered
                         ? isManga
                           ? 'scale-100 opacity-100 border-amber-400/50 shadow-[0_22px_50px_rgba(0,0,0,0.75)] z-10'
                           : 'scale-100 opacity-100 border-white/25 shadow-[0_22px_50px_rgba(0,0,0,0.75)] z-10'
-                        : 'scale-[0.88] opacity-55 brightness-90 border-white/10 hover:opacity-80'
+                        : 'scale-[0.88] opacity-85 border-white/10 hover:opacity-100'
                     }`}
                   >
                     <BannerImage
@@ -848,7 +845,10 @@ export default function CinematicHeroBanner({
                       className="w-full h-full object-cover object-top pointer-events-none select-none"
                     />
 
-                    <div className="absolute inset-x-0 bottom-0 bg-black/60 backdrop-blur-xl border-t border-white/15 px-3.5 py-3 space-y-1">
+                    <div
+                      className="absolute inset-x-0 bottom-0 bg-black/65 backdrop-blur-md border-t border-white/15 px-3.5 py-2.5 space-y-1"
+                      style={{ textShadow: '0 1px 4px rgba(0,0,0,0.9)' }}
+                    >
                       <div className="flex items-center justify-between gap-2 text-[11px] font-bold tabular-nums">
                         <span className={isManga ? 'text-amber-300' : 'text-rose-300'}>
                           {renderKickerText(item, logicalIdx)}
@@ -933,10 +933,10 @@ export default function CinematicHeroBanner({
               >
                 <UniformCinemaArtwork item={item} />
 
-                <div className="absolute inset-x-0 bottom-0 h-[55%] bg-gradient-to-t from-black/92 via-black/45 to-transparent pointer-events-none" />
-                <div className="hidden sm:block absolute inset-y-0 right-0 w-[50%] bg-gradient-to-l from-black/55 via-black/15 to-transparent pointer-events-none" />
-
-                <div className="relative z-10 h-full p-4 sm:p-7 md:p-8 flex items-end pointer-events-none">
+                <div
+                  className="absolute inset-x-0 bottom-0 z-10 pt-10 p-4 sm:p-7 md:p-8 bg-gradient-to-t from-black/80 via-black/40 to-transparent flex items-end pointer-events-none"
+                  style={{ textShadow: '0 2px 12px rgba(0,0,0,0.95), 0 1px 4px rgba(0,0,0,0.9)' }}
+                >
                   <div className="max-w-2xl space-y-1.5">
                     <p
                       className={`text-[11px] sm:text-xs font-bold tabular-nums ${
@@ -950,7 +950,7 @@ export default function CinematicHeroBanner({
                       <LongPressCopy text={item.title}>{item.title}</LongPressCopy>
                     </h2>
 
-                    <div className="flex items-center flex-wrap gap-x-2 gap-y-0.5 text-xs text-neutral-200 font-semibold tabular-nums">
+                    <div className="flex items-center flex-wrap gap-x-2 gap-y-0.5 text-xs text-neutral-100 font-semibold tabular-nums">
                       {item.rating && item.rating > 0 ? (
                         <span className="inline-flex items-center gap-1 text-yellow-400 font-bold">
                           <Star size={12} fill="currentColor" />
@@ -960,7 +960,7 @@ export default function CinematicHeroBanner({
                       {metaParts.map((part, pIdx) => (
                         <React.Fragment key={pIdx}>
                           {(pIdx > 0 || (item.rating && item.rating > 0)) && (
-                            <span className="text-neutral-400" aria-hidden="true">
+                            <span className="text-neutral-300" aria-hidden="true">
                               ·
                             </span>
                           )}
@@ -1003,7 +1003,7 @@ export default function CinematicHeroBanner({
                     ? isManga
                       ? 'border-amber-400 opacity-100 scale-[1.03] shadow-lg shadow-amber-500/20'
                       : 'border-[#FF1744] opacity-100 scale-[1.03] shadow-lg shadow-[#FF1744]/20'
-                    : 'border-white/10 opacity-55 hover:opacity-90'
+                    : 'border-white/10 opacity-85 hover:opacity-100'
                 }`}
               >
                 <BannerImage

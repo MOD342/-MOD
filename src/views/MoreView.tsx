@@ -35,11 +35,8 @@ import {
   Film,
   FolderDown,
   BookOpen,
-  ShieldCheck,
-  FileText,
   Info
 } from 'lucide-react';
-import ViewportPortal from '../components/ViewportPortal';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAuth } from '../contexts/AuthContext';
 import { moderationService, isStaffEmail } from '../services/moderationService';
@@ -66,60 +63,6 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
   );
   const isDirectStaff = isStaffEmail(user?.email);
   const [isAdmin, setIsAdmin] = useState(() => isDirectStaff || userRole === 'admin' || userRole === 'owner' || userRole === 'moderator');
-  const userLevel = userData?.level || 1;
-
-  // الحالات والتعريفات الخاصة بتطبيق الويب التقدمي وحفظ التثبيت (PWA)
-  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
-  const [isInstallable, setIsInstallable] = useState(false);
-  const [showInstallModal, setShowInstallModal] = useState(false);
-  const [isAlreadyInstalled, setIsAlreadyInstalled] = useState(false);
-
-  useEffect(() => {
-    // التحقق مما إذا كان الموقع قد جرى فتحه بالفعل كتطبيق منفصل مثبت مسبقاً
-    if (window.matchMedia('(display-mode: standalone)').matches || (window.navigator as any).standalone) {
-      setIsAlreadyInstalled(true);
-    }
-
-    // التحقق مما إذا كان الحدث موجوداً مسبقاً في كائن النافذة الكلي
-    if ((window as any).deferredPrompt) {
-      setDeferredPrompt((window as any).deferredPrompt);
-      setIsInstallable(true);
-    }
-
-    const handlePwaInstallable = (e: any) => {
-      setDeferredPrompt((window as any).deferredPrompt || e.detail);
-      setIsInstallable(true);
-    };
-
-    window.addEventListener('pwa-installable', handlePwaInstallable);
-    
-    return () => {
-      window.removeEventListener('pwa-installable', handlePwaInstallable);
-    };
-  }, []);
-
-  const handleInstallClick = async () => {
-    const promptEvent = (window as any).deferredPrompt || deferredPrompt;
-    if (promptEvent) {
-      promptEvent.prompt();
-      const { outcome } = await promptEvent.userChoice;
-      console.log(`PWA Installation outcome: ${outcome}`);
-      if (outcome === 'accepted') {
-        (window as any).deferredPrompt = null;
-        setDeferredPrompt(null);
-        setIsInstallable(false);
-        setIsAlreadyInstalled(true);
-        setShowInstallModal(false);
-      }
-    } else {
-      setShowInstallModal(true);
-    }
-  };
-
-  const isIOS = useMemo(() => {
-    return /iPad|iPhone|iPod/.test(navigator.userAgent) || 
-           (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-  }, []);
 
   useEffect(() => {
     const checkAdmin = async () => {
@@ -173,7 +116,7 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
   const avatarImg = equipped.avatar?.img || user?.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user?.id || 'Felix'}`;
   const activeArenaEvent = useMemo(() => getActiveNonOverlappingEvent(), []);
 
-  // تصنيفات مرتبة ومنسقة بأسماء مختصرة (كلمة أو كلمتين كحد أقصى) بدون فراغات
+  // تصنيفات مرتبة ومنسقة بتسميات موجزة من كلمة واحدة لتتسع بثلاثة أعمدة بوضوح
   const categories = [
     {
       title: 'حسابي',
@@ -191,28 +134,27 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
     {
       title: 'الترفيه والمتجر',
       items: [
-        { id: 'manga_hub', label: 'المانجا والمانهوا', icon: BookOpen, color: 'text-amber-400', bg: 'bg-amber-500/10' },
-        { id: 'ai_chat', label: 'مود (MOD)', icon: Bot, color: 'text-rose-400', bg: 'bg-rose-500/10' },
-        { id: 'games', label: 'حلبة الأوتاكو', icon: Swords, color: 'text-purple-400', bg: 'bg-purple-500/10' },
+        { id: 'manga_hub', label: 'المانجا', icon: BookOpen, color: 'text-amber-400', bg: 'bg-amber-500/10' },
+        { id: 'ai_chat', label: 'مود', icon: Bot, color: 'text-rose-400', bg: 'bg-rose-500/10' },
+        { id: 'games', label: 'الحلبة', icon: Swords, color: 'text-purple-400', bg: 'bg-purple-500/10' },
         { id: 'store', label: 'المتجر', icon: ShoppingCart, color: 'text-orange-400', bg: 'bg-orange-500/10' },
         { id: 'schedule', label: 'المواعيد', icon: CalendarDays, color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
-        { id: 'top_anime', label: 'أفضل الأنميات', icon: Crown, color: 'text-amber-400', bg: 'bg-amber-500/10' },
-        { id: 'anime_movies', label: 'أفلام الأنمي', icon: Film, color: 'text-rose-400', bg: 'bg-rose-500/10' },
+        { id: 'top_anime', label: 'الأفضل', icon: Crown, color: 'text-amber-400', bg: 'bg-amber-500/10' },
+        { id: 'anime_movies', label: 'الأفلام', icon: Film, color: 'text-rose-400', bg: 'bg-rose-500/10' },
       ]
     },
     {
       title: 'النظام والدعم',
       items: [
-        { id: 'ad_support', label: 'ادعم التطبيق', icon: HeartHandshake, color: 'text-amber-400', bg: 'bg-amber-500/10' },
-        { id: 'support_help', label: 'مركز الدعم', icon: HelpCircle, color: 'text-red-400', bg: 'bg-[#FF1744]/15' },
-        { id: 'legal_privacy', label: 'الخصوصية', icon: ShieldCheck, color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
-        { id: 'legal_terms', label: 'الاستخدام', icon: FileText, color: 'text-sky-400', bg: 'bg-sky-500/10' },
-        { id: 'legal_about', label: 'عن التطبيق', icon: Info, color: 'text-purple-400', bg: 'bg-purple-500/10' },
-        { id: 'diagnostics', label: 'فحص الأخطاء', icon: LayoutGrid, color: 'text-amber-400', bg: 'bg-amber-500/10' },
+        { id: 'ad_support', label: 'ادعمنا', icon: HeartHandshake, color: 'text-amber-400', bg: 'bg-amber-500/10' },
+        { id: 'support_help', label: 'المساعدة', icon: HelpCircle, color: 'text-red-400', bg: 'bg-[#FF1744]/15' },
+        { id: 'legal_about', label: 'حول التطبيق', icon: Info, color: 'text-purple-400', bg: 'bg-purple-500/10' },
         { id: 'app_permissions', label: 'الأذونات', icon: Bell, color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
-        { id: 'pwa_install', label: 'تثبيت التطبيق', icon: Smartphone, color: 'text-violet-400', bg: 'bg-violet-500/10' },
         ...(isAdmin || isDirectStaff || isStaffEmail(user?.email) || userRole === 'admin' || userRole === 'owner' || userRole === 'moderator'
-          ? [{ id: 'admin', label: 'الإدارة', icon: Shield, color: 'text-red-500', bg: 'bg-red-500/10' }]
+          ? [
+              { id: 'diagnostics', label: 'التشخيص', icon: LayoutGrid, color: 'text-amber-400', bg: 'bg-amber-500/10' },
+              { id: 'admin', label: 'الإدارة', icon: Shield, color: 'text-red-500', bg: 'bg-red-500/10' },
+            ]
           : [])
       ]
     }
@@ -227,16 +169,6 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
           <LayoutGrid className="text-[#FF1744]" size={20} />
           <h1 className="text-lg font-black text-white">المزيد</h1>
         </div>
-        {!isAlreadyInstalled && (
-          <button
-            onClick={() => setShowInstallModal(true)}
-            className="flex items-center gap-1.5 bg-[#FF1744]/15 hover:bg-[#FF1744]/25 border border-[#FF1744]/30 text-[#FF1744] px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer"
-            id="btn_trigger_pwa_banner"
-          >
-            <Download size={13} />
-            <span>تثبيت التطبيق</span>
-          </button>
-        )}
       </div>
       
       {/* بطاقة الحساب المدمجة */}
@@ -255,25 +187,28 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
               <div className="flex items-center gap-3 min-w-0">
                 {/* الصورة الشخصية */}
                 <div className="relative shrink-0">
-                  {equipped.frame ? (
-                    <div className={`p-1 ${equipped.frame.frameStyle} ${getAvatarShapeClass(equipped.frame.avatarShape)} relative flex items-center justify-center overflow-hidden w-14 h-14 bg-black`}>
-                      <img 
-                        src={avatarImg} 
-                        className={`w-full h-full object-cover ${getAvatarShapeClass(equipped.frame.avatarShape)}`} 
-                        referrerPolicy="no-referrer"
-                        alt="" 
-                      />
-                    </div>
-                  ) : (
-                    <div className="w-14 h-14 rounded-full ring-2 ring-neutral-800 bg-black overflow-hidden flex items-center justify-center p-0.5">
-                      <img 
-                        src={avatarImg} 
-                        className="w-full h-full object-cover rounded-full" 
-                        referrerPolicy="no-referrer"
-                        alt="" 
-                      />
-                    </div>
-                  )}
+                  {(() => {
+                    const resolvedShape = getAvatarShapeClass(userData?.avatarShape || equipped.frame?.avatarShape || 'circle');
+                    return equipped.frame ? (
+                      <div className={`p-1 ${equipped.frame.frameStyle} ${resolvedShape} relative flex items-center justify-center overflow-hidden w-14 h-14 bg-black`}>
+                        <img
+                          src={avatarImg}
+                          className={`w-full h-full object-cover ${resolvedShape}`}
+                          referrerPolicy="no-referrer"
+                          alt=""
+                        />
+                      </div>
+                    ) : (
+                      <div className={`w-14 h-14 ${resolvedShape} ring-2 ring-neutral-800 bg-black overflow-hidden flex items-center justify-center p-0.5`}>
+                        <img
+                          src={avatarImg}
+                          className={`w-full h-full object-cover ${resolvedShape}`}
+                          referrerPolicy="no-referrer"
+                          alt=""
+                        />
+                      </div>
+                    );
+                  })()}
                   <div className="absolute -bottom-1 -left-1 bg-[#FF1744] text-white text-[9px] font-black px-1.5 py-0.5 rounded-full border border-black flex items-center gap-0.5">
                     <Star size={8} className="fill-white" />
                     <span>{currentLevel}</span>
@@ -338,9 +273,9 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
               </div>
             </div>
 
-            <button 
+            <button
               id="btn_sign_in_more"
-              onClick={signIn} 
+              onClick={() => signIn('login')}
               className="shrink-0 bg-[#FF1744] hover:bg-red-600 text-white font-bold py-2 px-4 rounded-xl transition cursor-pointer text-xs"
             >
               دخول
@@ -397,26 +332,24 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
                 <span>{cat.title}</span>
               </h4>
 
-              <div className={`grid gap-2 ${display.isCoverScreen ? 'grid-cols-2' : 'grid-cols-3 sm:grid-cols-4 md:grid-cols-3 lg:grid-cols-4'}`}>
+              <div className="grid grid-cols-3 gap-1.5 sm:gap-2">
                 {visibleItems.map((item) => (
                   <button
                     key={item.id}
                     onClick={() => {
-                      if (item.id === 'pwa_install') {
-                        setShowInstallModal(true);
-                      } else if (item.id === 'app_permissions') {
+                      if (item.id === 'app_permissions') {
                         window.dispatchEvent(new CustomEvent('open-permissions-modal'));
                       } else {
                         onNavigate(item.id);
                       }
                     }}
-                    className="group bg-[#18181f] hover:bg-[#202029] border border-white/5 hover:border-[#FF1744]/40 rounded-xl py-2.5 px-2 flex flex-col items-center justify-center gap-1.5 transition-all active:scale-95 cursor-pointer"
+                    className="group bg-[#18181f] hover:bg-[#202029] border border-white/5 hover:border-[#FF1744]/40 rounded-xl py-2.5 px-1.5 flex flex-col items-center justify-center gap-1.5 transition-all active:scale-95 cursor-pointer"
                     id={`btn_more_menu_${item.id}`}
                   >
                     <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${item.bg} group-hover:scale-105 transition-transform`}>
                       <item.icon className={item.color} size={18} />
                     </div>
-                    <span className="text-white font-semibold text-xs group-hover:text-[#FF1744] transition-colors truncate max-w-full">
+                    <span className="text-white font-semibold text-[11px] sm:text-xs group-hover:text-[#FF1744] transition-colors truncate max-w-full">
                       {item.label}
                     </span>
                   </button>
@@ -438,151 +371,6 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
           <span>تسجيل الخروج</span>
         </button>
       )}
-
-      {/* PWA Installation Modal */}
-      <ViewportPortal>
-      <AnimatePresence>
-        {showInstallModal && (
-          <div
-            className="fixed inset-0 z-[120] flex items-center justify-center p-4 font-sans"
-            style={{
-              height: 'var(--vv-height, 100dvh)',
-              paddingTop: 'calc(var(--safe-top, 0px) + 1rem)',
-              paddingBottom: 'calc(var(--safe-bottom, 0px) + 1rem)',
-            }}
-            id="pwa_install_modal_wrapper"
-          >
-            {/* Backdrop */}
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setShowInstallModal(false)}
-              className="absolute inset-0 bg-black/85 backdrop-blur-md"
-              id="pwa_install_modal_backdrop"
-            />
-
-            {/* Modal Box */}
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="relative w-full max-w-md bg-[#0a0a0c] border border-neutral-800 rounded-3xl p-6 shadow-2xl overflow-hidden text-right z-10"
-              id="pwa_install_modal_box"
-            >
-              <div className="absolute top-0 right-0 w-32 h-32 bg-red-600/5 rounded-full blur-3xl pointer-events-none" />
-              <div className="absolute bottom-0 left-0 w-32 h-32 bg-indigo-600/5 rounded-full blur-3xl pointer-events-none" />
-
-              {/* Close Button */}
-              <button
-                onClick={() => setShowInstallModal(false)}
-                className="absolute top-4 left-4 w-8 h-8 rounded-full bg-neutral-900 border border-neutral-800 text-neutral-400 hover:text-white flex items-center justify-center transition cursor-pointer font-bold text-xs"
-              >
-                ✕
-              </button>
-
-              <div className="flex flex-col items-center text-center gap-4 mb-6">
-                <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-[#FF1744]/15 to-red-600/5 border border-[#FF1744]/20 flex items-center justify-center p-0.5 shadow-lg">
-                  <img src="/app_icon.png" className="w-14 h-14 rounded-xl object-cover" alt="أوتاكو MOD" referrerPolicy="no-referrer" />
-                </div>
-                <div>
-                  <h3 className="text-white font-black text-lg">تثبيت منصة أوتاكو MOD</h3>
-                  <p className="text-xs text-neutral-400 font-sans mt-0.5">تطبيق فوري فائق الخفة - بدون تكلفة وبدون متجر تطبيقات</p>
-                </div>
-              </div>
-
-              {isInstallable ? (
-                /* Native PWA Prompt available (Android Chrome, PC Edge/Chrome, etc.) */
-                <div className="space-y-4" id="native_prompt_layout">
-                  <p className="text-xs text-neutral-300 leading-relaxed text-right font-sans">
-                    متصفحك الحالي يدعم التثبيت الفوري بنقرة واحدة كاختصار مستقل على شاشتك بمظهر التطبيق الرسمي وبدون استهلاك للإنترنت بعد التنزيل.
-                  </p>
-                  
-                  <button
-                    onClick={handleInstallClick}
-                    className="w-full bg-gradient-to-r from-[#FF1744] to-red-600 hover:scale-[1.02] active:scale-98 text-white font-black py-3 rounded-2xl text-xs transition shadow-[0_4px_25px_rgba(255,23,68,0.35)] flex items-center justify-center gap-2 cursor-pointer mt-2"
-                  >
-                    <Download size={16} />
-                    <span>ابدأ التثبيت التلقائي المباشر 🚀</span>
-                  </button>
-                </div>
-              ) : isIOS ? (
-                /* iOS Safari instructions */
-                <div className="space-y-5" id="ios_safari_instructions">
-                  <p className="text-xs text-[#FF1744] font-black border border-[#FF1744]/20 bg-[#FF1744]/5 p-3 rounded-xl leading-relaxed text-right font-sans">
-                    لأنك تستخدم متصفح Safari على نظام iOS، اتبع الإرشادات السريعة التالية لتثبيت منصة أوتاكو MOD:
-                  </p>
-
-                  <div className="space-y-3.5 pr-2.5 border-r border-neutral-900">
-                    <div className="flex gap-3 text-right">
-                      <span className="w-5 h-5 rounded-full bg-neutral-900 border border-neutral-800 text-[#FF1744] text-[10px] font-black flex items-center justify-center shrink-0">١</span>
-                      <p className="text-xs text-neutral-300 font-sans leading-relaxed flex-1">
-                        اضغط على زر المشاركة <span className="inline-flex bg-neutral-900 px-1.5 py-0.5 rounded-md text-white border border-neutral-800 mx-0.5 text-[10px]">📤 مشاركة / Share</span> الموجود في متصفح Safari بالأسفل.
-                      </p>
-                    </div>
-
-                    <div className="flex gap-3 text-right">
-                      <span className="w-5 h-5 rounded-full bg-neutral-900 border border-neutral-800 text-[#FF1744] text-[10px] font-black flex items-center justify-center shrink-0">٢</span>
-                      <p className="text-xs text-neutral-400 font-sans leading-relaxed flex-1">
-                        قم بالتمرير للأسفل في القائمة ثم اضغط على خيار <span className="text-white font-black">"إضافة إلى الشاشة الرئيسية"</span> أو <span className="font-mono text-white text-[10px] bg-neutral-950 px-1 py-0.5 rounded border border-neutral-850">Add to Home Screen ➕</span>.
-                      </p>
-                    </div>
-
-                    <div className="flex gap-3 text-right">
-                      <span className="w-5 h-5 rounded-full bg-neutral-900 border border-neutral-800 text-[#FF1744] text-[10px] font-black flex items-center justify-center shrink-0">٣</span>
-                      <p className="text-xs text-neutral-400 font-sans leading-relaxed flex-1">
-                        اكتب الاسم "أوتاكو MOD" ثم اضغط على زر <span className="text-[#FF1744] font-black">"إضافة"</span> أو <span className="text-[#FF1744] font-black">Add</span> بالزاوية العلوية اليسرى.
-                      </p>
-                    </div>
-                  </div>
-
-                  <p className="text-[10px] text-neutral-500 text-center font-sans mt-3">
-                    بمجرد الإضافة، ستظهر أيقونة التطبيق على شاشتك الرئيسية بجانب تطبيقاتك وسيتصرف كتطبيق فوري بالكامل!
-                  </p>
-                </div>
-              ) : (
-                /* General manual guidance */
-                <div className="space-y-5" id="generic_manual_guidance">
-                  <p className="text-xs text-neutral-300 leading-relaxed text-right font-sans">
-                    لتثبيت منصة الأنمي كاختصار مستقل على جهازك بدون متجر للتطبيقات، يرجى القيام بالتالي:
-                  </p>
-
-                  <div className="space-y-3.5 pr-2.5 border-r border-neutral-900">
-                    <div className="flex gap-3 text-right">
-                      <span className="w-5 h-5 rounded-full bg-neutral-900 border border-neutral-800 text-[#FF1744] text-[10px] font-black flex items-center justify-center shrink-0">١</span>
-                      <p className="text-xs text-neutral-300 font-sans leading-relaxed flex-1">
-                        اضغط على قائمة خيارات المتصفح ثلاثية النقاط <span className="font-black text-white">⋮</span> أو <span className="font-black text-white">☰</span> بالزاوية.
-                      </p>
-                    </div>
-
-                    <div className="flex gap-3 text-right">
-                      <span className="w-5 h-5 rounded-full bg-neutral-900 border border-neutral-800 text-[#FF1744] text-[10px] font-black flex items-center justify-center shrink-0">٢</span>
-                      <p className="text-xs text-neutral-400 font-sans leading-relaxed flex-1">
-                        ابحث واضغط على خيار <span className="text-white font-black">"تثبيت التطبيق"</span> أو <span className="text-white font-black">"إضافة للشاشة الرئيسية"</span>.
-                      </p>
-                    </div>
-
-                    <div className="flex gap-3 text-right">
-                      <span className="w-5 h-5 rounded-full bg-neutral-900 border border-neutral-800 text-[#FF1744] text-[10px] font-black flex items-center justify-center shrink-0">٣</span>
-                      <p className="text-xs text-neutral-400 font-sans leading-relaxed flex-1">
-                        أكّد الرغبة بالضغط على <span className="text-emerald-400 font-black">تثبيت / إضافة</span> وسيتم إضافته فوراً!
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              <button
-                onClick={() => setShowInstallModal(false)}
-                className="w-full mt-6 bg-neutral-900 hover:bg-neutral-850 border border-neutral-800 text-neutral-400 hover:text-white font-black py-2.5 rounded-xl text-xs transition cursor-pointer text-center"
-              >
-                إغلاق
-              </button>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-      </ViewportPortal>
     </div>
   );
 }

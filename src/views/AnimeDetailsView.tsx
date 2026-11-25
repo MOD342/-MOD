@@ -5,7 +5,7 @@ import { Search } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { db } from '../firebase';
 import { doc, updateDoc, increment, collection, query, where, getDocs } from 'firebase/firestore';
-import { listService, CustomList, MainListStatus, AnimeEntry, getAnimeRewards, isActiveLibraryEntry } from '../services/listService';
+import { listService, CustomList, MainListStatus, AnimeEntry, getAnimeRewards, isActiveLibraryEntry, getCustomListColorOption } from '../services/listService';
 import { Recommendation, getApprovedRecommendations, addRecommendation, Comment, getComments, addComment, updateCommentInteraction, updateRecommendationInteraction } from '../services/animeInteractionService';
 import { notificationsService } from '../services/notificationsService';
 import { isStaffEmail } from '../services/moderationService';
@@ -1271,10 +1271,15 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
           alt={anime.title}
           className="w-full h-full object-cover"
         />
-        <div className="absolute inset-0 bg-gradient-to-t from-black via-black/45 to-transparent pointer-events-none" />
+
+        {/* Compact text-only bottom backdrop */}
+        <div className="absolute inset-x-0 bottom-0 h-44 bg-gradient-to-t from-black/80 via-black/35 to-transparent pointer-events-none z-20" />
 
         {/* Info Overlay */}
-        <div className="absolute bottom-5 right-4 left-4 max-w-6xl mx-auto z-30 flex flex-col items-center md:items-start text-center md:text-right gap-3 md:flex-row md:gap-6 pointer-events-none">
+        <div
+          className="absolute bottom-5 right-4 left-4 max-w-6xl mx-auto z-30 flex flex-col items-center md:items-start text-center md:text-right gap-3 md:flex-row md:gap-6 pointer-events-none"
+          style={{ textShadow: '0 2px 12px rgba(0,0,0,0.95), 0 1px 4px rgba(0,0,0,0.9)' }}
+        >
           {display.isWideOrUnfolded && (
             <button
               type="button"
@@ -1761,7 +1766,7 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
                 </button>
               </div>
               
-              <div className="flex overflow-x-auto hide-scrollbar gap-3 pb-2">
+              <div className="flex overflow-x-auto hide-scrollbar gap-3 pb-2 snap-x snap-mandatory">
                 {(() => {
                   const combined = [
                     ...recommendations.map(r => {
@@ -1793,14 +1798,14 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
                   <div 
                     key={i} 
                     onClick={() => { if (onAnimeClick && rec.id) onAnimeClick(rec.id.toString()); }}
-                    className="w-28 shrink-0 relative group cursor-pointer"
+                    className="snap-start theme-keep-dark w-28 shrink-0 relative group cursor-pointer"
                   >
                     {rec.isUser && isMod && rec.trueId && (
                       <button onClick={(e) => { e.stopPropagation(); handleDeleteRec('', rec.trueId); }} className="absolute z-20 top-1 left-1 p-1.5 bg-red-600/80 rounded-md text-white opacity-0 group-hover:opacity-100 transition shadow">
                         <Trash2 size={12} />
                       </button>
                     )}
-                    <div className="theme-keep-dark w-28 h-40 rounded-xl overflow-hidden bg-[#121212] border border-neutral-800 shadow-lg group-hover:border-[#FF1744] transition-colors relative">
+                    <div className="w-28 h-40 rounded-xl overflow-hidden bg-[#121212] border border-neutral-800 shadow-lg group-hover:border-[#FF1744] transition-colors relative">
                        {rec.posterUrl ? (
                          <img src={rec.posterUrl} alt={rec.title} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300" referrerPolicy="no-referrer" />
                        ) : (
@@ -1809,12 +1814,14 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
                            <span className="text-[9px] text-[#B0B0B0] text-center px-1 font-bold">توصية أنمي</span>
                          </div>
                        )}
-                       <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent"></div>
                        {rec.isUser && (
-                         <div className="absolute top-1 right-1 bg-green-500/80 text-green-100 text-[8px] font-bold px-1 rounded backdrop-blur-sm">توصية عضو</div>
+                         <div className="absolute top-1 right-1 bg-green-500/90 text-white text-[8px] font-bold px-1 rounded backdrop-blur-sm">توصية عضو</div>
                        )}
-                       <div className="absolute bottom-2 left-1 right-1 text-center">
-                         <h4 className="text-[10px] font-normal text-white/95 line-clamp-2 leading-snug">{rec.title}</h4>
+                       <div
+                         className="absolute inset-x-0 bottom-0 pt-5 pb-1.5 px-1.5 bg-gradient-to-t from-black/85 via-black/45 to-transparent text-center"
+                         style={{ textShadow: '0 2px 6px rgba(0,0,0,0.98), 0 0 3px rgba(0,0,0,0.95)' }}
+                       >
+                         <h4 className="text-[11px] font-bold text-white group-hover:text-[#FF1744] transition-colors line-clamp-2 leading-snug">{rec.title}</h4>
                        </div>
                     </div>
                   </div>
@@ -2341,16 +2348,20 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
                      <div className="space-y-2 mb-4 max-h-[160px] overflow-y-auto hide-scrollbar pr-0.5">
                        {customLists.map(list => {
                           const isActive = userEntry?.customLists?.[list.id] === true;
+                          const colorOpt = getCustomListColorOption(list.color);
                           return (
                             <button 
                               key={list.id}
                               onClick={() => handleToggleCustomList(list.id)}
-                              className={`w-full flex items-center justify-between p-3 rounded-xl border transition-all duration-300 ${
-                                 isActive ? 'bg-red-500/10 border-red-500/40 text-red-500' : 'bg-[#121212] border-neutral-800 hover:border-neutral-700'
+                              className={`w-full flex items-center justify-between p-3 rounded-xl border transition-all duration-300 cursor-pointer ${
+                                 isActive ? colorOpt.inactiveClass : 'bg-[#121212] border-neutral-800 hover:border-neutral-700'
                               }`}
                             >
-                              <span className={`text-sm font-bold ${isActive ? 'text-red-400' : 'text-neutral-300'}`}>{list.name}</span>
-                              <div className={`w-5 h-5 rounded flex items-center justify-center border transition-all ${isActive ? 'bg-red-500 border-red-500' : 'border-neutral-700'}`}>
+                              <span className="flex items-center gap-2.5 min-w-0">
+                                <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${colorOpt.dotClass}`} />
+                                <span className={`text-sm font-bold truncate ${isActive ? 'text-white' : 'text-neutral-300'}`}>{list.name}</span>
+                              </span>
+                              <div className={`w-5 h-5 rounded flex items-center justify-center border transition-all shrink-0 ${isActive ? 'border-white/50 bg-white/15' : 'border-neutral-700'}`}>
                                  {isActive && <span className="text-white text-xs font-black">✓</span>}
                               </div>
                             </button>

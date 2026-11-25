@@ -22,7 +22,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { mangaListService, type MangaEntry } from '../services/mangaListService';
-import { listService, type CustomList, type MainListStatus, isActiveLibraryEntry } from '../services/listService';
+import { listService, type CustomList, type MainListStatus, isActiveLibraryEntry, getCustomListColorOption } from '../services/listService';
 import { getComments, addComment, type Comment } from '../services/animeInteractionService';
 import { downloadManagerService, useDownloadQueue } from '../services/downloadManagerService';
 import { clientCache } from '../utils/clientCache';
@@ -557,12 +557,16 @@ export default function MangaDetailsView({
               src={manga.bannerUrl || manga.posterUrl}
               alt={manga.title}
               referrerPolicy="no-referrer"
-              className="w-full h-full object-cover opacity-85"
+              className="w-full h-full object-cover"
             />
           )}
-          <div className="absolute inset-0 bg-gradient-to-t from-black via-black/55 to-black/25 pointer-events-none" />
 
-          <div className="absolute bottom-5 inset-x-4 max-w-6xl mx-auto z-20 flex items-end gap-4 md:gap-6 pointer-events-none">
+          <div className="absolute inset-x-0 bottom-0 h-44 bg-gradient-to-t from-black/80 via-black/35 to-transparent pointer-events-none z-10" />
+
+          <div
+            className="absolute bottom-5 inset-x-4 max-w-6xl mx-auto z-20 flex items-end gap-4 md:gap-6 pointer-events-none"
+            style={{ textShadow: '0 2px 12px rgba(0,0,0,0.95), 0 1px 4px rgba(0,0,0,0.9)' }}
+          >
             <button
               type="button"
               onClick={(e) => {
@@ -817,35 +821,36 @@ export default function MangaDetailsView({
               {Array.isArray(manga.related) && manga.related.length > 0 && (
                 <section className="space-y-3">
                   <h3 className="text-sm font-black text-white">أعمال مرتبطة</h3>
-                  <div className="flex gap-3 overflow-x-auto pb-2 hide-scrollbar">
+                  <div className="flex gap-3 overflow-x-auto pb-2 hide-scrollbar snap-x snap-mandatory">
                     {manga.related.map((rel: any, idx: number) => (
                       <button
                         key={`rel-${rel.id}-${idx}`}
                         type="button"
                         onClick={() => onMangaClick(String(rel.id))}
-                        className="theme-keep-dark w-[126px] sm:w-[148px] shrink-0 text-right group cursor-pointer"
+                        className="snap-start theme-keep-dark w-[126px] sm:w-[148px] shrink-0 text-right group cursor-pointer relative aspect-[3/4] rounded-xl overflow-hidden bg-neutral-900 border border-white/10 hover:border-amber-400/60 transition-colors"
                       >
-                        <div className="relative aspect-[3/4] rounded-xl overflow-hidden bg-neutral-900 border border-white/10">
-                          {rel.posterUrl ? (
-                            <img
-                              src={rel.posterUrl}
-                              alt={rel.title}
-                              referrerPolicy="no-referrer"
-                              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                            />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center text-neutral-600">
-                              <BookOpen size={22} />
-                            </div>
-                          )}
-                          <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/35 to-transparent flex flex-col justify-end p-2">
-                            <span className="text-[10px] text-neutral-300 font-bold">
-                              {rel.relation} · {rel.originLabel}
-                            </span>
-                            <span className="text-xs font-black text-white line-clamp-2">
-                              <LongPressCopy text={rel.title}>{rel.title}</LongPressCopy>
-                            </span>
+                        {rel.posterUrl ? (
+                          <img
+                            src={rel.posterUrl}
+                            alt={rel.title}
+                            referrerPolicy="no-referrer"
+                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-neutral-600">
+                            <BookOpen size={22} />
                           </div>
+                        )}
+                        <div
+                          className="absolute inset-x-0 bottom-0 pt-5 pb-2 px-2 bg-gradient-to-t from-black/85 via-black/45 to-transparent text-center"
+                          style={{ textShadow: '0 2px 6px rgba(0,0,0,0.98), 0 0 3px rgba(0,0,0,0.95)' }}
+                        >
+                          <span className="text-[10px] text-neutral-200 font-bold block">
+                            {rel.relation} · {rel.originLabel}
+                          </span>
+                          <span className="text-xs font-black text-white group-hover:text-amber-300 transition-colors line-clamp-2 block">
+                            <LongPressCopy text={rel.title}>{rel.title}</LongPressCopy>
+                          </span>
                         </div>
                       </button>
                     ))}
@@ -857,35 +862,36 @@ export default function MangaDetailsView({
               {Array.isArray(manga.recommendations) && manga.recommendations.length > 0 && (
                 <section className="space-y-3">
                   <h3 className="text-sm font-black text-white">أعمال مشابهة قد تعجبك</h3>
-                  <div className="flex gap-3 overflow-x-auto pb-2 hide-scrollbar">
+                  <div className="flex gap-3 overflow-x-auto pb-2 hide-scrollbar snap-x snap-mandatory">
                     {manga.recommendations.map((rec: any, idx: number) => (
                       <button
                         key={`rec-${rec._id}-${idx}`}
                         type="button"
                         onClick={() => onMangaClick(String(rec._id))}
-                        className="theme-keep-dark w-[126px] sm:w-[148px] shrink-0 text-right group cursor-pointer"
+                        className="snap-start theme-keep-dark w-[126px] sm:w-[148px] shrink-0 text-right group cursor-pointer relative aspect-[3/4] rounded-xl overflow-hidden bg-neutral-900 border border-white/10 hover:border-amber-400/60 transition-colors"
                       >
-                        <div className="relative aspect-[3/4] rounded-xl overflow-hidden bg-neutral-900 border border-white/10">
-                          {rec.posterUrl ? (
-                            <img
-                              src={rec.posterUrl}
-                              alt={rec.title}
-                              referrerPolicy="no-referrer"
-                              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                            />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center text-neutral-600">
-                              <BookOpen size={22} />
-                            </div>
-                          )}
-                          <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/35 to-transparent flex flex-col justify-end p-2">
-                            <span className="text-[10px] text-amber-400 font-bold tabular-nums">
-                              {rec.originLabel} · {rec.rating}
-                            </span>
-                            <span className="text-xs font-black text-white line-clamp-2">
-                              <LongPressCopy text={rec.title}>{rec.title}</LongPressCopy>
-                            </span>
+                        {rec.posterUrl ? (
+                          <img
+                            src={rec.posterUrl}
+                            alt={rec.title}
+                            referrerPolicy="no-referrer"
+                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-neutral-600">
+                            <BookOpen size={22} />
                           </div>
+                        )}
+                        <div
+                          className="absolute inset-x-0 bottom-0 pt-5 pb-2 px-2 bg-gradient-to-t from-black/85 via-black/45 to-transparent text-center"
+                          style={{ textShadow: '0 2px 6px rgba(0,0,0,0.98), 0 0 3px rgba(0,0,0,0.95)' }}
+                        >
+                          <span className="text-[10px] text-amber-300 font-bold tabular-nums block">
+                            {rec.originLabel} · {rec.rating}
+                          </span>
+                          <span className="text-xs font-black text-white group-hover:text-amber-300 transition-colors line-clamp-2 block">
+                            <LongPressCopy text={rec.title}>{rec.title}</LongPressCopy>
+                          </span>
                         </div>
                       </button>
                     ))}
@@ -1141,6 +1147,7 @@ export default function MangaDetailsView({
                       <div className="text-xs font-bold text-neutral-400">قوائمك المخصصة</div>
                       {customLists.map((cl) => {
                         const checked = Boolean(userEntry?.customLists?.[cl.id]);
+                        const colorOpt = getCustomListColorOption(cl.color);
                         return (
                           <button
                             key={cl.id}
@@ -1148,12 +1155,15 @@ export default function MangaDetailsView({
                             onClick={() => void handleToggleCustomList(cl.id)}
                             className={`w-full min-h-[44px] px-4 rounded-xl border flex items-center justify-between text-xs font-bold transition cursor-pointer ${
                               checked
-                                ? 'bg-purple-600/15 border-purple-500 text-white'
+                                ? colorOpt.inactiveClass
                                 : 'bg-neutral-900/60 border-neutral-800 text-neutral-300'
                             }`}
                           >
-                            <span>{cl.name}</span>
-                            {checked && <Check size={15} className="text-purple-400" />}
+                            <span className="flex items-center gap-2 min-w-0">
+                              <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${colorOpt.dotClass}`} />
+                              <span className="truncate">{cl.name}</span>
+                            </span>
+                            {checked && <Check size={15} className="text-white shrink-0" />}
                           </button>
                         );
                       })}

@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: zoryx-api
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/system/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+      - key: FIREBASE_DATABASE_ID
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT
+        sync: false

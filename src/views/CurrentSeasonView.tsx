@@ -160,20 +160,24 @@ export default function CurrentSeasonView({ onBack, onAnimeClick }: { onBack: ()
                 onMouseEnter={() => clientCache.prefetchDetails(anime._id)}
                 className="theme-keep-dark cursor-pointer relative rounded-2xl overflow-hidden group border border-neutral-800 hover:border-purple-500/50 transition-all duration-300 aspect-[3/4] bg-neutral-900 hover:shadow-lg hover:shadow-purple-500/10"
               >
-                <img src={anime.posterUrl || FALLBACK_POSTER_DATA_URL} loading="lazy" className="w-full h-full object-cover opacity-80 group-hover:opacity-100 group-hover:scale-[1.03] transition-all duration-500" alt="poster" />
-                <div className="absolute inset-0 bg-gradient-to-t from-black via-black/20 to-transparent flex flex-col justify-end p-3 pointer-events-none">
-                  <span className="absolute top-2 right-2 bg-black/60 backdrop-blur-md text-white px-2 py-1 rounded text-xs font-bold shadow-lg flex items-center gap-1"><Star size={10} className="text-yellow-400" /> {anime.rating || 'N/A'}</span>
-                  {selectedSeason === 'now' && (
-                    <span className="absolute top-2 left-2 bg-purple-600 text-white px-2 py-0.5 rounded text-[10px] font-bold shadow-lg flex items-center gap-1"><Tv size={10} /> جديد</span>
-                  )}
-                  
+                <img src={anime.posterUrl || FALLBACK_POSTER_DATA_URL} loading="lazy" className="w-full h-full object-cover group-hover:scale-[1.03] transition-all duration-500" alt="poster" />
+                <span className="absolute top-2 right-2 bg-black/65 backdrop-blur-md text-white px-2 py-1 rounded text-xs font-bold shadow-lg flex items-center gap-1 pointer-events-none"><Star size={10} className="text-yellow-400" fill="currentColor" /> {anime.rating || 'N/A'}</span>
+                {selectedSeason === 'now' && (
+                  <span className="absolute top-2 left-2 bg-purple-600 text-white px-2 py-0.5 rounded text-[10px] font-bold shadow-lg flex items-center gap-1 pointer-events-none"><Tv size={10} /> جديد</span>
+                )}
+                <div
+                  className="absolute inset-x-0 bottom-0 pt-5 pb-2.5 px-3 bg-gradient-to-t from-black/85 via-black/45 to-transparent flex flex-col justify-end pointer-events-none"
+                  style={{ textShadow: '0 2px 6px rgba(0,0,0,0.98), 0 0 3px rgba(0,0,0,0.95)' }}
+                >
                   {/* Wrap Title in LongPressCopy element so long pressing copies it */}
-                  <h5 className="font-bold text-sm text-white drop-shadow line-clamp-2 text-right dir-rtl select-text pointer-events-auto">
+                  <h5 className="font-bold text-sm text-white line-clamp-2 text-right dir-rtl select-text pointer-events-auto">
                     <LongPressCopy text={anime.title} className="hover:text-purple-300 transition-colors">
                       {anime.title}
                     </LongPressCopy>
                   </h5>
-                  <p className="text-[10px] text-neutral-300 mt-1 line-clamp-1 text-right">{anime.genres?.join(', ')}</p>
+                  {anime.genres?.length > 0 && (
+                    <p className="text-[10px] text-neutral-200 mt-0.5 line-clamp-1 text-right">{anime.genres.join(', ')}</p>
+                  )}
                 </div>
               </div>
             ))

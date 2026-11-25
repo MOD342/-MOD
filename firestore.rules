@@ -139,6 +139,7 @@ service cloud.firestore {
         && (!data.keys().hasAny(['privacySettings']) || data.privacySettings is map)
         && (!data.keys().hasAny(['avatarAlignment']) || data.avatarAlignment is string)
         && (!data.keys().hasAny(['avatarShape']) || data.avatarShape is string)
+        && (!data.keys().hasAny(['avatarSize']) || (data.avatarSize is string && data.avatarSize.size() <= 32))
         && (!data.keys().hasAny(['bannerSize']) || data.bannerSize is string)
         && (!data.keys().hasAny(['dislikesReceived']) || data.dislikesReceived is number)
         && (!data.keys().hasAny(['approvedRecommendationsCount']) || data.approvedRecommendationsCount is number)
@@ -163,8 +164,9 @@ service cloud.firestore {
 
     function isValidCustomList(data) {
       return data.keys().hasAll(['name', 'createdAt'])
-        && data.keys().size() == 2
+        && data.keys().hasOnly(['name', 'color', 'createdAt'])
         && data.name is string && data.name.size() > 0 && data.name.size() <= 100
+        && (!data.keys().hasAny(['color']) || (data.color is string && data.color.size() > 0 && data.color.size() <= 32))
         && data.createdAt == request.time;
     }
 
@@ -602,7 +604,7 @@ service cloud.firestore {
       allow update: if isSignedIn() && isValidId(userId) && (
         isModeratorAuth() || (
           isOwner(userId) &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['xp', 'level', 'streakDays', 'likesReceived', 'commentsCount', 'recommendationsAccepted', 'aiGamesPoints', 'ratingsCount', 'chatMessagesCount', 'lastActiveDate', 'coins', 'purchasedItems', 'claimedAchievements', 'dailyStats', 'equippedBanner', 'equippedAvatar', 'equippedFrame', 'equippedTitle', 'equippedBadge', 'equippedAura', 'equippedCommentCard', 'lastSpinTimestamp', 'listCount', 'username', 'displayName', 'lastUsernameChange', 'lastDisplayNameChange', 'totalEpisodesWatched', 'completedAnimeCount', 'totalChaptersRead', 'completedMangaCount', 'privacySettings', 'avatarAlignment', 'avatarShape', 'bannerSize', 'dislikesReceived', 'approvedRecommendationsCount', 'email', 'photoURL', 'id', 'modPoints', 'lastSpinDate', 'lastDailyClaim', 'dailyClaimStreak', 'claimedSeasonMilestones', 'boosters', 'lastBossDefeatDate', 'unlockedRewards', 'hasClaimedCorrectionBadge', 'redeemedPromoCodes', 'doubleXpUntil', 'doubleCoinsUntil', 'streakShieldCount', 'antiCheatHintCount', 'lastSyncedAt']) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['xp', 'level', 'streakDays', 'likesReceived', 'commentsCount', 'recommendationsAccepted', 'aiGamesPoints', 'ratingsCount', 'chatMessagesCount', 'lastActiveDate', 'coins', 'purchasedItems', 'claimedAchievements', 'dailyStats', 'equippedBanner', 'equippedAvatar', 'equippedFrame', 'equippedTitle', 'equippedBadge', 'equippedAura', 'equippedCommentCard', 'lastSpinTimestamp', 'listCount', 'username', 'displayName', 'lastUsernameChange', 'lastDisplayNameChange', 'totalEpisodesWatched', 'completedAnimeCount', 'totalChaptersRead', 'completedMangaCount', 'privacySettings', 'avatarAlignment', 'avatarShape', 'avatarSize', 'bannerSize', 'dislikesReceived', 'approvedRecommendationsCount', 'email', 'photoURL', 'id', 'modPoints', 'lastSpinDate', 'lastDailyClaim', 'dailyClaimStreak', 'claimedSeasonMilestones', 'boosters', 'lastBossDefeatDate', 'unlockedRewards', 'hasClaimedCorrectionBadge', 'redeemedPromoCodes', 'doubleXpUntil', 'doubleCoinsUntil', 'streakShieldCount', 'antiCheatHintCount', 'lastSyncedAt']) &&
           (!incoming().diff(existing()).affectedKeys().hasAny(['role'])) &&
           (!incoming().diff(existing()).affectedKeys().hasAny(['doubleXpUntil']) || incoming().doubleXpUntil is number) &&
           (!incoming().diff(existing()).affectedKeys().hasAny(['doubleCoinsUntil']) || incoming().doubleCoinsUntil is number) &&
@@ -648,6 +650,7 @@ service cloud.firestore {
           (!incoming().diff(existing()).affectedKeys().hasAny(['privacySettings']) || incoming().privacySettings is map) &&
           (!incoming().diff(existing()).affectedKeys().hasAny(['avatarAlignment']) || incoming().avatarAlignment is string) &&
           (!incoming().diff(existing()).affectedKeys().hasAny(['avatarShape']) || incoming().avatarShape is string) &&
+          (!incoming().diff(existing()).affectedKeys().hasAny(['avatarSize']) || (incoming().avatarSize is string && incoming().avatarSize.size() <= 32)) &&
           (!incoming().diff(existing()).affectedKeys().hasAny(['bannerSize']) || incoming().bannerSize is string) &&
           (!incoming().diff(existing()).affectedKeys().hasAny(['dislikesReceived']) || incoming().dislikesReceived is number) &&
           (!incoming().diff(existing()).affectedKeys().hasAny(['approvedRecommendationsCount']) || incoming().approvedRecommendationsCount is number) &&
@@ -663,8 +666,9 @@ service cloud.firestore {
         allow read: if isOwner(userId) || isAdminAuth();
         allow create: if isOwner(userId) && isValidId(listId) && isValidCustomList(incoming());
         allow update: if isOwner(userId) && isValidId(listId) &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['name']) &&
-          incoming().name is string && incoming().name.size() > 0 && incoming().name.size() <= 100;
+          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'color']) &&
+          incoming().name is string && incoming().name.size() > 0 && incoming().name.size() <= 100 &&
+          (!incoming().keys().hasAny(['color']) || (incoming().color is string && incoming().color.size() > 0 && incoming().color.size() <= 32));
         allow delete: if isAdminAuth() || (isOwner(userId) && isValidId(listId));
       }
 

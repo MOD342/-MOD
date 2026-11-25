@@ -21,6 +21,7 @@
         "privacySettings": { "type": "object" },
         "avatarAlignment": { "type": "string" },
         "avatarShape": { "type": "string" },
+        "avatarSize": { "type": "string" },
         "bannerSize": { "type": "string" },
         "dislikesReceived": { "type": "number" },
         "approvedRecommendationsCount": { "type": "number" },
@@ -43,7 +44,8 @@
       "description": "User defined custom list",
       "type": "object",
       "properties": {
-        "name": { "type": "string" },
+        "name": { "type": "string", "maxLength": 100 },
+        "color": { "type": "string", "maxLength": 32 },
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["name", "createdAt"]

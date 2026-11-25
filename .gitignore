@@ -1,0 +1,28 @@
+# Dependencies & build outputs
+node_modules/
+dist/
+api/index.js
+*.tsbuildinfo
+
+# Environment & local secrets
+.env
+.env.local
+.env.*.local
+
+# Generated native Android project (rebuilt cleanly via npm run apk:init or GitHub Actions)
+android/
+
+# Android Signing Keystores & Passwords (NEVER commit private signing keys)
+*.keystore
+*.jks
+*.p12
+*.pem
+keystore.properties
+.android-signing/
+google-services.json
+
+# IDE & OS
+.DS_Store
+.vscode/
+.idea/
+*.log

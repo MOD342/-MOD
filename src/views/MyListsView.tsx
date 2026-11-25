@@ -15,6 +15,10 @@ import {
   CloudOff,
   AlertCircle,
   BookOpen,
+  Pencil,
+  Check,
+  X,
+  Palette,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import {
@@ -24,6 +28,8 @@ import {
   MainListStatus,
   isActiveLibraryEntry,
   computeLibraryStats,
+  CUSTOM_LIST_COLORS,
+  getCustomListColorOption,
 } from '../services/listService';
 import {
   mangaListService,
@@ -48,22 +54,73 @@ interface MyListsViewProps {
   onMangaClick?: (id: string) => void;
 }
 
-const MAIN_LISTS: { id: 'all' | MainListStatus; label: string }[] = [
-  { id: 'all', label: 'الكل' },
-  { id: 'watching', label: 'أشاهده حالياً' },
-  { id: 'completed', label: 'مكتمل' },
-  { id: 'plan_to_watch', label: 'أنوي مشاهدته' },
-  { id: 'on_hold', label: 'مؤجل' },
-  { id: 'dropped', label: 'ملغي' },
+interface StatusTheme {
+  id: 'all' | MainListStatus;
+  label: string;
+  dotClass: string;
+  activeClass: string;
+  inactiveClass: string;
+  badgeClass: string;
+}
+
+const MAIN_LISTS: StatusTheme[] = [
+  {
+    id: 'all',
+    label: 'الكل',
+    dotClass: 'bg-purple-400',
+    activeClass: 'bg-purple-600 text-white border-purple-400 shadow-lg shadow-purple-600/25',
+    inactiveClass: 'bg-purple-500/10 text-purple-300 border-purple-500/30 hover:bg-purple-500/20',
+    badgeClass: 'bg-purple-600/90 text-white border-purple-400/40',
+  },
+  {
+    id: 'watching',
+    label: 'أشاهده حالياً',
+    dotClass: 'bg-emerald-400',
+    activeClass: 'bg-emerald-600 text-white border-emerald-400 shadow-lg shadow-emerald-600/25',
+    inactiveClass: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/20',
+    badgeClass: 'bg-emerald-600/90 text-white border-emerald-400/40',
+  },
+  {
+    id: 'completed',
+    label: 'مكتمل',
+    dotClass: 'bg-sky-400',
+    activeClass: 'bg-sky-600 text-white border-sky-400 shadow-lg shadow-sky-600/25',
+    inactiveClass: 'bg-sky-500/10 text-sky-300 border-sky-500/30 hover:bg-sky-500/20',
+    badgeClass: 'bg-sky-600/90 text-white border-sky-400/40',
+  },
+  {
+    id: 'plan_to_watch',
+    label: 'أنوي مشاهدته',
+    dotClass: 'bg-amber-400',
+    activeClass: 'bg-amber-500 text-black border-amber-300 shadow-lg shadow-amber-500/25',
+    inactiveClass: 'bg-amber-500/10 text-amber-300 border-amber-500/30 hover:bg-amber-500/20',
+    badgeClass: 'bg-amber-500/95 text-black border-amber-300/50',
+  },
+  {
+    id: 'on_hold',
+    label: 'مؤجل',
+    dotClass: 'bg-orange-400',
+    activeClass: 'bg-orange-600 text-white border-orange-400 shadow-lg shadow-orange-600/25',
+    inactiveClass: 'bg-orange-500/10 text-orange-300 border-orange-500/30 hover:bg-orange-500/20',
+    badgeClass: 'bg-orange-600/90 text-white border-orange-400/40',
+  },
+  {
+    id: 'dropped',
+    label: 'ملغي',
+    dotClass: 'bg-rose-400',
+    activeClass: 'bg-rose-600 text-white border-rose-400 shadow-lg shadow-rose-600/25',
+    inactiveClass: 'bg-rose-500/10 text-rose-300 border-rose-500/30 hover:bg-rose-500/20',
+    badgeClass: 'bg-rose-600/90 text-white border-rose-400/40',
+  },
 ];
 
-const MANGA_LISTS: { id: 'all' | MainListStatus; label: string }[] = [
-  { id: 'all', label: 'الكل' },
-  { id: 'watching', label: 'أقرأه حالياً' },
-  { id: 'completed', label: 'مكتمل' },
-  { id: 'plan_to_watch', label: 'أنوي قراءته' },
-  { id: 'on_hold', label: 'مؤجل' },
-  { id: 'dropped', label: 'ملغي' },
+const MANGA_LISTS: StatusTheme[] = [
+  MAIN_LISTS[0],
+  { ...MAIN_LISTS[1], label: 'أقرأه حالياً' },
+  MAIN_LISTS[2],
+  { ...MAIN_LISTS[3], label: 'أنوي قراءته' },
+  MAIN_LISTS[4],
+  MAIN_LISTS[5],
 ];
 
 export default function MyListsView({ onAnimeClick, onMangaClick }: MyListsViewProps) {
@@ -86,8 +143,12 @@ export default function MyListsView({ onAnimeClick, onMangaClick }: MyListsViewP
   const [loading, setLoading] = useState(() => {
     return !clientCache.get(entriesCacheKey);
   });
-  const [showAddList, setShowAddList] = useState(false);
-  const [newListName, setNewListName] = useState('');
+  const [showListEditor, setShowListEditor] = useState(false);
+  const [editingListId, setEditingListId] = useState<string | null>(null);
+  const [listNameInput, setListNameInput] = useState('');
+  const [listColorInput, setListColorInput] = useState<string>(CUSTOM_LIST_COLORS[0].id);
+  const [confirmDeleteListId, setConfirmDeleteListId] = useState<string | null>(null);
+  const [savingList, setSavingList] = useState(false);
 
   const [sortBy, setSortBy] = useState<'alpha' | 'date' | 'year'>('date');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
@@ -175,15 +236,41 @@ export default function MyListsView({ onAnimeClick, onMangaClick }: MyListsViewP
     };
   }, [user, loadData]);
 
-  const handleCreateList = async () => {
-    if (!user || !newListName.trim()) return;
+  const openCreateListEditor = () => {
+    setEditingListId(null);
+    setListNameInput('');
+    setListColorInput(CUSTOM_LIST_COLORS[customLists.length % CUSTOM_LIST_COLORS.length].id);
+    setConfirmDeleteListId(null);
+    setShowListEditor(true);
+  };
+
+  const openEditListEditor = (list: CustomList) => {
+    setEditingListId(list.id);
+    setListNameInput(list.name);
+    setListColorInput(getCustomListColorOption(list.color).id);
+    setConfirmDeleteListId(null);
+    setShowListEditor(true);
+  };
+
+  const handleSaveList = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!user || !listNameInput.trim() || savingList) return;
+    setSavingList(true);
     try {
-      await listService.createCustomList(user.id, newListName.trim());
-      setNewListName('');
-      setShowAddList(false);
+      if (editingListId) {
+        await listService.updateCustomList(user.id, editingListId, listNameInput.trim(), listColorInput);
+      } else {
+        const newId = await listService.createCustomList(user.id, listNameInput.trim(), listColorInput);
+        setActiveListId(newId);
+      }
+      setListNameInput('');
+      setEditingListId(null);
+      setShowListEditor(false);
       void loadData(false);
-    } catch (e) {
-      console.error(e);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setSavingList(false);
     }
   };
 
@@ -192,6 +279,11 @@ export default function MyListsView({ onAnimeClick, onMangaClick }: MyListsViewP
     try {
       await listService.deleteCustomList(user.id, listId);
       if (activeListId === listId) setActiveListId('all');
+      if (editingListId === listId) {
+        setShowListEditor(false);
+        setEditingListId(null);
+      }
+      setConfirmDeleteListId(null);
       void loadData(false);
     } catch (e) {
       console.error(e);
@@ -384,21 +476,25 @@ export default function MyListsView({ onAnimeClick, onMangaClick }: MyListsViewP
               </div>
             </div>
 
-            <div className="flex gap-1.5 overflow-x-auto hide-scrollbar pb-0.5 pt-0.5">
+            <div className="flex gap-1.5 overflow-x-auto hide-scrollbar pb-0.5 pt-0.5 items-center">
               {activeLists.map((list) => {
                 const count = tabCounts[list.id] || 0;
+                const isSelected = activeListId === list.id;
                 return (
                   <button
                     key={list.id}
-                    onClick={() => setActiveListId(list.id)}
-                    className={`px-3 py-1.5 text-[11px] font-bold rounded-lg whitespace-nowrap transition-colors cursor-pointer flex items-center gap-1.5 ${
-                      activeListId === list.id
-                        ? 'bg-purple-600 text-white shadow'
-                        : 'bg-neutral-900 text-neutral-400 hover:text-white border border-neutral-800'
+                    type="button"
+                    onClick={() => {
+                      setActiveListId(list.id);
+                      setConfirmDeleteListId(null);
+                    }}
+                    className={`px-3 py-1.5 text-[11px] font-bold rounded-lg whitespace-nowrap transition-all cursor-pointer flex items-center gap-1.5 border ${
+                      isSelected ? list.activeClass : list.inactiveClass
                     }`}
                   >
+                    <span className={`w-2 h-2 rounded-full shrink-0 ${isSelected ? 'bg-current opacity-90' : list.dotClass}`} />
                     <span>{list.label}</span>
-                    <span className={`text-[10px] font-mono tabular-nums ${activeListId === list.id ? 'text-white/85' : 'text-neutral-500'}`}>
+                    <span className={`text-[10px] font-mono tabular-nums ${isSelected ? 'opacity-90' : 'opacity-75'}`}>
                       ({count})
                     </span>
                   </button>
@@ -411,67 +507,175 @@ export default function MyListsView({ onAnimeClick, onMangaClick }: MyListsViewP
 
               {customLists.map((list) => {
                 const count = tabCounts[list.id] || 0;
+                const isSelected = activeListId === list.id;
+                const colorOpt = getCustomListColorOption(list.color);
                 return (
-                  <div key={list.id} className="relative group flex shrink-0">
+                  <div key={list.id} className="relative flex items-center shrink-0">
                     <button
-                      onClick={() => setActiveListId(list.id)}
-                      className={`px-3 py-1.5 text-[11px] font-bold rounded-lg whitespace-nowrap transition-colors cursor-pointer flex items-center gap-1.5 ${
-                        activeListId === list.id
-                          ? 'bg-blue-600 text-white shadow'
-                          : 'bg-neutral-900 text-blue-400/80 hover:text-blue-400 border border-neutral-800'
+                      type="button"
+                      onClick={() => {
+                        setActiveListId(list.id);
+                        setConfirmDeleteListId(null);
+                      }}
+                      className={`px-3 py-1.5 text-[11px] font-bold rounded-lg whitespace-nowrap transition-all cursor-pointer flex items-center gap-1.5 border ${
+                        isSelected ? colorOpt.activeClass : colorOpt.inactiveClass
                       }`}
                     >
+                      <span className={`w-2 h-2 rounded-full shrink-0 ${isSelected ? 'bg-current opacity-90' : colorOpt.dotClass}`} />
                       <span>{list.name}</span>
-                      <span className="text-[10px] font-mono opacity-80 tabular-nums">({count})</span>
-                    </button>
-                    <button
-                      onClick={() => handleDeleteList(list.id)}
-                      className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10 cursor-pointer"
-                      title="حذف القائمة"
-                    >
-                      <Trash2 size={8} className="text-white" />
+                      <span className={`text-[10px] font-mono tabular-nums ${isSelected ? 'opacity-90' : 'opacity-75'}`}>({count})</span>
                     </button>
                   </div>
                 );
               })}
 
               <button
-                onClick={() => setShowAddList(!showAddList)}
-                className="px-2.5 py-1.5 text-[11px] font-bold rounded-lg whitespace-nowrap flex items-center gap-1 bg-neutral-900/50 text-neutral-400 hover:text-white border border-dashed border-neutral-700 shrink-0 cursor-pointer"
+                type="button"
+                onClick={openCreateListEditor}
+                className="px-3 py-1.5 text-[11px] font-black rounded-lg whitespace-nowrap flex items-center gap-1 bg-neutral-900/70 text-neutral-300 hover:text-white hover:border-purple-500/50 border border-dashed border-neutral-700 shrink-0 cursor-pointer transition"
               >
-                <Plus size={12} /> قائمة
+                <Plus size={12} /> قائمة جديدة
               </button>
             </div>
 
+            {(() => {
+              const selectedCustomList = customLists.find((l) => l.id === activeListId);
+              if (!selectedCustomList) return null;
+              const selectedColor = getCustomListColorOption(selectedCustomList.color);
+              return (
+                <div className="flex flex-wrap items-center justify-between gap-2 bg-neutral-900/75 border border-white/10 rounded-xl px-3 py-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${selectedColor.dotClass}`} />
+                    <span className="text-xs font-black text-white truncate">{selectedCustomList.name}</span>
+                    <span className="text-[11px] font-bold text-neutral-400 tabular-nums">
+                      ({tabCounts[selectedCustomList.id] || 0})
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => openEditListEditor(selectedCustomList)}
+                      className="min-h-[32px] px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-neutral-200 hover:text-white text-[11px] font-bold flex items-center gap-1 transition cursor-pointer"
+                    >
+                      <Pencil size={12} />
+                      <span>تعديل</span>
+                    </button>
+                    {confirmDeleteListId === selectedCustomList.id ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => void handleDeleteList(selectedCustomList.id)}
+                          className="min-h-[32px] px-2.5 py-1 rounded-lg bg-red-600 hover:bg-red-500 text-white text-[11px] font-black flex items-center gap-1 transition cursor-pointer"
+                        >
+                          <Check size={12} />
+                          <span>تأكيد الحذف</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteListId(null)}
+                          className="min-h-[32px] px-2.5 py-1 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[11px] font-bold flex items-center gap-1 transition cursor-pointer"
+                        >
+                          <X size={12} />
+                          <span>إلغاء</span>
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteListId(selectedCustomList.id)}
+                        className="min-h-[32px] px-2.5 py-1 rounded-lg bg-red-500/10 hover:bg-red-500/20 border border-red-500/25 text-red-400 text-[11px] font-bold flex items-center gap-1 transition cursor-pointer"
+                      >
+                        <Trash2 size={12} />
+                        <span>حذف</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+
             <AnimatePresence>
-              {showAddList && (
-                <motion.div
+              {showListEditor && (
+                <motion.form
+                  onSubmit={handleSaveList}
                   initial={{ opacity: 0, height: 0 }}
                   animate={{ opacity: 1, height: 'auto' }}
                   exit={{ opacity: 0, height: 0 }}
-                  className="flex gap-2 items-center pt-1"
+                  className="bg-neutral-900/90 border border-white/10 rounded-2xl p-3 space-y-2.5 overflow-hidden"
                 >
-                  <input
-                    type="text"
-                    placeholder="اسم القائمة المخصصة..."
-                    value={newListName}
-                    onChange={(e) => setNewListName(e.target.value)}
-                    className="flex-1 bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-1.5 text-xs text-white focus:border-purple-500 outline-none"
-                    autoFocus
-                  />
-                  <button
-                    onClick={handleCreateList}
-                    className="bg-purple-600 text-white px-3 py-1.5 rounded-xl font-bold text-xs cursor-pointer"
-                  >
-                    حفظ
-                  </button>
-                  <button
-                    onClick={() => setShowAddList(false)}
-                    className="bg-neutral-800 text-white px-3 py-1.5 rounded-xl font-bold text-xs cursor-pointer"
-                  >
-                    إلغاء
-                  </button>
-                </motion.div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-black text-white flex items-center gap-1.5">
+                      <Palette size={14} className="text-purple-400" />
+                      <span>{editingListId ? 'تعديل القائمة المخصصة' : 'إنشاء قائمة مخصصة جديدة'}</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowListEditor(false);
+                        setEditingListId(null);
+                      }}
+                      className="w-7 h-7 rounded-lg bg-white/5 hover:bg-white/10 text-neutral-400 hover:text-white flex items-center justify-center cursor-pointer"
+                      aria-label="إغلاق"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <input
+                      type="text"
+                      placeholder="اسم القائمة المخصصة..."
+                      value={listNameInput}
+                      onChange={(e) => setListNameInput(e.target.value)}
+                      maxLength={100}
+                      className="flex-1 bg-black/50 border border-neutral-700 rounded-xl px-3 py-2 text-xs text-white focus:border-purple-500 outline-none"
+                      autoFocus
+                    />
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="submit"
+                        disabled={!listNameInput.trim() || savingList}
+                        className="bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white px-4 py-2 rounded-xl font-black text-xs cursor-pointer transition"
+                      >
+                        {editingListId ? 'حفظ التعديل' : 'إنشاء'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowListEditor(false);
+                          setEditingListId(null);
+                        }}
+                        className="bg-neutral-800 hover:bg-neutral-700 text-neutral-200 px-3 py-2 rounded-xl font-bold text-xs cursor-pointer transition"
+                      >
+                        إلغاء
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[11px] font-bold text-neutral-400">لون القائمة:</span>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {CUSTOM_LIST_COLORS.map((colorOpt) => {
+                        const picked = listColorInput === colorOpt.id;
+                        return (
+                          <button
+                            key={colorOpt.id}
+                            type="button"
+                            onClick={() => setListColorInput(colorOpt.id)}
+                            title={colorOpt.labelAr}
+                            aria-label={colorOpt.labelAr}
+                            className={`w-7 h-7 rounded-full flex items-center justify-center transition cursor-pointer border-2 ${
+                              picked ? 'border-white scale-110 shadow-md' : 'border-transparent opacity-75 hover:opacity-100'
+                            }`}
+                            style={{ backgroundColor: colorOpt.hex }}
+                          >
+                            {picked && <Check size={13} className={colorOpt.id === 'amber' ? 'text-black' : 'text-white'} strokeWidth={3} />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </motion.form>
               )}
             </AnimatePresence>
           </div>
@@ -494,7 +698,9 @@ export default function MyListsView({ onAnimeClick, onMangaClick }: MyListsViewP
                   const isManga = libraryTab === 'manga';
                   const cleanTitle = cleanAnimeTitle(anime.title || (isManga ? 'Manga' : 'Anime'));
                   const targetId = isManga ? (anime.mangaId || anime.id) : (anime.animeId || anime.id);
-                  const statusInfo = activeLists.find((m) => m.id === anime.status)?.label || (anime.isFavorite ? 'في المفضلة' : 'محفوظ');
+                  const matchedStatus = activeLists.find((m) => m.id === anime.status);
+                  const statusInfo = matchedStatus?.label || (anime.isFavorite ? 'في المفضلة' : 'محفوظ');
+                  const statusBadgeClass = matchedStatus?.badgeClass || 'bg-purple-600/85 text-white border-purple-400/40';
                   const shortType = isManga
                     ? (anime.mediaFormat === 'manhwa' ? 'مانهوا' : anime.mediaFormat === 'manhua' ? 'مانها' : 'مانجا')
                     : getShortTypeCode(anime.type || 'TV');
@@ -557,7 +763,7 @@ export default function MyListsView({ onAnimeClick, onMangaClick }: MyListsViewP
                               {isManga ? <BookOpen size={10} className="text-amber-400" /> : <Tv size={10} className="text-neutral-400" />}
                               <span>{shortType}</span>
                             </span>
-                            <span className="bg-purple-600/20 border border-purple-500/30 text-purple-300 px-2 py-0.5 rounded-lg flex items-center gap-1">
+                            <span className={`border px-2 py-0.5 rounded-lg flex items-center gap-1 ${statusBadgeClass}`}>
                               <CheckCircle2 size={10} />
                               <span>{statusInfo}</span>
                             </span>
@@ -636,16 +842,19 @@ export default function MyListsView({ onAnimeClick, onMangaClick }: MyListsViewP
                         </button>
                       </div>
 
-                      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 via-black/75 to-transparent pt-8 pb-2 px-2 pointer-events-none flex flex-col justify-end gap-1">
+                      <div
+                        className="absolute inset-x-0 bottom-0 pt-5 pb-2 px-2 bg-gradient-to-t from-black/85 via-black/45 to-transparent pointer-events-none flex flex-col justify-end gap-1"
+                        style={{ textShadow: '0 2px 6px rgba(0,0,0,0.98), 0 0 3px rgba(0,0,0,0.95)' }}
+                      >
                         {activeListId === 'all' && (
-                          <span className="self-center text-[9px] font-black bg-purple-600/85 text-white px-1.5 py-0.5 rounded">
+                          <span className={`self-center text-[9px] font-black border px-1.5 py-0.5 rounded ${statusBadgeClass}`}>
                             {statusInfo}
                           </span>
                         )}
                         <h3
                           className={`pointer-events-auto font-black ${
                             isLargeGrid ? 'text-xs sm:text-sm' : 'text-[10px] sm:text-xs'
-                          } text-white group-hover:text-purple-400 transition-colors line-clamp-2 text-center leading-tight drop-shadow`}
+                          } text-white group-hover:text-purple-400 transition-colors line-clamp-2 text-center leading-tight`}
                           dir="auto"
                         >
                           <LongPressCopy text={cleanTitle}>{cleanTitle}</LongPressCopy>

@@ -1,6 +1,5 @@
 /// <reference types="vite/client" />
 import { Capacitor, CapacitorHttp } from '@capacitor/core';
-import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.tsx';
 import './index.css';
@@ -8,7 +7,6 @@ import { AuthProvider } from './contexts/AuthContext';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { GlobalErrorBoundary } from './components/GlobalErrorBoundary';
 import { clientCache } from './utils/clientCache';
-import { handleFrontendFallback, setFallbackActive } from './utils/frontendFallback';
 import { initGlobalErrorTelemetry, recordTelemetryError } from './utils/errorTelemetry';
 import {
   isEphemeralCloudHost,
@@ -38,7 +36,6 @@ try {
   if (storedCustomHost && isEphemeralCloudHost(storedCustomHost)) {
     localStorage.removeItem('custom_api_host');
   }
-  setFallbackActive(false);
 } catch {}
 
 function extractApiRelativePath(urlString: string): string {
@@ -140,6 +137,7 @@ async function smartFetch(input: RequestInfo | URL, init?: RequestInit): Promise
       !isAiChatEndpoint &&
       !isNonFallbackResolveEndpoint
     ) {
+      const { handleFrontendFallback } = await import('./utils/frontendFallback');
       const fbRes = await handleFrontendFallback(apiRelativePath, init);
       if (fbRes) return fbRes;
     }
@@ -319,6 +317,7 @@ async function smartFetch(input: RequestInfo | URL, init?: RequestInit): Promise
     }
 
     // في حال تعذر الوصول للخادم الثابت أو عادت بيانات فارغة، يتولى محرك الجلب المباشر المهمة دون تعطل الواجهة
+    const { handleFrontendFallback } = await import('./utils/frontendFallback');
     const fbRes = await handleFrontendFallback(apiRelativePath, init);
     if (fbRes) return fbRes;
 
@@ -342,13 +341,11 @@ try {
 }
 
 createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <GlobalErrorBoundary>
-      <ThemeProvider>
-        <AuthProvider>
-          <App />
-        </AuthProvider>
-      </ThemeProvider>
-    </GlobalErrorBoundary>
-  </StrictMode>,
+  <GlobalErrorBoundary>
+    <ThemeProvider>
+      <AuthProvider>
+        <App />
+      </AuthProvider>
+    </ThemeProvider>
+  </GlobalErrorBoundary>,
 );

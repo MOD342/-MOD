@@ -1,7 +1,7 @@
 {
-  "name": "أنمي MOD - Otaku Hub",
-  "short_name": "أنمي MOD",
-  "description": "منصة أوتاكو وبوابة الأنمي لتقييم ومناقشة ومتابعة مواسم الأنمي المختلفة",
+  "name": "أوتاكو MOD - Otaku Hub",
+  "short_name": "أوتاكو MOD",
+  "description": "منصة أوتاكو MOD المتكاملة لمتابعة الأنمي والمانجا والمانهوا والمنافسات اليومية",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

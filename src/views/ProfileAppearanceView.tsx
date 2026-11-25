@@ -18,10 +18,10 @@ import { doc, updateDoc } from 'firebase/firestore';
 import {
   STORE_ITEMS_SORTED,
   getAvatarShapeClass,
+  getAvatarSizeClass,
   isBadgeUnlocked,
   isTitleUnlocked,
 } from '../data/storeItems';
-import ThemeModeSelector from '../components/ThemeModeSelector';
 
 interface ProfileAppearanceViewProps {
   onBack: () => void;
@@ -73,11 +73,15 @@ export default function ProfileAppearanceView({
 
   const avatarAlignment = userData?.avatarAlignment || 'right';
   const bannerSize = userData?.bannerSize || 'normal';
-  const avatarShape = equipped.frame?.avatarShape || 'circle';
+  const avatarSize = userData?.avatarSize || 'normal';
+  const avatarShape = userData?.avatarShape || equipped.frame?.avatarShape || 'circle';
   const avatarShapeClass = getAvatarShapeClass(avatarShape);
+  const avatarSizePreviewClass = getAvatarSizeClass(avatarSize, 'preview');
 
   const bannerHeightPreview =
     bannerSize === 'compact' ? 'h-20' : bannerSize === 'cinematic' ? 'h-32' : 'h-24';
+  const previewMarginTopClass =
+    avatarSize === 'xlarge' ? '-mt-14' : avatarSize === 'large' ? '-mt-12' : avatarSize === 'compact' ? '-mt-8' : '-mt-10';
 
   const avatarImg =
     equipped.avatar?.img ||
@@ -162,7 +166,7 @@ export default function ProfileAppearanceView({
           </div>
 
           <div
-            className={`px-4 pb-4 -mt-10 relative z-10 flex flex-col ${
+            className={`px-4 pb-4 ${previewMarginTopClass} relative z-10 flex flex-col transition-all duration-300 ${
               avatarAlignment === 'center'
                 ? 'items-center text-center'
                 : avatarAlignment === 'left'
@@ -176,10 +180,11 @@ export default function ProfileAppearanceView({
                   className={`absolute -inset-2 ${avatarShapeClass} pointer-events-none opacity-90 ${equipped.aura.auraStyle || ''} bg-gradient-to-tr ${equipped.aura.auraGradient || 'from-purple-500/40 to-amber-500/40'} blur-[4px]`}
                 />
               )}
-              <div className={`w-16 h-16 ${avatarShapeClass} border-4 border-[#0d0d13] bg-black overflow-hidden relative z-10`}>
+              <div className={`${avatarSizePreviewClass} ${avatarShapeClass} border-4 border-[#0d0d13] bg-black overflow-hidden relative z-10 transition-all duration-300`}>
                 <img
                   src={avatarImg}
                   alt=""
+                  referrerPolicy="no-referrer"
                   className={`w-full h-full object-cover ${equipped.avatar?.imageStyle || ''}`}
                 />
               </div>
@@ -252,13 +257,70 @@ export default function ProfileAppearanceView({
         {/* Tab 1: Layout & Covers */}
         {activeTab === 'layout' && (
           <div className="space-y-4">
-            <ThemeModeSelector compact />
-
-            <section className="bg-[#101016] border border-white/[0.08] rounded-2xl p-4 space-y-4">
-              <h2 className="text-sm font-black text-white">تخطيط الملف الشخصي</h2>
+            <section className="bg-[#101016] border border-white/[0.08] rounded-2xl p-4 sm:p-5 space-y-5">
+              <div className="flex items-center justify-between border-b border-white/[0.06] pb-3">
+                <h2 className="text-sm font-black text-white">تخصيص الصورة الشخصية والغلاف</h2>
+                <span className="text-[11px] font-bold text-neutral-400">تطبيق فوري على الملف</span>
+              </div>
 
               <div className="space-y-2">
-                <label className="text-xs font-bold text-neutral-400 block">موقع الصورة الشخصية</label>
+                <label className="text-xs font-bold text-neutral-300 block">حجم الصورة الشخصية</label>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {[
+                    { id: 'compact', label: 'مدمج' },
+                    { id: 'normal', label: 'قياسي' },
+                    { id: 'large', label: 'كبير' },
+                    { id: 'xlarge', label: 'كبير جداً' },
+                  ].map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => updateField({ avatarSize: opt.id }, 'avatarSize')}
+                      className={`min-h-[44px] rounded-xl border text-xs font-black transition cursor-pointer ${
+                        avatarSize === opt.id
+                          ? 'bg-purple-600/20 border-purple-500 text-purple-300'
+                          : 'bg-[#08080c] border-white/[0.08] text-neutral-400 hover:text-white'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-neutral-300 block">شكل الصورة الشخصية</label>
+                <div className="grid grid-cols-2 gap-2.5">
+                  {[
+                    { id: 'circle', label: 'دائرة', previewClass: 'rounded-full' },
+                    { id: 'squircle', label: 'مربع دائري', previewClass: 'rounded-[26%]' },
+                  ].map((opt) => {
+                    const isSelected = avatarShape === opt.id;
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => updateField({ avatarShape: opt.id }, 'avatarShape')}
+                        className={`min-h-[48px] px-3.5 rounded-xl border text-xs font-black flex items-center justify-center gap-2.5 transition cursor-pointer ${
+                          isSelected
+                            ? 'bg-purple-600/20 border-purple-500 text-purple-300'
+                            : 'bg-[#08080c] border-white/[0.08] text-neutral-400 hover:text-white'
+                        }`}
+                      >
+                        <span
+                          className={`w-5 h-5 border-2 shrink-0 ${opt.previewClass} ${
+                            isSelected ? 'border-purple-300 bg-purple-500/30' : 'border-neutral-500 bg-white/5'
+                          }`}
+                        />
+                        <span>{opt.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-neutral-300 block">موقع الصورة الشخصية</label>
                 <div className="grid grid-cols-3 gap-2">
                   {[
                     { id: 'right', label: 'اليمين' },
@@ -267,6 +329,7 @@ export default function ProfileAppearanceView({
                   ].map((opt) => (
                     <button
                       key={opt.id}
+                      type="button"
                       onClick={() => updateField({ avatarAlignment: opt.id }, 'avatarAlignment')}
                       className={`min-h-[44px] rounded-xl border text-xs font-black transition cursor-pointer ${
                         avatarAlignment === opt.id
@@ -281,7 +344,7 @@ export default function ProfileAppearanceView({
               </div>
 
               <div className="space-y-2">
-                <label className="text-xs font-bold text-neutral-400 block">ارتفاع الغلاف</label>
+                <label className="text-xs font-bold text-neutral-300 block">ارتفاع الغلاف</label>
                 <div className="grid grid-cols-3 gap-2">
                   {[
                     { id: 'compact', label: 'مدمج' },
@@ -290,6 +353,7 @@ export default function ProfileAppearanceView({
                   ].map((opt) => (
                     <button
                       key={opt.id}
+                      type="button"
                       onClick={() => updateField({ bannerSize: opt.id }, 'bannerSize')}
                       className={`min-h-[44px] rounded-xl border text-xs font-black transition cursor-pointer ${
                         bannerSize === opt.id
@@ -348,10 +412,10 @@ export default function ProfileAppearanceView({
             {/* Avatars */}
             <section className="bg-[#101016] border border-white/[0.08] rounded-2xl p-4 space-y-3">
               <h2 className="text-sm font-black text-white">الصور الرمزية ({ownedAvatars.length})</h2>
-              <div className="flex gap-2.5 overflow-x-auto pb-1 hide-scrollbar">
+              <div className="flex gap-2.5 overflow-x-auto pb-1 hide-scrollbar snap-x snap-mandatory">
                 <button
                   onClick={() => updateField({ equippedAvatar: null }, 'equippedAvatar')}
-                  className={`shrink-0 w-16 h-16 rounded-xl border text-[11px] font-black flex items-center justify-center text-center px-1 cursor-pointer transition ${
+                  className={`snap-start shrink-0 w-16 h-16 rounded-xl border text-[11px] font-black flex items-center justify-center text-center px-1 cursor-pointer transition ${
                     !userData?.equippedAvatar
                       ? 'border-pink-500 bg-pink-500/15 text-pink-300'
                       : 'border-white/[0.08] bg-[#08080c] text-neutral-400'
@@ -365,7 +429,7 @@ export default function ProfileAppearanceView({
                     <button
                       key={item.id}
                       onClick={() => updateField({ equippedAvatar: item.id }, 'equippedAvatar')}
-                      className={`shrink-0 w-16 h-16 rounded-xl overflow-hidden border relative cursor-pointer transition ${
+                      className={`snap-start shrink-0 w-16 h-16 rounded-xl overflow-hidden border relative cursor-pointer transition ${
                         active ? 'border-pink-500 ring-2 ring-pink-500/30' : 'border-white/[0.08]'
                       }`}
                     >

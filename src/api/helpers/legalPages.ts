@@ -1,6 +1,6 @@
 const DEVELOPER_EMAIL = '342.mod@gmail.com';
 const APP_NAME = 'أوتاكو MOD - Otaku Hub';
-const PACKAGE_ID = 'com.animemod.otakuhub';
+const PACKAGE_ID = 'com.zoryx';
 const LAST_UPDATED = 'نوفمبر 2026';
 
 function renderLegalShell(title: string, badge: string, bodyHtml: string): string {

@@ -9,7 +9,7 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import { listService, AnimeEntry, computeLibraryStats } from '../services/listService';
 import { mangaListService, MangaEntry, computeMangaStats } from '../services/mangaListService';
-import { STORE_ITEMS_SORTED, getAvatarShapeClass } from '../data/storeItems';
+import { STORE_ITEMS_SORTED, getAvatarShapeClass, getAvatarSizeClass } from '../data/storeItems';
 import { isStaffEmail } from '../services/moderationService';
 import { doc, getDoc, getDocFromServer } from 'firebase/firestore';
 import { db } from '../firebase';
@@ -231,7 +231,8 @@ export default function ProfileView({
   }, [activeAchievementTab, selectedCategory, userAchievements]);
 
   const avatarAlignment = userData?.avatarAlignment || 'right';
-  const avatarShape = equipped.frame?.avatarShape || 'circle';
+  const avatarShape = userData?.avatarShape || equipped.frame?.avatarShape || 'circle';
+  const avatarSize = userData?.avatarSize || 'normal';
   const bannerSize = userData?.bannerSize || 'normal';
 
   const isCentered = avatarAlignment === 'center';
@@ -239,59 +240,78 @@ export default function ProfileView({
 
   const bannerHeightClass = bannerSize === 'compact' ? 'h-36' : bannerSize === 'cinematic' ? 'h-60' : 'h-44';
   const avatarShapeClass = getAvatarShapeClass(avatarShape);
+  const avatarSizeClass = getAvatarSizeClass(avatarSize, 'profile');
+  const avatarOverlapClass =
+    avatarSize === 'xlarge'
+      ? '-mt-16'
+      : avatarSize === 'large'
+      ? '-mt-12'
+      : avatarSize === 'compact'
+      ? '-mt-8'
+      : '-mt-10';
 
   if (isCurrentUser && !user) {
     return (
-      <div className="bg-[#000000] min-h-screen text-xs font-sans text-right select-none max-w-2xl mx-auto border-x border-[#1a1a1a] relative pb-12 pt-16 px-5 flex flex-col items-center justify-center gap-5" dir="rtl">
+      <div className="bg-[#07070b] min-h-screen text-xs font-sans text-right select-none max-w-4xl mx-auto border-x border-white/[0.06] relative pb-16 pt-16 px-4 sm:px-6 flex flex-col items-center justify-center" dir="rtl">
         {onBack && (
           <div className="theme-keep-dark absolute top-4 right-4 z-40">
             <button
               type="button"
               onClick={onBack}
               aria-label="رجوع"
-              className="w-10 h-10 bg-[#0a0a0c]/85 backdrop-blur-md rounded-xl hover:bg-[#141418] border border-white/10 active:scale-95 transition text-white flex items-center justify-center cursor-pointer"
+              className="w-11 h-11 bg-[#111118] rounded-xl hover:bg-[#191923] border border-white/10 active:scale-95 transition text-white flex items-center justify-center cursor-pointer"
             >
-              <ChevronRight size={18} />
+              <ChevronRight size={19} />
             </button>
           </div>
         )}
-        <div className="w-20 h-20 rounded-3xl bg-gradient-to-tr from-[#FF1744]/20 to-purple-600/20 border border-[#FF1744]/30 flex items-center justify-center text-[#FF1744] shadow-xl">
-          <User size={36} />
-        </div>
-        <div className="text-center space-y-2 max-w-sm">
-          <h1 className="text-lg font-black text-white">تسجيل الدخول وإدارة الحساب</h1>
-          <p className="text-xs text-neutral-400 leading-relaxed">
-            سجل دخولك لحفظ مكتبتك سحابياً، مزامنة تقدمك بين الأجهزة، وتخصيص ملفك الشخصي.
-          </p>
-        </div>
-        <div className="w-full max-w-xs space-y-2.5">
-          <button
-            onClick={signInWithGoogleAdaptive}
-            className="w-full min-h-[46px] bg-white hover:bg-neutral-100 text-zinc-900 font-black py-3 rounded-xl text-xs transition flex items-center justify-center gap-2 cursor-pointer shadow-lg"
-          >
-            <svg viewBox="0 0 24 24" className="w-4 h-4">
-              <path fill="#EA4335" d="M12 5c1.6 0 3 .6 4.1 1.7l3.1-3.1C17.3 1.8 14.8 1 12 1 7.4 1 3.5 3.6 1.6 7.4l3.7 2.8C6.2 7.2 8.9 5 12 5z" />
-              <path fill="#4285F4" d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.5c-.3 1.5-1.1 2.8-2.4 3.6l3.7 2.9c2.2-2 3.7-5 3.7-8.7z" />
-              <path fill="#FBBC05" d="M5.3 14.8c-.2-.8-.4-1.6-.4-2.5s.2-1.7.4-2.5L1.6 7C.6 9 0 11.2 0 13.5s.6 4.5 1.6 6.5l3.7-2.9z" />
-              <path fill="#34A853" d="M12 24c3.2 0 6-1.1 8-3l-3.7-2.9c-1.1.7-2.5 1.2-4.3 1.2-3.1 0-5.8-2.1-6.7-5l-3.7 2.8C3.5 21.4 7.4 24 12 24z" />
-            </svg>
-            <span>متابعة باستخدام Google</span>
-          </button>
 
-          <button
-            onClick={() => signIn('login')}
-            className="w-full min-h-[46px] bg-gradient-to-r from-[#FF1744] to-purple-600 hover:opacity-95 text-white font-black py-3 rounded-xl text-xs transition flex items-center justify-center gap-2 cursor-pointer shadow-lg"
-          >
-            <LogIn size={15} />
-            <span>تسجيل الدخول بالبريد وكلمة المرور</span>
-          </button>
-          <button
-            onClick={() => signIn('register')}
-            className="w-full min-h-[46px] bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-white font-black py-3 rounded-xl text-xs transition flex items-center justify-center gap-2 cursor-pointer"
-          >
-            <UserPlus size={15} />
-            <span>إنشاء حساب جديد مجاناً</span>
-          </button>
+        <div className="w-full max-w-md bg-[#0e0e14] border border-white/10 rounded-3xl p-6 sm:p-7 shadow-2xl space-y-6">
+          <div className="flex flex-col items-center text-center space-y-3">
+            <div className="w-16 h-16 rounded-2xl bg-[#FF1744]/12 border border-[#FF1744]/30 flex items-center justify-center text-[#FF1744]">
+              <User size={30} />
+            </div>
+            <div className="space-y-1.5">
+              <h1 className="text-lg font-black text-white">حسابك الشخصي في أوتاكو MOD</h1>
+              <p className="text-xs text-neutral-400 leading-relaxed">
+                سجل دخولك لحفظ قوائم الأنمي والمانجا سحابياً، مزامنة تقدمك، وتخصيص مظهر ملفك الشخصي.
+              </p>
+            </div>
+          </div>
+
+          <div className="space-y-2.5">
+            <button
+              type="button"
+              onClick={signInWithGoogleAdaptive}
+              className="w-full min-h-[48px] bg-white hover:bg-neutral-100 text-zinc-900 font-black px-4 rounded-xl text-xs transition flex items-center justify-center gap-2.5 cursor-pointer shadow-lg"
+            >
+              <svg viewBox="0 0 24 24" className="w-4 h-4 shrink-0">
+                <path fill="#EA4335" d="M12 5c1.6 0 3 .6 4.1 1.7l3.1-3.1C17.3 1.8 14.8 1 12 1 7.4 1 3.5 3.6 1.6 7.4l3.7 2.8C6.2 7.2 8.9 5 12 5z" />
+                <path fill="#4285F4" d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.5c-.3 1.5-1.1 2.8-2.4 3.6l3.7 2.9c2.2-2 3.7-5 3.7-8.7z" />
+                <path fill="#FBBC05" d="M5.3 14.8c-.2-.8-.4-1.6-.4-2.5s.2-1.7.4-2.5L1.6 7C.6 9 0 11.2 0 13.5s.6 4.5 1.6 6.5l3.7-2.9z" />
+                <path fill="#34A853" d="M12 24c3.2 0 6-1.1 8-3l-3.7-2.9c-1.1.7-2.5 1.2-4.3 1.2-3.1 0-5.8-2.1-6.7-5l-3.7 2.8C3.5 21.4 7.4 24 12 24z" />
+              </svg>
+              <span>المتابعة عبر Google</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => signIn('login')}
+              className="w-full min-h-[48px] bg-[#FF1744] hover:bg-[#e1143c] text-white font-black px-4 rounded-xl text-xs transition flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <LogIn size={16} />
+              <span>تسجيل الدخول بالبريد وكلمة المرور</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => signIn('register')}
+              className="w-full min-h-[46px] bg-[#161620] hover:bg-[#1d1d2a] border border-white/10 text-white font-bold px-4 rounded-xl text-xs transition flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <UserPlus size={15} />
+              <span>إنشاء حساب جديد مجاناً</span>
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -351,7 +371,6 @@ export default function ProfileView({
           ) : (
             <div className="absolute inset-0 w-full h-full bg-gradient-to-tr from-[#06060b] via-[#130d20] to-[#06060b]" />
           )}
-          <div className="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-black via-black/55 to-transparent z-10 pointer-events-none" />
         </div>
 
         {/* Responsive Split Grid: Identity Column + Main Content Column (hinge-safe in book mode) */}
@@ -361,13 +380,13 @@ export default function ProfileView({
         >
 
         {/* Identity Header */}
-        <div className={`relative -mt-12 pb-4 z-20 flex flex-col ${
+        <div className={`relative ${avatarOverlapClass} pb-4 z-20 flex flex-col transition-all duration-300 ${
           useTwoPaneProfile ? 'lg:col-span-5 xl:col-span-4 lg:sticky lg:top-4 lg:bg-[#07070b]/90 lg:border lg:border-white/[0.08] lg:rounded-2xl lg:p-4 lg:mt-4' : 'px-4'
         } ${
           isCentered ? 'items-center text-center' : isLeft ? 'items-end text-left' : 'items-start text-right'
         }`}>
-          <div className={`flex items-end justify-between w-full gap-3 ${
-            isCentered ? 'flex-col items-center' : isLeft ? 'flex-row-reverse' : 'flex-row'
+          <div className={`flex w-full gap-3 ${
+            isCentered ? 'flex-col items-center justify-center' : isLeft ? 'flex-row-reverse items-end justify-between' : 'flex-row items-end justify-between'
           }`}>
             {/* Avatar */}
             <button
@@ -384,7 +403,7 @@ export default function ProfileView({
               {equipped.aura && (
                 <div className={`absolute -inset-2 ${avatarShapeClass} pointer-events-none z-0 opacity-85 ${equipped.aura.auraStyle || ''} bg-gradient-to-tr ${equipped.aura.auraGradient || 'from-purple-500/40 to-amber-500/40'} blur-[3px]`} />
               )}
-              <div className={`w-20 h-20 ${avatarShapeClass} border-4 border-black bg-[#0c0c0e] overflow-hidden relative z-10 shadow-xl group-hover:brightness-110 transition`}>
+              <div className={`${avatarSizeClass} ${avatarShapeClass} border-4 border-black bg-[#0c0c0e] overflow-hidden relative z-10 shadow-xl group-hover:brightness-110 transition-all duration-300`}>
                 <img src={avatarImg} alt="Avatar" className={`w-full h-full object-cover ${equipped.avatar?.imageStyle || ''}`} referrerPolicy="no-referrer" />
               </div>
               {equipped.frame?.frameStyle && (

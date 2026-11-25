@@ -20,6 +20,10 @@ const networkSecurityPath = path.join(resXmlDir, 'network_security_config.xml');
 const stringsXmlPath = path.join(resValuesDir, 'strings.xml');
 const stylesXmlPath = path.join(resValuesDir, 'styles.xml');
 const variablesGradlePath = path.join(androidDir, 'variables.gradle');
+const appBuildGradlePath = path.join(androidDir, 'app/build.gradle');
+const proguardRulesPath = path.join(androidDir, 'app/proguard-rules.pro');
+const gradlePropertiesPath = path.join(androidDir, 'gradle.properties');
+const googleServicesJsonPath = path.join(androidDir, 'app/google-services.json');
 
 const REQUIRED_PERMISSIONS = [
   '<uses-permission android:name="android.permission.INTERNET" />',
@@ -99,6 +103,16 @@ const NETWORK_SECURITY_XML = `<?xml version="1.0" encoding="utf-8"?>
 </network-security-config>
 `;
 
+function readFirebaseAppletConfig() {
+  const firebaseConfigPath = path.join(rootDir, 'firebase-applet-config.json');
+  if (!fs.existsSync(firebaseConfigPath)) return {};
+  try {
+    return JSON.parse(fs.readFileSync(firebaseConfigPath, 'utf8')) || {};
+  } catch {
+    return {};
+  }
+}
+
 function resolveGoogleWebClientId() {
   if (process.env.VITE_GOOGLE_CLIENT_ID?.trim()) {
     return process.env.VITE_GOOGLE_CLIENT_ID.trim();
@@ -113,15 +127,8 @@ function resolveGoogleWebClientId() {
     }
   }
 
-  const firebaseConfigPath = path.join(rootDir, 'firebase-applet-config.json');
-  if (fs.existsSync(firebaseConfigPath)) {
-    try {
-      const cfg = JSON.parse(fs.readFileSync(firebaseConfigPath, 'utf8'));
-      if (cfg?.oAuthClientId) return String(cfg.oAuthClientId).trim();
-    } catch {}
-  }
-
-  return '944497586914-s0birt1ntn5ot52h52e49b0rflc9jscp.apps.googleusercontent.com';
+  const cfg = readFirebaseAppletConfig();
+  return cfg?.oAuthClientId ? String(cfg.oAuthClientId).trim() : '';
 }
 
 function patchAndroidManifest() {
@@ -221,38 +228,79 @@ function patchVariablesGradle() {
   console.log('✅ android/variables.gradle تم تفعيل rgcfaIncludeGoogle = true.');
 }
 
+function upsertStringResource(xmlContent, name, value) {
+  if (!value) return xmlContent;
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const tagRegex = new RegExp(`<string name="${escapedName}"[^>]*>[\\s\\S]*?<\\/string>`);
+  const newTag = `<string name="${name}" translatable="false">${value}</string>`;
+  if (tagRegex.test(xmlContent)) {
+    return xmlContent.replace(tagRegex, newTag);
+  }
+  if (xmlContent.includes('</resources>')) {
+    return xmlContent.replace('</resources>', `    ${newTag}\n</resources>`);
+  }
+  return xmlContent;
+}
+
+function removeStringResource(xmlContent, name) {
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return xmlContent.replace(new RegExp(`\\s*<string name="${escapedName}"[^>]*>[\\s\\S]*?<\\/string>`, 'g'), '');
+}
+
 function patchStringsXml() {
   const clientId = resolveGoogleWebClientId();
+  const firebaseCfg = readFirebaseAppletConfig();
+  const hasGoogleServicesJson = fs.existsSync(googleServicesJsonPath);
+  let googleServicesHasWebClient = false;
+
+  if (hasGoogleServicesJson) {
+    try {
+      const gs = JSON.parse(fs.readFileSync(googleServicesJsonPath, 'utf8'));
+      const clients = Array.isArray(gs?.client) ? gs.client : [];
+      googleServicesHasWebClient = clients.some(
+        (c) => Array.isArray(c?.oauth_client) && c.oauth_client.some((o) => o?.client_type === 3)
+      );
+    } catch {}
+  }
+
   fs.mkdirSync(resValuesDir, { recursive: true });
   if (!fs.existsSync(stringsXmlPath)) {
     const initialStrings = `<?xml version='1.0' encoding='utf-8'?>
 <resources>
     <string name="app_name">أنمي MOD</string>
     <string name="title_activity_main">أنمي MOD</string>
-    <string name="package_name">com.animemod.otakuhub</string>
-    <string name="custom_url_scheme">com.animemod.otakuhub</string>
-    <string name="default_web_client_id">${clientId}</string>
+    <string name="package_name">com.zoryx</string>
+    <string name="custom_url_scheme">com.zoryx</string>
 </resources>
 `;
     fs.writeFileSync(stringsXmlPath, initialStrings, 'utf8');
-    console.log('✅ تم إنشاء strings.xml وحقن default_web_client_id بنجاح.');
-    return;
   }
 
   let content = fs.readFileSync(stringsXmlPath, 'utf8');
-  if (content.includes('name="default_web_client_id"')) {
-    content = content.replace(
-      /<string name="default_web_client_id">.*?<\/string>/,
-      `<string name="default_web_client_id">${clientId}</string>`
-    );
-  } else if (content.includes('</resources>')) {
-    content = content.replace(
-      '</resources>',
-      `    <string name="default_web_client_id">${clientId}</string>\n</resources>`
-    );
+
+  if (!googleServicesHasWebClient && clientId) {
+    content = upsertStringResource(content, 'default_web_client_id', clientId);
+  } else if (googleServicesHasWebClient) {
+    content = removeStringResource(content, 'default_web_client_id');
   }
+
+  const fallbackKeys = ['google_app_id', 'google_api_key', 'gcm_defaultSenderId', 'project_id', 'google_storage_bucket'];
+  if (hasGoogleServicesJson) {
+    // Let com.google.gms.google-services generate these resources cleanly without merge collisions
+    for (const key of fallbackKeys) {
+      content = removeStringResource(content, key);
+    }
+  } else {
+    // Ensure FirebaseAuth.getInstance() initializes cleanly even before google-services.json is added
+    content = upsertStringResource(content, 'google_app_id', firebaseCfg.appId || '');
+    content = upsertStringResource(content, 'google_api_key', firebaseCfg.apiKey || '');
+    content = upsertStringResource(content, 'gcm_defaultSenderId', firebaseCfg.messagingSenderId || '');
+    content = upsertStringResource(content, 'project_id', firebaseCfg.projectId || '');
+    content = upsertStringResource(content, 'google_storage_bucket', firebaseCfg.storageBucket || '');
+  }
+
   fs.writeFileSync(stringsXmlPath, content, 'utf8');
-  console.log('✅ strings.xml تم تحديثه بـ default_web_client_id بنجاح.');
+  console.log('✅ strings.xml تم تحديثه بـ Firebase & default_web_client_id بنجاح.');
 }
 
 function patchStylesXml() {
@@ -336,7 +384,7 @@ function patchMainActivityJava() {
   }
 
   const pkgMatch = current.match(/^package\s+([^;]+);/m);
-  const packageName = pkgMatch?.[1]?.trim() || 'com.animemod.otakuhub';
+  const packageName = pkgMatch?.[1]?.trim() || 'com.zoryx';
 
   const upgradedJava = `package ${packageName};
 
@@ -872,6 +920,147 @@ public class MainActivity extends BridgeActivity {
   console.log('✅ MainActivity.java تم ترقيته إلى MOD_NATIVE_BRIDGE_V4 (توافق كامل مع سياسات متجر Google Play).');
 }
 
+function patchBuildGradle() {
+  if (!fs.existsSync(appBuildGradlePath)) return;
+  let content = fs.readFileSync(appBuildGradlePath, 'utf8');
+
+  let pkgVersion = '1.0.0';
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
+    if (pkg?.version) pkgVersion = String(pkg.version).trim();
+  } catch {}
+
+  const targetVersionName = (process.env.ANDROID_VERSION_NAME || pkgVersion || '1.0.0').trim();
+  const targetVersionCodeRaw = (process.env.ANDROID_VERSION_CODE || '').trim();
+  const targetVersionCode = /^\d+$/.test(targetVersionCodeRaw) ? Number(targetVersionCodeRaw) : null;
+
+  content = content.replace(/versionName\s+"[^"]*"/, `versionName "${targetVersionName}"`);
+  if (targetVersionCode && targetVersionCode > 0) {
+    content = content.replace(/versionCode\s+\d+/, `versionCode ${targetVersionCode}`);
+  }
+
+  const signingConfigsBlock = `    // ZORYX_RELEASE_SIGNING_CONFIG
+    signingConfigs {
+        release {
+            def keystorePropsFile = rootProject.file("keystore.properties")
+            def envStoreFile = System.getenv("ANDROID_KEYSTORE_PATH")
+            if (keystorePropsFile.exists()) {
+                def props = new Properties()
+                keystorePropsFile.withInputStream { props.load(it) }
+                def resolvedStoreFile = file(props["storeFile"])
+                if (!resolvedStoreFile.exists()) {
+                    resolvedStoreFile = rootProject.file(props["storeFile"])
+                }
+                storeFile resolvedStoreFile
+                storePassword props["storePassword"]
+                keyAlias props["keyAlias"]
+                keyPassword props["keyPassword"]
+                if (props["storeType"]) {
+                    storeType props["storeType"]
+                }
+            } else if (envStoreFile != null && file(envStoreFile).exists()) {
+                storeFile file(envStoreFile)
+                storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("ANDROID_KEY_ALIAS") ?: "zoryx-release"
+                keyPassword System.getenv("ANDROID_KEY_PASSWORD") ?: System.getenv("ANDROID_KEYSTORE_PASSWORD")
+            }
+        }
+    }`;
+
+  if (!content.includes('ZORYX_RELEASE_SIGNING_CONFIG')) {
+    content = content.replace(/\n\s*buildTypes\s*\{/, `\n${signingConfigsBlock}\n    buildTypes {`);
+  }
+
+  const releaseBuildTypeBlock = `        // ZORYX_RELEASE_BUILD_TYPE
+        release {
+            if (signingConfigs.release.storeFile != null && signingConfigs.release.storeFile.exists()) {
+                signingConfig signingConfigs.release
+            }
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }`;
+
+  if (!content.includes('ZORYX_RELEASE_BUILD_TYPE')) {
+    content = content.replace(
+      /\s*release\s*\{[\s\S]*?proguardFiles[^\n]*\n\s*\}/,
+      `\n${releaseBuildTypeBlock}`
+    );
+  }
+
+  fs.writeFileSync(appBuildGradlePath, content, 'utf8');
+  console.log(`✅ android/app/build.gradle تم تهيئته للتوقيع الرسمي والتحسين النهائي (v${targetVersionName}).`);
+}
+
+function patchProguardRules() {
+  if (!fs.existsSync(proguardRulesPath)) return;
+  let content = fs.readFileSync(proguardRulesPath, 'utf8');
+  if (content.includes('ZORYX_PROGUARD_RULES_V1')) return;
+
+  const extraRules = `
+# ZORYX_PROGUARD_RULES_V1
+-keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod
+-keep class com.zoryx.** { *; }
+-keepclassmembers class com.zoryx.MainActivity$AndroidNativeBridge {
+    @android.webkit.JavascriptInterface <methods>;
+}
+-keep class com.getcapacitor.** { *; }
+-keep class io.capawesome.** { *; }
+-keep class com.google.firebase.** { *; }
+-keep class com.google.android.gms.** { *; }
+-dontwarn com.google.errorprone.annotations.**
+-dontwarn javax.annotation.**
+`;
+  fs.writeFileSync(proguardRulesPath, `${content.trimEnd()}\n${extraRules}`, 'utf8');
+  console.log('✅ proguard-rules.pro تم تحديثه بقواعد الحفاظ على الجسر الأصلي والمصادقة.');
+}
+
+function patchGradleProperties() {
+  if (!fs.existsSync(gradlePropertiesPath)) return;
+  let content = fs.readFileSync(gradlePropertiesPath, 'utf8');
+  if (/^org\.gradle\.jvmargs=/m.test(content)) {
+    content = content.replace(/^org\.gradle\.jvmargs=.*$/m, 'org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8');
+  } else {
+    content += '\norg.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8\n';
+  }
+  fs.writeFileSync(gradlePropertiesPath, content, 'utf8');
+}
+
+function patchAppIcons() {
+  const sourceIcon = path.join(rootDir, 'public/app_icon.png');
+  if (!fs.existsSync(sourceIcon)) return;
+
+  const densities = ['mdpi', 'hdpi', 'xhdpi', 'xxhdpi', 'xxxhdpi'];
+  for (const density of densities) {
+    const dir = path.join(androidMainDir, `res/mipmap-${density}`);
+    if (fs.existsSync(dir)) {
+      fs.copyFileSync(sourceIcon, path.join(dir, 'ic_launcher.png'));
+      fs.copyFileSync(sourceIcon, path.join(dir, 'ic_launcher_round.png'));
+      fs.copyFileSync(sourceIcon, path.join(dir, 'ic_launcher_foreground.png'));
+    }
+  }
+
+  const splashPath = path.join(androidMainDir, 'res/drawable/splash.png');
+  if (fs.existsSync(path.dirname(splashPath))) {
+    fs.copyFileSync(sourceIcon, splashPath);
+  }
+
+  const bgColorXmlPath = path.join(resValuesDir, 'ic_launcher_background.xml');
+  fs.mkdirSync(resValuesDir, { recursive: true });
+  fs.writeFileSync(
+    bgColorXmlPath,
+    `<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <color name="ic_launcher_background">#0A0A0C</color>\n</resources>\n`,
+    'utf8'
+  );
+
+  const anydpiDir = path.join(androidMainDir, 'res/mipmap-anydpi-v26');
+  fs.mkdirSync(anydpiDir, { recursive: true });
+  const adaptiveXml = `<?xml version="1.0" encoding="utf-8"?>\n<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">\n    <background android:drawable="@color/ic_launcher_background"/>\n    <foreground android:drawable="@mipmap/ic_launcher_foreground"/>\n</adaptive-icon>\n`;
+  fs.writeFileSync(path.join(anydpiDir, 'ic_launcher.xml'), adaptiveXml, 'utf8');
+  fs.writeFileSync(path.join(anydpiDir, 'ic_launcher_round.xml'), adaptiveXml, 'utf8');
+  console.log('✅ تم تطبيق أيقونة أنمي MOD الرسمية على جميع أحجام الأيقونات في أندرويد.');
+}
+
 function runAllAndroidPatches() {
   if (!fs.existsSync(manifestPath)) {
     console.log('⚠️ لم يتم العثور على مجلد android بعد. قم بتشغيل "npm run apk:init" أولاً ليتم إنشاء مشروع الأندرويد.');
@@ -883,6 +1072,10 @@ function runAllAndroidPatches() {
   patchStringsXml();
   patchStylesXml();
   patchMainActivityJava();
+  patchBuildGradle();
+  patchProguardRules();
+  patchGradleProperties();
+  patchAppIcons();
 }
 
 runAllAndroidPatches();

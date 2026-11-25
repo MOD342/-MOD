@@ -103,8 +103,10 @@ export default function FavoritesView({ onBack, onAnimeClick }: { onBack: () => 
                         }}
                         className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300"
                       />
-                      <div className="absolute inset-0 bg-gradient-to-t from-black/85 to-transparent" />
-                      <div className="absolute bottom-2 left-2 right-2 text-center text-[10px] sm:text-xs font-bold text-white line-clamp-2">
+                      <div
+                        className="absolute inset-x-0 bottom-0 pt-5 pb-2 px-2 bg-gradient-to-t from-black/85 via-black/45 to-transparent text-center text-[10px] sm:text-xs font-bold text-white line-clamp-2"
+                        style={{ textShadow: '0 2px 6px rgba(0,0,0,0.98), 0 0 3px rgba(0,0,0,0.95)' }}
+                      >
                         <LongPressCopy text={anime.title}>{anime.title}</LongPressCopy>
                       </div>
                     </div>

@@ -11,8 +11,6 @@ import { StatusBar, Style } from '@capacitor/status-bar';
 import { AppLayout } from './components/AppLayout';
 import { Loader2 } from 'lucide-react';
 import HomeView from './views/HomeView';
-import MoreView from './views/MoreView';
-import DiagnosticsView from './views/DiagnosticsView';
 import { useAuth } from './contexts/AuthContext';
 import { collection, doc, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
 import { db, auth } from './firebase';
@@ -26,18 +24,8 @@ import { consumePendingDiagnosticsTab } from './utils/errorTelemetry';
 import { lazyWithRetry } from './utils/lazyWithRetry';
 import { ViewportPortal } from './components/ViewportPortal';
 import { SwipeableToastItem } from './components/SwipeableToastItem';
-import {
-  dispatchNativeSystemNotification,
-  registerNativeNotificationTapListener,
-} from './utils/systemPermissions';
-import {
-  initExternalDiscoveryNotifications,
-  shouldMirrorFirestoreNotificationToOS,
-} from './services/externalNotificationEngine';
 import { applyViewportAndCutoutMetrics } from './utils/viewportMetrics';
 import { ViewErrorBoundary } from './components/GlobalErrorBoundary';
-import { downloadManagerService } from './services/downloadManagerService';
-import OnboardingView from './components/OnboardingView';
 import {
   getDefaultHomeMode,
   isOnboardingCompleted,
@@ -73,10 +61,13 @@ const OtakuArenaHubView = lazyWithRetry(() => import('./views/OtakuArenaHubView'
 const MangaHubView = lazyWithRetry(() => import('./views/MangaHubView'), 'MangaHubView');
 const MangaDetailsView = lazyWithRetry(() => import('./views/MangaDetailsView'), 'MangaDetailsView');
 const MangaReaderView = lazyWithRetry(() => import('./views/MangaReaderView'), 'MangaReaderView');
+const MoreView = lazyWithRetry(() => import('./views/MoreView'), 'MoreView');
+const DiagnosticsView = lazyWithRetry(() => import('./views/DiagnosticsView'), 'DiagnosticsView');
+const OnboardingView = lazyWithRetry(() => import('./components/OnboardingView'), 'OnboardingView');
+const PermissionPromptModal = lazyWithRetry(() => import('./components/PermissionPromptModal'), 'PermissionPromptModal');
 const LegalAboutView = lazyWithRetry(() => import('./views/LegalAboutView'), 'LegalAboutView');
 
 import { MascotLoadingScreen, MascotOfflineScreen } from './components/MascotScreens';
-import PermissionPromptModal from './components/PermissionPromptModal';
 
 const ViewFallback = () => (
   <div className="flex flex-col items-center justify-center min-h-[50vh] text-neutral-400 gap-4" dir="rtl">
@@ -119,16 +110,27 @@ export default function App() {
     });
 
     // إرسال إشعار للنظام فقط عند استحقاقه كإشعار خارجي غير مكرر (وليس لتنبيهات المشاهدة/المكافآت الذاتية)
-    if (shouldMirrorFirestoreNotificationToOS(notif)) {
-      void dispatchNativeSystemNotification({
-        id: notif.id,
-        title: notif.title || 'أوتاكو MOD ⚡',
-        body: notif.body || '',
-        imageUrl: notif.imageUrl,
-        tag: `fs:${notif.id}`,
-        extra: { linkTo: notif.linkTo, metadata: notif.metadata },
-        onClick: () => handleToastClick(notif),
-      });
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+      void (async () => {
+        try {
+          const [{ shouldMirrorFirestoreNotificationToOS }, { dispatchNativeSystemNotification }] =
+            await Promise.all([
+              import('./services/externalNotificationEngine'),
+              import('./utils/systemPermissions'),
+            ]);
+          if (shouldMirrorFirestoreNotificationToOS(notif)) {
+            void dispatchNativeSystemNotification({
+              id: notif.id,
+              title: notif.title || 'أوتاكو MOD ⚡',
+              body: notif.body || '',
+              imageUrl: notif.imageUrl,
+              tag: `fs:${notif.id}`,
+              extra: { linkTo: notif.linkTo, metadata: notif.metadata },
+              onClick: () => handleToastClick(notif),
+            });
+          }
+        } catch {}
+      })();
     }
   };
 
@@ -160,138 +162,140 @@ export default function App() {
       return Date.now();
     };
 
-    // 1. Listen to real-time User Specific Notifications
-    const unsubUserNotifs = (auth.currentUser && auth.currentUser.uid === user.id)
-      ? onSnapshot(
-          query(collection(db, 'users', user.id, 'notifications'), orderBy('createdAt', 'desc'), limit(1)),
+    let disposed = false;
+    let unsubUserNotifs = () => {};
+    let unsubGlobalNotifs = () => {};
+    let unsubAdminReports = () => {};
+    let unsubAdminSuggestions = () => {};
+    let unsubAdminRecommendations = () => {};
+
+    // تأجيل مستمعات الإشعارات الفورية قليلاً بعد الإقلاع لإعطاء الأولوية الكاملة لتحميل البيانات الأساسية
+    const attachTimer = setTimeout(() => {
+      if (disposed) return;
+
+      // 1. Listen to real-time User Specific Notifications
+      unsubUserNotifs = (auth.currentUser && auth.currentUser.uid === user.id)
+        ? onSnapshot(
+            query(collection(db, 'users', user.id, 'notifications'), orderBy('createdAt', 'desc'), limit(1)),
+            (snapshot) => {
+              snapshot.docChanges().forEach((change) => {
+                if (change.type === 'added') {
+                  const data = change.doc.data();
+                  const id = change.doc.id;
+                  const createdTime = getDocCreatedTime(data);
+                  if (createdTime >= sessionStartTime - 4000 && !data.read && !seenIds.has(id)) {
+                    seenIds.add(id);
+                    triggerToast({ id, ...data });
+                  }
+                }
+              });
+            },
+            (err) => console.warn("Real-time toast error:", err)
+          )
+        : () => {};
+
+      // 2. Listen to real-time Global Notifications
+      unsubGlobalNotifs = onSnapshot(
+        query(collection(db, 'globalNotifications'), orderBy('createdAt', 'desc'), limit(1)),
+        (snapshot) => {
+          snapshot.docChanges().forEach((change) => {
+            if (change.type === 'added') {
+              const data = change.doc.data();
+              const id = change.doc.id;
+              const createdTime = getDocCreatedTime(data);
+              if (createdTime >= sessionStartTime - 4000 && !seenIds.has(id)) {
+                seenIds.add(id);
+                triggerToast({ id, ...data, isGlobal: true });
+              }
+            }
+          });
+        },
+        (err) => console.warn("Real-time global toast error:", err)
+      );
+
+      // 3. Listen to Administration Events (Reports, Suggestions, Recommendations) in Real-time
+      if (isAdmin) {
+        unsubAdminReports = onSnapshot(
+          query(collection(db, 'reports'), orderBy('createdAt', 'desc'), limit(1)),
           (snapshot) => {
             snapshot.docChanges().forEach((change) => {
               if (change.type === 'added') {
                 const data = change.doc.data();
                 const id = change.doc.id;
-
                 const createdTime = getDocCreatedTime(data);
-
-                // Only alert if it's after session load, is unread, and hasn't been shown in this window session
-                if (createdTime >= sessionStartTime - 4000 && !data.read && !seenIds.has(id)) {
+                if (createdTime >= sessionStartTime - 4000 && !seenIds.has(id)) {
                   seenIds.add(id);
-                  triggerToast({ id, ...data });
+                  triggerToast({
+                    id,
+                    title: '⚠️ بلاغ أمني جديد 🛡️',
+                    body: `بلاغ عن محتوى مخالف بمستوى (${data.type === 'comment' ? 'تعليق مخالف' : 'محتوى مخالف'}). السبب: ${data.reason || 'غير محدد'}`,
+                    type: 'admin_report',
+                    linkTo: 'admin:reports',
+                    isAdminNotification: true
+                  });
                 }
               }
             });
           },
-          (err) => console.warn("Real-time toast error:", err)
-        )
-      : () => {};
+          (err) => console.warn("Admin real-time reports error:", err)
+        );
 
-    // 2. Listen to real-time Global Notifications
-    const unsubGlobalNotifs = onSnapshot(
-      query(collection(db, 'globalNotifications'), orderBy('createdAt', 'desc'), limit(1)),
-      (snapshot) => {
-        snapshot.docChanges().forEach((change) => {
-          if (change.type === 'added') {
-            const data = change.doc.data();
-            const id = change.doc.id;
-
-            const createdTime = getDocCreatedTime(data);
-
-            if (createdTime >= sessionStartTime - 4000 && !seenIds.has(id)) {
-              seenIds.add(id);
-              triggerToast({ id, ...data, isGlobal: true });
-            }
-          }
-        });
-      },
-      (err) => console.warn("Real-time global toast error:", err)
-    );
-
-    // 3. Listen to Administration Events (Reports, Suggestions, Recommendations) in Real-time
-    let unsubAdminReports = () => {};
-    let unsubAdminSuggestions = () => {};
-    let unsubAdminRecommendations = () => {};
-
-    if (isAdmin) {
-      unsubAdminReports = onSnapshot(
-        query(collection(db, 'reports'), orderBy('createdAt', 'desc'), limit(1)),
-        (snapshot) => {
-          snapshot.docChanges().forEach((change) => {
-            if (change.type === 'added') {
-              const data = change.doc.data();
-              const id = change.doc.id;
-              const createdTime = getDocCreatedTime(data);
-
-              if (createdTime >= sessionStartTime - 4000 && !seenIds.has(id)) {
-                seenIds.add(id);
-                triggerToast({
-                  id,
-                  title: '⚠️ بلاغ أمني جديد 🛡️',
-                  body: `بلاغ عن محتوى مخالف بمستوى (${data.type === 'comment' ? 'تعليق مخالف' : 'محتوى مخالف'}). السبب: ${data.reason || 'غير محدد'}`,
-                  type: 'admin_report',
-                  linkTo: 'admin:reports',
-                  isAdminNotification: true
-                });
+        unsubAdminSuggestions = onSnapshot(
+          query(collection(db, 'suggestions'), orderBy('createdAt', 'desc'), limit(1)),
+          (snapshot) => {
+            snapshot.docChanges().forEach((change) => {
+              if (change.type === 'added') {
+                const data = change.doc.data();
+                const id = change.doc.id;
+                const createdTime = getDocCreatedTime(data);
+                if (createdTime >= sessionStartTime - 4000 && !seenIds.has(id)) {
+                  seenIds.add(id);
+                  const isComplaint = data.type === 'complaint';
+                  triggerToast({
+                    id,
+                    title: isComplaint ? '🚨 شكوى إدارية جديدة' : '💡 مقترح جديد للمنصة',
+                    body: `"${data.title || data.text || ''}" - بواسطة: ${data.userName || 'عضو مجهول'}`,
+                    type: 'admin_suggestion',
+                    linkTo: 'admin:suggestions_moderation',
+                    isAdminNotification: true
+                  });
+                }
               }
-            }
-          });
-        },
-        (err) => console.warn("Admin real-time reports error:", err)
-      );
+            });
+          },
+          (err) => console.warn("Admin real-time suggestions error:", err)
+        );
 
-      unsubAdminSuggestions = onSnapshot(
-        query(collection(db, 'suggestions'), orderBy('createdAt', 'desc'), limit(1)),
-        (snapshot) => {
-          snapshot.docChanges().forEach((change) => {
-            if (change.type === 'added') {
-              const data = change.doc.data();
-              const id = change.doc.id;
-              const createdTime = getDocCreatedTime(data);
-
-              if (createdTime >= sessionStartTime - 4000 && !seenIds.has(id)) {
-                seenIds.add(id);
-                const isComplaint = data.type === 'complaint';
-                triggerToast({
-                  id,
-                  title: isComplaint ? '🚨 شكوى إدارية جديدة' : '💡 مقترح جديد للمنصة',
-                  body: `"${data.title || data.text || ''}" - بواسطة: ${data.userName || 'عضو مجهول'}`,
-                  type: 'admin_suggestion',
-                  linkTo: 'admin:suggestions_moderation',
-                  isAdminNotification: true
-                });
+        unsubAdminRecommendations = onSnapshot(
+          query(collection(db, 'recommendations'), orderBy('createdAt', 'desc'), limit(1)),
+          (snapshot) => {
+            snapshot.docChanges().forEach((change) => {
+              if (change.type === 'added') {
+                const data = change.doc.data();
+                const id = change.doc.id;
+                const createdTime = getDocCreatedTime(data);
+                if (createdTime >= sessionStartTime - 4000 && data.status === 'pending' && !seenIds.has(id)) {
+                  seenIds.add(id);
+                  triggerToast({
+                    id,
+                    title: '📖 توصية جديدة بانتظار الاعتماد',
+                    body: `توصية لـ "${data.targetAnimeTitle || 'أنمي'}" من العضو: ${data.userDisplayName || 'عضو مجهول'}`,
+                    type: 'admin_recommendation',
+                    linkTo: 'admin:recommendations',
+                    isAdminNotification: true
+                  });
+                }
               }
-            }
-          });
-        },
-        (err) => console.warn("Admin real-time suggestions error:", err)
-      );
-
-      unsubAdminRecommendations = onSnapshot(
-        query(collection(db, 'recommendations'), orderBy('createdAt', 'desc'), limit(1)),
-        (snapshot) => {
-          snapshot.docChanges().forEach((change) => {
-            if (change.type === 'added') {
-              const data = change.doc.data();
-              const id = change.doc.id;
-              const createdTime = getDocCreatedTime(data);
-
-              if (createdTime >= sessionStartTime - 4000 && data.status === 'pending' && !seenIds.has(id)) {
-                seenIds.add(id);
-                triggerToast({
-                  id,
-                  title: '📖 توصية جديدة بانتظار الاعتماد',
-                  body: `توصية لـ "${data.targetAnimeTitle || 'أنمي'}" من العضو: ${data.userDisplayName || 'عضو مجهول'}`,
-                  type: 'admin_recommendation',
-                  linkTo: 'admin:recommendations',
-                  isAdminNotification: true
-                });
-              }
-            }
-          });
-        },
-        (err) => console.warn("Admin real-time recommendations error:", err)
-      );
-    }
+            });
+          },
+          (err) => console.warn("Admin real-time recommendations error:", err)
+        );
+      }
+    }, 900);
 
     return () => {
+      disposed = true;
+      clearTimeout(attachTimer);
       unsubUserNotifs();
       unsubGlobalNotifs();
       unsubAdminReports();
@@ -409,8 +413,21 @@ export default function App() {
       }
     }
 
+    // Silent background warm-up ping for Render / Hugging Face hybrid backend (never blocks UI)
+    const warmTimer = setTimeout(() => {
+      import('./utils/apiUrl')
+        .then(({ resolveApiBaseHost }) => {
+          const externalHost = resolveApiBaseHost();
+          if (externalHost) {
+            fetch(`${externalHost}/api/system/health`, { method: 'GET', mode: 'cors' }).catch(() => {});
+          }
+        })
+        .catch(() => {});
+    }, 1400);
+
     return () => {
       if (timer) clearTimeout(timer);
+      clearTimeout(warmTimer);
       window.removeEventListener('open-ai-chat', handleOpenChat);
       window.removeEventListener('open-permissions-modal', handleOpenPermissions);
       window.removeEventListener('otaku:open-diagnostics', handleOpenDiagnostics);
@@ -469,22 +486,43 @@ export default function App() {
     askPermissionsRef.current = askPermissions;
   }, [askPermissions]);
 
-  // تشغيل محرك إشعارات الاكتشاف والحلقات/الأعمال الجديدة خارج التطبيق مع دعم التوجيه عند النقر
+  // تشغيل محرك إشعارات الاكتشاف والحلقات/الأعمال الجديدة خارج التطبيق بشكل مؤجل بعد استقرار الإقلاع
   useEffect(() => {
-    const cleanupDiscovery = initExternalDiscoveryNotifications({
-      getHomeMode: () => homeModeRef.current,
-      onNavigateLink: (linkTo) => navigateByLinkTo(linkTo),
-    });
+    let disposed = false;
+    let cleanupDiscovery: (() => void) | null = null;
+    let cleanupNativeTap: (() => void) | null = null;
 
-    const cleanupNativeTap = registerNativeNotificationTapListener((extra) => {
-      if (extra?.linkTo) {
-        navigateByLinkTo(String(extra.linkTo), extra.metadata);
+    const timer = setTimeout(() => {
+      if (disposed) return;
+      void import('./services/externalNotificationEngine')
+        .then(({ initExternalDiscoveryNotifications }) => {
+          if (disposed) return;
+          cleanupDiscovery = initExternalDiscoveryNotifications({
+            getHomeMode: () => homeModeRef.current,
+            onNavigateLink: (linkTo) => navigateByLinkTo(linkTo),
+          });
+        })
+        .catch(() => {});
+
+      if (Capacitor.isNativePlatform()) {
+        void import('./utils/systemPermissions')
+          .then(({ registerNativeNotificationTapListener }) => {
+            if (disposed) return;
+            cleanupNativeTap = registerNativeNotificationTapListener((extra) => {
+              if (extra?.linkTo) {
+                navigateByLinkTo(String(extra.linkTo), extra.metadata);
+              }
+            });
+          })
+          .catch(() => {});
       }
-    });
+    }, 3500);
 
     return () => {
-      cleanupDiscovery();
-      cleanupNativeTap();
+      disposed = true;
+      clearTimeout(timer);
+      cleanupDiscovery?.();
+      cleanupNativeTap?.();
     };
   }, [navigateByLinkTo]);
 
@@ -635,25 +673,31 @@ export default function App() {
 
   if (!onboardingDone) {
     return (
-      <OnboardingView
-        onComplete={(chosenHome) => {
-          setHomeMode(chosenHome);
-          setOnboardingDone(true);
-          setActiveTab('home');
-          setViewStack([{ name: 'home' }]);
-          if (typeof window !== 'undefined') {
-            const prompted = localStorage.getItem('mod_permissions_prompted');
-            if (prompted !== 'true') {
-              setTimeout(() => setAskPermissions(true), 250);
+      <Suspense fallback={<ViewFallback />}>
+        <OnboardingView
+          onComplete={(chosenHome) => {
+            setHomeMode(chosenHome);
+            setOnboardingDone(true);
+            setActiveTab('home');
+            setViewStack([{ name: 'home' }]);
+            if (typeof window !== 'undefined') {
+              const prompted = localStorage.getItem('mod_permissions_prompted');
+              if (prompted !== 'true') {
+                setTimeout(() => setAskPermissions(true), 250);
+              }
             }
-          }
-        }}
-      />
+          }}
+        />
+      </Suspense>
     );
   }
 
   if (askPermissions) {
-    return <PermissionPromptModal forceOpen={true} onComplete={() => setAskPermissions(false)} />;
+    return (
+      <Suspense fallback={<ViewFallback />}>
+        <PermissionPromptModal forceOpen={true} onComplete={() => setAskPermissions(false)} />
+      </Suspense>
+    );
   }
 
   if (banInfo && banInfo.isBanned) {
@@ -946,8 +990,9 @@ export default function App() {
             }}
             onOpenAnime={(id) => navigateTo('anime_details', { id })}
             onOpenManga={(id) => navigateTo('manga_details', { id })}
-            onOpenOfflineChapter={(item) => {
+            onOpenOfflineChapter={async (item) => {
               const targetMangaId = String(item.mangaId || item.animeId || '');
+              const { downloadManagerService } = await import('./services/downloadManagerService');
               const siblingOfflineChapters = downloadManagerService
                 .getSnapshot()
                 .filter(
@@ -1000,6 +1045,24 @@ export default function App() {
       case 'suggestions_hub':
         return <OtakuArenaHubView initialTab="arena" onBack={goBack} onUserClick={(userId) => navigateTo('other_profile', { userId })} onNavigate={navigateTo} />;
       case 'diagnostics':
+        if (!isAdmin && userRole !== 'owner' && userRole !== 'admin' && userRole !== 'moderator') {
+          return (
+            <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-6 animate-fadeIn" dir="rtl" id="app_diagnostics_unauthorized_guard">
+              <div className="bg-zinc-900 border border-zinc-800 p-8 rounded-2xl text-center max-w-sm w-full shadow-xl">
+                <h2 className="text-zinc-100 text-lg font-bold mb-2">القسم مخصص للإدارة فقط 🛡️</h2>
+                <p className="text-zinc-400 text-xs leading-relaxed">
+                  أدوات التشخيص والفحص متاحة حصرياً لأعضاء الإدارة وطاقم الدعم الفني.
+                </p>
+                <button
+                  onClick={goBack}
+                  className="mt-6 w-full bg-zinc-800 hover:bg-zinc-700 text-zinc-100 font-semibold py-2 rounded-xl text-xs transition cursor-pointer border border-zinc-700/60"
+                >
+                  العودة للخلف
+                </button>
+              </div>
+            </div>
+          );
+        }
         return <DiagnosticsView onBack={goBack} initialTab={currentView.props?.initialTab} />;
       case 'ai_chat':
         return <AiChatView onBack={goBack} onNavigate={navigateTo} onMangaClick={(id) => navigateTo('manga_details', { id })} />;

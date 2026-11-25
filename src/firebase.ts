@@ -138,15 +138,13 @@ export function handleFirestoreError(
   throw new Error(JSON.stringify(errInfo));
 }
 
-// Validate connection to Firestore on boot using a publicly readable document path (non-blocking)
+// Validate connection to Firestore after boot critical UI queries complete (non-blocking)
 if (isBrowser) {
-  (async function testFirestoreConnection() {
-    try {
-      await getDocFromServer(doc(db, 'globalSettings', 'app'));
-    } catch (error) {
+  setTimeout(() => {
+    void getDocFromServer(doc(db, 'globalSettings', 'app')).catch((error) => {
       if (error instanceof Error && error.message.includes('the client is offline')) {
         console.warn('Firestore boot check: client is currently offline, relying on local cache.');
       }
-    }
-  })();
+    });
+  }, 6000);
 }

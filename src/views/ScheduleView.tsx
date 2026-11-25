@@ -358,7 +358,6 @@ export default function ScheduleView({ onBack, onAnimeClick, initialDay }: Sched
       );
     }
 
-    // عرض الشبكة بدون فراغات + الاسم على البوستر + التقييم والنوع باختصار إنجليزي 3 حروف
     return (
       <div
         key={`${keyPrefix}-${anime._id || anime.mal_id || idx}-${idx}`}
@@ -394,11 +393,14 @@ export default function ScheduleView({ onBack, onAnimeClick, initialDay }: Sched
           )}
         </div>
 
-        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 via-black/70 to-transparent pt-8 pb-2 px-2 pointer-events-none flex flex-col justify-end">
+        <div
+          className="absolute inset-x-0 bottom-0 pt-5 pb-2 px-2 bg-gradient-to-t from-black/85 via-black/45 to-transparent pointer-events-none flex flex-col justify-end"
+          style={{ textShadow: '0 2px 6px rgba(0,0,0,0.98), 0 0 3px rgba(0,0,0,0.95)' }}
+        >
           <h3
             className={`pointer-events-auto font-black ${
               isLargeGrid ? 'text-xs sm:text-sm' : 'text-[10px] sm:text-xs'
-            } text-white group-hover:text-blue-400 transition-colors line-clamp-2 text-center leading-tight drop-shadow`}
+            } text-white group-hover:text-blue-400 transition-colors line-clamp-2 text-center leading-tight`}
             dir="auto"
           >
             <LongPressCopy text={cleanTitle}>{cleanTitle}</LongPressCopy>

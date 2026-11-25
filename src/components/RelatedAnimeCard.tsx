@@ -83,12 +83,12 @@ export default function RelatedAnimeCard({ rel, onClick }: any) {
             <Play size={22} className="opacity-20 text-white" />
           </div>
         )}
-        
-        <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-transparent pointer-events-none" />
-
         {/* اسم الأنمي في الأسفل بخط رفيع وأنيق مقصور على سطرين كحد أقصى وبدون عدد حلقات */}
-        <div className="absolute bottom-2 left-1.5 right-1.5 text-center z-10 pointer-events-auto">
-          <h4 className="text-[10px] font-light text-white/95 line-clamp-2 leading-snug" dir="auto">
+        <div
+          className="absolute inset-x-0 bottom-0 pt-5 pb-2 px-1.5 bg-gradient-to-t from-black/85 via-black/45 to-transparent text-center z-10 pointer-events-auto"
+          style={{ textShadow: '0 2px 6px rgba(0,0,0,0.98), 0 0 3px rgba(0,0,0,0.95)' }}
+        >
+          <h4 className="text-[10px] font-light text-white line-clamp-2 leading-snug" dir="auto">
             <LongPressCopy text={String(rel.name || '')}>{rel.name}</LongPressCopy>
           </h4>
         </div>

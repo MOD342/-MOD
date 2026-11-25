@@ -1,4 +1,4 @@
-export const DEFAULT_PRODUCTION_API_URL = 'https://anime-mod-production.up.railway.app';
+export const DEFAULT_PRODUCTION_API_URL = '';
 
 export function isRunningInAPKOrExternalShell(): boolean {
   if (typeof window === 'undefined') return false;
@@ -62,7 +62,8 @@ export function isSameOriginFullStackWeb(): boolean {
     host.endsWith('.googleusercontent.com') ||
     host.endsWith('.usercontent.goog') ||
     host.endsWith('.up.railway.app') ||
-    host.endsWith('.onrender.com')
+    host.endsWith('.onrender.com') ||
+    host.endsWith('.hf.space')
   );
 }
 

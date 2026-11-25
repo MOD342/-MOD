@@ -1271,9 +1271,9 @@ export default function OtakuArenaHubView({
                       <img
                         src={g.worldArt}
                         alt=""
-                        className="absolute inset-0 w-full h-full object-cover opacity-70 group-hover:scale-105 transition duration-500"
+                        className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition duration-500"
                       />
-                      <div className="absolute inset-0 bg-gradient-to-t from-black via-black/65 to-black/25" />
+                      <div className="absolute inset-x-0 bottom-0 h-32 bg-gradient-to-t from-black/85 via-black/45 to-transparent pointer-events-none" />
 
                       <div className="relative z-10 flex items-center justify-between gap-2">
                         <span
@@ -1300,18 +1300,21 @@ export default function OtakuArenaHubView({
                         </div>
                       </div>
 
-                      <div className="relative z-10 space-y-1.5 mt-3">
+                      <div
+                        className="relative z-10 space-y-1.5 mt-3"
+                        style={{ textShadow: '0 2px 6px rgba(0,0,0,0.98), 0 0 3px rgba(0,0,0,0.95)' }}
+                      >
                         <div className="text-[10px] font-mono text-amber-300">{g.studioTag}</div>
                         <h4 className="text-sm sm:text-base font-black text-white leading-snug">
                           {g.titleAr}
                         </h4>
-                        <p className="text-[11px] text-neutral-300 line-clamp-2">{g.descriptionAr}</p>
+                        <p className="text-[11px] text-neutral-200 line-clamp-2">{g.descriptionAr}</p>
                         <div className="pt-1 flex items-center justify-between">
-                          <span className="inline-flex items-center gap-1.5 bg-gradient-to-r from-[#FF1744] to-amber-500 text-black text-xs font-black px-4 py-1.5 rounded-xl shadow-lg">
+                          <span className="inline-flex items-center gap-1.5 bg-gradient-to-r from-[#FF1744] to-amber-500 text-black text-xs font-black px-4 py-1.5 rounded-xl shadow-lg" style={{ textShadow: 'none' }}>
                             <Play size={12} className="fill-black" />
                             <span>العب الآن</span>
                           </span>
-                          <span className="text-[10px] font-mono text-neutral-300">
+                          <span className="text-[10px] font-mono text-neutral-200">
                             الهدف: {g.targetScore} PT
                           </span>
                         </div>
@@ -1486,9 +1489,9 @@ export default function OtakuArenaHubView({
                       <img
                         src={g.worldArt}
                         alt=""
-                        className="absolute inset-0 w-full h-full object-cover opacity-75 group-hover:scale-110 transition duration-500"
+                        className="absolute inset-0 w-full h-full object-cover group-hover:scale-110 transition duration-500"
                       />
-                      <div className="absolute inset-0 bg-gradient-to-t from-black via-black/45 to-black/20" />
+                      <div className="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-black/85 via-black/45 to-transparent pointer-events-none" />
 
                       <img
                         src={g.fighterImg}
@@ -1509,12 +1512,15 @@ export default function OtakuArenaHubView({
                         </span>
                       </div>
 
-                      <div className="relative z-10 space-y-1.5">
+                      <div
+                        className="relative z-10 space-y-1.5"
+                        style={{ textShadow: '0 2px 6px rgba(0,0,0,0.98), 0 0 3px rgba(0,0,0,0.95)' }}
+                      >
                         <h4 className="text-xs sm:text-sm font-black text-white leading-tight drop-shadow">
                           {g.titleAr}
                         </h4>
                         <div className="flex items-center justify-between">
-                          <div className="inline-flex items-center gap-1 bg-gradient-to-r from-[#FF1744] to-amber-500 text-black text-[10px] font-black px-2.5 py-1 rounded-xl shadow-lg">
+                          <div className="inline-flex items-center gap-1 bg-gradient-to-r from-[#FF1744] to-amber-500 text-black text-[10px] font-black px-2.5 py-1 rounded-xl shadow-lg" style={{ textShadow: 'none' }}>
                             <Play size={10} className="fill-black" />
                             <span>العب</span>
                           </div>

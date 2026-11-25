@@ -21,6 +21,20 @@ export default defineConfig(({ mode }) => {
         '@': path.resolve(__dirname, '.'),
       },
     },
+    optimizeDeps: {
+      include: [
+        'react',
+        'react-dom',
+        'react-dom/client',
+        'react/jsx-runtime',
+        'react/jsx-dev-runtime',
+        'firebase/app',
+        'firebase/auth',
+        'firebase/firestore',
+        'lucide-react',
+        'motion/react',
+      ],
+    },
     build: {
       outDir: 'dist',
       emptyOutDir: true,

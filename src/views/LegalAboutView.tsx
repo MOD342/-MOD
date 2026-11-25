@@ -30,13 +30,17 @@ interface LegalAboutViewProps {
 }
 
 const DEVELOPER_EMAIL = '342.mod@gmail.com';
-const PACKAGE_ID = 'com.animemod.otakuhub';
+const PACKAGE_ID = 'com.zoryx';
 const APP_VERSION = '2.6.0';
-const PUBLIC_WEB_FALLBACK = 'https://anime-mod-production.up.railway.app';
+const PUBLIC_WEB_FALLBACK = '';
 
 function resolveWebBaseOrigin(): string {
   const configured = (import.meta.env.VITE_API_URL || '').trim().replace(/\/+$/, '');
   if (configured) return configured;
+  try {
+    const customHost = (localStorage.getItem('custom_api_host') || '').trim().replace(/\/+$/, '');
+    if (customHost) return customHost;
+  } catch {}
   if (typeof window !== 'undefined') {
     const { origin, protocol, hostname } = window.location;
     if (
@@ -258,6 +262,50 @@ export default function LegalAboutView({
                   <span>عرض الصفحة على الويب</span>
                 </button>
               </div>
+            </section>
+
+            <section className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              <button
+                type="button"
+                onClick={() => setActiveSection('privacy')}
+                className="bg-[#101016] hover:bg-[#171722] border border-white/[0.08] hover:border-emerald-500/40 rounded-2xl p-4 text-right transition cursor-pointer flex items-center gap-3"
+              >
+                <div className="w-10 h-10 rounded-xl bg-emerald-500/10 text-emerald-400 flex items-center justify-center shrink-0">
+                  <ShieldCheck size={18} />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-xs font-black text-white">سياسة الخصوصية</div>
+                  <div className="text-[11px] text-neutral-400 truncate">حماية البيانات والتشفير</div>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setActiveSection('terms')}
+                className="bg-[#101016] hover:bg-[#171722] border border-white/[0.08] hover:border-purple-500/40 rounded-2xl p-4 text-right transition cursor-pointer flex items-center gap-3"
+              >
+                <div className="w-10 h-10 rounded-xl bg-purple-500/10 text-purple-400 flex items-center justify-center shrink-0">
+                  <FileText size={18} />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-xs font-black text-white">اتفاقية الاستخدام</div>
+                  <div className="text-[11px] text-neutral-400 truncate">الشروط ومعايير المجتمع</div>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setActiveSection('data_safety')}
+                className="bg-[#101016] hover:bg-[#171722] border border-white/[0.08] hover:border-sky-500/40 rounded-2xl p-4 text-right transition cursor-pointer flex items-center gap-3"
+              >
+                <div className="w-10 h-10 rounded-xl bg-sky-500/10 text-sky-400 flex items-center justify-center shrink-0">
+                  <Database size={18} />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-xs font-black text-white">أمان البيانات</div>
+                  <div className="text-[11px] text-neutral-400 truncate">الأذونات وحذف الحساب</div>
+                </div>
+              </button>
             </section>
           </div>
         )}

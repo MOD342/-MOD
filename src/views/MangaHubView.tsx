@@ -444,7 +444,7 @@ export default function MangaHubView({
             {/* 2. Origin Filter Tabs Directly BELOW Cinematic Banner */}
             <section className="px-3.5 md:px-6 max-w-7xl mx-auto">
               <div className="bg-neutral-950/90 border border-white/10 rounded-2xl p-1.5 flex items-center justify-between gap-2 shadow-lg">
-                <div className="flex items-center gap-1.5 overflow-x-auto hide-scrollbar flex-1">
+                <div className="flex items-center gap-1.5 overflow-x-auto hide-scrollbar flex-1 snap-x snap-proximity">
                   {ORIGIN_TABS.map((tab) => {
                     const active = origin === tab.id;
                     return (
@@ -455,7 +455,7 @@ export default function MangaHubView({
                           setOrigin(tab.id);
                           setSelectedGenre('الكل');
                         }}
-                        className={`min-h-[42px] px-4 py-2 rounded-xl text-xs sm:text-[13px] font-black whitespace-nowrap shrink-0 transition-all cursor-pointer ${
+                        className={`snap-start min-h-[42px] px-4 py-2 rounded-xl text-xs sm:text-[13px] font-black whitespace-nowrap shrink-0 transition-all cursor-pointer ${
                           active
                             ? 'bg-gradient-to-r from-amber-400 to-orange-400 text-black shadow-md shadow-amber-500/20'
                             : 'bg-transparent text-neutral-300 hover:text-white hover:bg-white/5'
@@ -520,7 +520,7 @@ export default function MangaHubView({
                     </button>
                   </div>
 
-                  <div className="flex gap-3.5 overflow-x-auto pb-2 hide-scrollbar">
+                  <div className="flex gap-3.5 overflow-x-auto pb-2 hide-scrollbar snap-x snap-mandatory">
                     {readingHistory.map((item, idx) => {
                       const pct = item.totalPages
                         ? Math.min(100, Math.max(8, Math.round(((item.pageIndex || 1) / item.totalPages) * 100)))
@@ -558,16 +558,16 @@ export default function MangaHubView({
                           }}
                           whileHover={{ y: -4 }}
                           whileTap={{ scale: 0.98 }}
-                          className={`theme-keep-dark cursor-pointer ${
+                          className={`snap-start theme-keep-dark cursor-pointer ${
                             display.isCoverScreen ? 'w-[160px]' : 'w-[185px] md:w-[240px]'
-                          } flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 hover:border-amber-400/70 transition-all aspect-[16/9] bg-neutral-900 shadow-lg`}
+                          } flex-shrink-0 group relative rounded-2xl overflow-hidden border border-neutral-800 hover:border-amber-400/70 transition-all aspect-[16/9] bg-neutral-900 shadow-lg`}
                         >
                           {item.posterUrl ? (
                             <img
                               src={item.posterUrl}
                               referrerPolicy="no-referrer"
                               loading="lazy"
-                              className="w-full h-full object-cover opacity-80 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500"
+                              className="w-full h-full object-cover group-hover:scale-105 transition-all duration-500"
                               alt={item.title}
                             />
                           ) : (
@@ -586,26 +586,29 @@ export default function MangaHubView({
                             <X size={13} strokeWidth={2.5} />
                           </button>
 
-                          <div className="absolute inset-0 bg-gradient-to-t from-black via-black/45 to-transparent flex flex-col justify-end p-3 pointer-events-none">
-                            <div className="flex items-center justify-between gap-2 mb-1 text-[11px] font-black">
-                              <span className="text-amber-300 tabular-nums flex items-center gap-1">
-                                <BookOpen size={11} />
-                                الفصل {item.chapterNum || 1}
-                              </span>
-                              <span className="text-[10px] text-neutral-300 font-mono flex items-center gap-1 tabular-nums">
-                                <Clock size={10} />
-                                {item.pageIndex}/{item.totalPages || '?'}
-                              </span>
-                            </div>
-                            <h3 className="font-bold text-xs md:text-sm text-white truncate drop-shadow mb-2 pointer-events-auto">
+                          <span className="absolute top-2 right-2 z-10 pointer-events-none bg-amber-500 text-black px-2 py-0.5 rounded-lg text-[10px] font-black shadow flex items-center gap-1 tabular-nums">
+                            <BookOpen size={10} />
+                            الفصل {item.chapterNum || 1}
+                          </span>
+
+                          <div
+                            className="absolute bottom-1 inset-x-0 pt-5 pb-1.5 px-2.5 bg-gradient-to-t from-black/85 via-black/45 to-transparent flex items-center justify-between gap-2"
+                            style={{ textShadow: '0 2px 6px rgba(0,0,0,0.98), 0 0 3px rgba(0,0,0,0.95)' }}
+                          >
+                            <h3 className="font-bold text-xs md:text-sm text-white group-hover:text-amber-300 transition-colors truncate flex-1">
                               <LongPressCopy text={item.title}>{item.title}</LongPressCopy>
                             </h3>
-                            <div className="w-full h-1 bg-white/15 rounded-full overflow-hidden">
-                              <div
-                                className="h-full bg-gradient-to-r from-amber-400 to-orange-500 rounded-full"
-                                style={{ width: `${pct}%` }}
-                              />
-                            </div>
+                            <span className="text-[10px] text-neutral-200 font-mono flex items-center gap-1 tabular-nums shrink-0">
+                              <Clock size={10} />
+                              {item.pageIndex}/{item.totalPages || '?'}
+                            </span>
+                          </div>
+
+                          <div className="absolute bottom-0 inset-x-0 h-1 bg-white/20 overflow-hidden">
+                            <div
+                              className="h-full bg-gradient-to-r from-amber-400 to-orange-500"
+                              style={{ width: `${pct}%` }}
+                            />
                           </div>
                         </motion.div>
                       );
@@ -625,7 +628,7 @@ export default function MangaHubView({
                   </h2>
                 </div>
 
-                <div className="flex gap-3.5 overflow-x-auto pb-2 hide-scrollbar">
+                <div className="flex gap-3.5 overflow-x-auto pb-2 hide-scrollbar snap-x snap-mandatory">
                   {trending.map((item, idx) => {
                     const rank = idx + 1;
                     return (
@@ -635,55 +638,56 @@ export default function MangaHubView({
                         onClick={() => onMangaClick(String(item._id))}
                         whileHover={{ y: -4 }}
                         whileTap={{ scale: 0.98 }}
-                        className={`theme-keep-dark ${
+                        className={`snap-start theme-keep-dark ${
                           display.isCoverScreen ? 'w-[122px]' : 'w-[140px] md:w-[178px] lg:w-[198px]'
-                        } shrink-0 text-right group cursor-pointer`}
+                        } shrink-0 text-right group cursor-pointer relative aspect-[3/4] rounded-2xl overflow-hidden bg-neutral-900 border border-white/10 hover:border-amber-400/60 transition-colors shadow-lg`}
                       >
-                        <div className="relative aspect-[3/4] rounded-2xl overflow-hidden bg-neutral-900 border border-white/10 group-hover:border-amber-400/60 transition-colors shadow-lg">
-                          {item.posterUrl ? (
-                            <img
-                              src={item.posterUrl}
-                              alt={item.title}
-                              loading="lazy"
-                              referrerPolicy="no-referrer"
-                              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                            />
-                          ) : (
-                            <div className="w-full h-full bg-gradient-to-br from-neutral-900 to-neutral-800 flex items-center justify-center text-neutral-600">
-                              <BookOpen size={26} />
-                            </div>
-                          )}
-
-                          {/* Rank Pill */}
-                          <span
-                            className={`absolute top-2 right-2 px-2 py-0.5 rounded-lg text-[11px] font-black shadow-lg tabular-nums ${
-                              rank === 1
-                                ? 'bg-amber-400 text-black'
-                                : rank === 2
-                                ? 'bg-slate-200 text-black'
-                                : rank === 3
-                                ? 'bg-orange-600 text-white'
-                                : 'bg-black/75 text-amber-300 border border-white/10'
-                            }`}
-                          >
-                            #{rank}
-                          </span>
-
-                          {item.rating > 0 && (
-                            <span className="absolute top-2 left-2 bg-black/75 backdrop-blur-md text-yellow-400 px-2 py-0.5 rounded-lg text-[10px] font-bold flex items-center gap-0.5 border border-white/10 tabular-nums">
-                              <Star size={10} fill="currentColor" />
-                              {Number(item.rating).toFixed(1)}
-                            </span>
-                          )}
-
-                          <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/35 to-transparent flex flex-col justify-end p-2.5">
-                            <span className="text-[10px] text-amber-300 font-bold mb-0.5">
-                              {item.originLabel || 'مانجا'}
-                            </span>
-                            <h3 className="text-xs sm:text-sm font-black text-white line-clamp-2 leading-tight">
-                              <LongPressCopy text={item.title}>{item.title}</LongPressCopy>
-                            </h3>
+                        {item.posterUrl ? (
+                          <img
+                            src={item.posterUrl}
+                            alt={item.title}
+                            loading="lazy"
+                            referrerPolicy="no-referrer"
+                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                          />
+                        ) : (
+                          <div className="w-full h-full bg-gradient-to-br from-neutral-900 to-neutral-800 flex items-center justify-center text-neutral-600">
+                            <BookOpen size={26} />
                           </div>
+                        )}
+
+                        {/* Rank Pill */}
+                        <span
+                          className={`absolute top-2 right-2 px-2 py-0.5 rounded-lg text-[11px] font-black shadow-lg tabular-nums ${
+                            rank === 1
+                              ? 'bg-amber-400 text-black'
+                              : rank === 2
+                              ? 'bg-slate-200 text-black'
+                              : rank === 3
+                              ? 'bg-orange-600 text-white'
+                              : 'bg-black/75 text-amber-300 border border-white/10'
+                          }`}
+                        >
+                          #{rank}
+                        </span>
+
+                        {item.rating > 0 && (
+                          <span className="absolute top-2 left-2 bg-black/75 backdrop-blur-md text-yellow-400 px-2 py-0.5 rounded-lg text-[10px] font-bold flex items-center gap-0.5 border border-white/10 tabular-nums">
+                            <Star size={10} fill="currentColor" />
+                            {Number(item.rating).toFixed(1)}
+                          </span>
+                        )}
+
+                        <div
+                          className="absolute inset-x-0 bottom-0 pt-5 pb-2 px-2 bg-gradient-to-t from-black/85 via-black/45 to-transparent text-center"
+                          style={{ textShadow: '0 2px 6px rgba(0,0,0,0.98), 0 0 3px rgba(0,0,0,0.95)' }}
+                        >
+                          <span className="text-[10px] text-amber-300 font-bold block">
+                            {item.originLabel || 'مانجا'}
+                          </span>
+                          <h3 className="text-xs sm:text-sm font-black text-white group-hover:text-amber-300 transition-colors line-clamp-1 truncate">
+                            <LongPressCopy text={item.title}>{item.title}</LongPressCopy>
+                          </h3>
                         </div>
                       </motion.button>
                     );
@@ -707,7 +711,7 @@ export default function MangaHubView({
                   </div>
 
                   {/* Quick Genre Filter Chips */}
-                  <div className="flex items-center gap-2 overflow-x-auto hide-scrollbar pb-0.5">
+                  <div className="flex items-center gap-2 overflow-x-auto hide-scrollbar pb-0.5 snap-x snap-proximity">
                     {QUICK_GENRES.map((genre) => {
                       const active = selectedGenre === genre;
                       return (
@@ -715,7 +719,7 @@ export default function MangaHubView({
                           key={genre}
                           type="button"
                           onClick={() => setSelectedGenre(genre)}
-                          className={`min-h-[34px] px-3 py-1 rounded-full text-[11px] font-bold whitespace-nowrap transition cursor-pointer border ${
+                          className={`snap-start min-h-[34px] px-3 py-1 rounded-full text-[11px] font-bold whitespace-nowrap transition cursor-pointer border ${
                             active
                               ? 'bg-white text-black border-white'
                               : 'bg-neutral-900/75 border-neutral-800 text-neutral-400 hover:text-white'
@@ -821,7 +825,7 @@ export default function MangaHubView({
                             key={`latest-grid-${item._id}-${idx}`}
                             type="button"
                             onClick={() => onMangaClick(String(item._id))}
-                            className="theme-keep-dark cursor-pointer group relative aspect-[3/4] overflow-hidden bg-neutral-950 border-b border-l border-white/10 text-right"
+                            className="theme-keep-dark cursor-pointer group relative aspect-[3/4] w-full bg-neutral-950 border-b border-l border-white/10 text-right overflow-hidden"
                           >
                             {item.posterUrl ? (
                               <img
@@ -837,8 +841,11 @@ export default function MangaHubView({
                               </div>
                             )}
 
-                            <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 via-black/65 to-transparent pt-10 pb-2.5 px-2.5 flex flex-col justify-end gap-0.5">
-                              <div className="text-[10px] font-bold text-neutral-300 flex items-center justify-center gap-1 tabular-nums">
+                            <div
+                              className="absolute inset-x-0 bottom-0 pt-6 pb-2 px-2 bg-gradient-to-t from-black/85 via-black/45 to-transparent flex flex-col justify-end gap-0.5 text-center"
+                              style={{ textShadow: '0 2px 6px rgba(0,0,0,0.98), 0 0 3px rgba(0,0,0,0.95)' }}
+                            >
+                              <div className="text-[10px] font-bold text-neutral-200 flex items-center justify-center gap-1 tabular-nums">
                                 <span className="text-amber-300">{item.originLabel || 'مانجا'}</span>
                                 {item.rating > 0 && (
                                   <>
@@ -850,7 +857,7 @@ export default function MangaHubView({
                                   </>
                                 )}
                               </div>
-                              <h3 className="font-black text-xs text-white group-hover:text-amber-400 transition-colors line-clamp-2 text-center leading-tight">
+                              <h3 className="font-black text-xs text-white group-hover:text-amber-300 transition-colors line-clamp-2 text-center leading-tight">
                                 <LongPressCopy text={item.title}>{item.title}</LongPressCopy>
                               </h3>
                             </div>

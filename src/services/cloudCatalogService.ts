@@ -526,6 +526,13 @@ export interface GetBundleOptions<T> {
   onData?: (data: T, source: 'ram' | 'idb' | 'cloud' | 'live') => void;
 }
 
+export function peekBundleRam<T>(kind: BundleKind, bundleId: string): T | null {
+  const docId = toCanonicalKey(kind, bundleId);
+  const localKey = `bundle:${docId}`;
+  const hit = ramGet<T>(localKey);
+  return hit ? hit.data : null;
+}
+
 export async function getBundleWithCloud<T>(opts: GetBundleOptions<T>): Promise<T | null> {
   const docId = toCanonicalKey(opts.kind, opts.bundleId);
   const localKey = `bundle:${docId}`;
@@ -565,10 +572,18 @@ export async function getBundleWithCloud<T>(opts: GetBundleOptions<T>): Promise<
   }
 
   const run = (async (): Promise<T | null> => {
-    // 2. Check Tier 2 (Shared Cloud Firestore) unless forceRefresh
+    // 2. Check Tier 2 (Shared Cloud Firestore) with fast 1.1s race so cold WebChannel never stalls live API
     let cloudDoc: any = null;
+    let pendingCloudPromise: Promise<any | null> | undefined;
     if (!force) {
-      cloudDoc = await safeCloudGet('catalog_bundles', docId);
+      pendingCloudPromise = safeCloudGet('catalog_bundles', docId);
+      const raced = await Promise.race([
+        pendingCloudPromise,
+        new Promise<'__timeout__'>((resolve) => setTimeout(() => resolve('__timeout__'), 1100)),
+      ]);
+      if (raced !== '__timeout__') {
+        cloudDoc = raced;
+      }
       if (cloudDoc && cloudDoc.payload && Number(cloudDoc.itemCount) > 0) {
         const cloudData = (
           '__wrappedList' in cloudDoc.payload && Array.isArray(cloudDoc.payload.items)
@@ -603,7 +618,13 @@ export async function getBundleWithCloud<T>(opts: GetBundleOptions<T>): Promise<
     }
 
     // 3. Tier 3: Live Server Fetch & Write-Back
-    return await fetchLiveAndSyncBundle(opts, docId, localKey, cloudDoc);
+    return await fetchLiveAndSyncBundle(
+      opts,
+      docId,
+      localKey,
+      cloudDoc,
+      cloudDoc ? undefined : pendingCloudPromise,
+    );
   })();
 
   inFlightRequests.set(flightKey, run);
@@ -665,6 +686,7 @@ async function fetchLiveAndSyncBundle<T>(
   docId: string,
   localKey: string,
   existingCloudDoc: any | null,
+  pendingCloudPromise?: Promise<any | null>,
 ): Promise<T | null> {
   try {
     const liveData = await opts.fetchLive();
@@ -692,32 +714,37 @@ async function fetchLiveAndSyncBundle<T>(
     });
     opts.onData?.(liveData, 'live');
 
-    // Sync to shared cloud if allowed and meaningfully updated
-    const prevHash = existingCloudDoc?.contentHash;
-    const prevFreshUntil = Number(existingCloudDoc?.freshUntil || 0);
-    const prevFail = Number(existingCloudDoc?.failReports || 0);
-    const shouldWriteCloud =
-      !existingCloudDoc ||
-      (canAttemptCloudWrite() &&
-        (prevFail >= 1 || now >= prevFreshUntil) &&
-        (hash !== prevHash || prevFail >= 1));
+    // Sync to shared cloud in background (resolve pending read if raced so we never write duplicates)
+    void (async () => {
+      try {
+        const resolvedCloudDoc =
+          existingCloudDoc ?? (pendingCloudPromise ? await pendingCloudPromise.catch(() => null) : null);
+        const prevHash = resolvedCloudDoc?.contentHash;
+        const prevFreshUntil = Number(resolvedCloudDoc?.freshUntil || 0);
+        const prevFail = Number(resolvedCloudDoc?.failReports || 0);
+        const shouldWriteCloud =
+          !resolvedCloudDoc ||
+          (canAttemptCloudWrite() &&
+            (prevFail >= 1 || now >= prevFreshUntil) &&
+            (hash !== prevHash || prevFail >= 1));
 
-    if (shouldWriteCloud && itemCount <= 2000) {
-      // Ensure serialized payload fits safely under 900KB Firestore limit
-      const estSize = JSON.stringify(payloadMap).length;
-      if (estSize < 850_000) {
-        void safeCloudSet('catalog_bundles', docId, {
-          bundleId: docId,
-          kind: opts.kind,
-          payload: payloadMap,
-          itemCount,
-          contentHash: hash,
-          freshUntil,
-          staleUntil,
-          failReports: 0,
-        });
-      }
-    }
+        if (shouldWriteCloud && itemCount <= 2000) {
+          const estSize = JSON.stringify(payloadMap).length;
+          if (estSize < 850_000) {
+            void safeCloudSet('catalog_bundles', docId, {
+              bundleId: docId,
+              kind: opts.kind,
+              payload: payloadMap,
+              itemCount,
+              contentHash: hash,
+              freshUntil,
+              staleUntil,
+              failReports: 0,
+            });
+          }
+        }
+      } catch {}
+    })();
 
     return liveData;
   } catch {
@@ -1917,6 +1944,7 @@ export function resolveCanonicalId(type: 'anime' | 'manga', rawId: string | numb
 export const cloudCatalogService = {
   toCanonicalKey,
   resolveCanonicalId,
+  peekBundleRam,
   getBundleWithCloud,
   getAnimeDetailsWithCloud,
   updateCachedAnimeSynopsis,

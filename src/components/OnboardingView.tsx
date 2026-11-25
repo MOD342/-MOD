@@ -238,8 +238,10 @@ export default function OnboardingView({ onComplete }: OnboardingViewProps) {
                       <span className="text-sm font-black text-white">عالم الأنمي والمانجا</span>
                     </div>
                   )}
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-black/15 to-transparent pointer-events-none" />
-                  <div className="absolute bottom-4 right-4 left-4 flex items-center justify-between gap-2 text-xs text-neutral-200 pointer-events-none">
+                  <div
+                    className="absolute bottom-0 inset-x-0 pt-6 pb-4 px-4 bg-gradient-to-t from-black/75 via-black/30 to-transparent flex items-center justify-between gap-2 text-xs text-white pointer-events-none"
+                    style={{ textShadow: '0 2px 10px rgba(0,0,0,0.95)' }}
+                  >
                     <span className="font-bold">مشاهدة · قراءة · حفظ التقدم</span>
                   </div>
                 </div>
@@ -452,7 +454,6 @@ export default function OnboardingView({ onComplete }: OnboardingViewProps) {
                         <Tv size={44} className="text-[#FF1744]" />
                       </div>
                     )}
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />
                     <div className="absolute top-3 left-3">
                       {selectedHome === 'anime' && (
                         <motion.span
@@ -508,7 +509,6 @@ export default function OnboardingView({ onComplete }: OnboardingViewProps) {
                         <BookOpen size={44} className="text-amber-400" />
                       </div>
                     )}
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />
                     <div className="absolute top-3 left-3">
                       {selectedHome === 'manga' && (
                         <motion.span

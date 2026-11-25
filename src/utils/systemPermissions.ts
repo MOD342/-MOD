@@ -10,7 +10,7 @@ export interface SystemPermissionsSummary {
   media: UnifiedPermissionStatus;
 }
 
-const APP_PACKAGE_ID = 'com.animemod.otakuhub';
+const APP_PACKAGE_ID = 'com.zoryx';
 let channelInitialized = false;
 
 function getNativeBridge(): any {

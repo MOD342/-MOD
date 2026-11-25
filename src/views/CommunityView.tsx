@@ -434,7 +434,7 @@ export default function CommunityView({ onAnimeClick, onNavigate }: CommunityVie
       <div
         key={`${anime._id}-${idx}`}
         onClick={() => onAnimeClick && onAnimeClick(String(anime._id))}
-        className="theme-keep-dark cursor-pointer group relative aspect-[2/3] w-full overflow-hidden bg-neutral-900 border-[0.5px] border-black/40"
+        className="theme-keep-dark cursor-pointer group relative aspect-[2/3] w-full bg-neutral-900 border-[0.5px] border-black/40 overflow-hidden"
       >
         <img
           src={anime.posterUrl}
@@ -443,7 +443,6 @@ export default function CommunityView({ onAnimeClick, onNavigate }: CommunityVie
           loading="lazy"
           referrerPolicy="no-referrer"
         />
-        <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/30 to-transparent" />
 
         <div
           className="absolute top-1.5 inset-x-1.5 flex items-center justify-between pointer-events-none"
@@ -470,9 +469,12 @@ export default function CommunityView({ onAnimeClick, onNavigate }: CommunityVie
           )}
         </div>
 
-        <div className="absolute bottom-0 inset-x-0 p-2 text-right pointer-events-none">
+        <div
+          className="absolute inset-x-0 bottom-0 pt-5 pb-2 px-2 bg-gradient-to-t from-black/85 via-black/45 to-transparent text-center"
+          style={{ textShadow: '0 2px 6px rgba(0,0,0,0.98), 0 0 3px rgba(0,0,0,0.95)' }}
+        >
           <h3
-            className="text-[11px] sm:text-xs font-black text-white line-clamp-2 leading-tight drop-shadow-[0_2px_4px_rgba(0,0,0,0.95)] group-hover:text-purple-300 transition-colors"
+            className="text-[11px] sm:text-xs font-black text-white line-clamp-2 leading-tight group-hover:text-purple-300 transition-colors"
             dir="ltr"
           >
             {cleanTitle}
@@ -987,7 +989,7 @@ export default function CommunityView({ onAnimeClick, onNavigate }: CommunityVie
                       <div
                         key={`${char.id}-${idx}`}
                         onClick={() => setSelectedCharacter(char)}
-                        className="theme-keep-dark cursor-pointer group relative aspect-[2/3] w-full overflow-hidden bg-neutral-900 border-[0.5px] border-black/40"
+                        className="theme-keep-dark cursor-pointer group relative aspect-[2/3] w-full bg-neutral-900 border-[0.5px] border-black/40 overflow-hidden"
                       >
                         <img
                           src={char.imageUrl}
@@ -996,7 +998,6 @@ export default function CommunityView({ onAnimeClick, onNavigate }: CommunityVie
                           loading="lazy"
                           referrerPolicy="no-referrer"
                         />
-                        <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/25 to-transparent" />
 
                         <div
                           className="absolute top-1.5 inset-x-1.5 flex items-center justify-between pointer-events-none"
@@ -1010,16 +1011,19 @@ export default function CommunityView({ onAnimeClick, onNavigate }: CommunityVie
                           </span>
                         </div>
 
-                        <div className="absolute bottom-0 inset-x-0 p-2 text-right pointer-events-none">
+                        <div
+                          className="absolute inset-x-0 bottom-0 pt-5 pb-2 px-2 bg-gradient-to-t from-black/85 via-black/45 to-transparent text-center"
+                          style={{ textShadow: '0 2px 6px rgba(0,0,0,0.98), 0 0 3px rgba(0,0,0,0.95)' }}
+                        >
                           <h3
-                            className="text-[11px] sm:text-xs font-black text-white line-clamp-1 leading-tight drop-shadow-[0_2px_4px_rgba(0,0,0,0.95)] group-hover:text-purple-300 transition-colors"
+                            className="text-[11px] sm:text-xs font-black text-white line-clamp-1 leading-tight group-hover:text-purple-300 transition-colors"
                             dir="ltr"
                           >
                             {char.name}
                           </h3>
                           {char.anime?.title && (
                             <p
-                              className="text-[9px] font-bold text-neutral-400 line-clamp-1 mt-0.5"
+                              className="text-[9px] font-bold text-neutral-200 line-clamp-1 mt-0.5"
                               dir="ltr"
                             >
                               {cleanAnimeTitle(char.anime.title)}

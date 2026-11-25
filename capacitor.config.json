@@ -1,5 +1,5 @@
 {
-  "appId": "com.animemod.otakuhub",
+  "appId": "com.zoryx",
   "appName": "أنمي MOD",
   "webDir": "dist",
   "bundledWebRuntime": false,
@@ -7,8 +7,9 @@
     "androidScheme": "https",
     "cleartext": false,
     "allowNavigation": [
-      "anime-mod-production.up.railway.app",
-      "*.up.railway.app",
+      "*.vercel.app",
+      "*.onrender.com",
+      "*.hf.space",
       "*.firebaseapp.com",
       "*.web.app",
       "*.firebaseio.com",

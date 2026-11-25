@@ -28,12 +28,10 @@ import { moderationService, RoleLevel, isStaffEmail } from '../services/moderati
 import { notificationsService } from '../services/notificationsService';
 import { listService } from '../services/listService';
 import { clientCache } from '../utils/clientCache';
-import { Mail, Lock, UserPlus, LogIn, AlertCircle, X, Sparkles, CheckCircle, RefreshCw, KeyRound, Eye, EyeOff, ExternalLink, Smartphone, Monitor, Globe, Cpu } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
 import { Capacitor } from '@capacitor/core';
 import { FirebaseAuthentication } from '@capacitor-firebase/authentication';
 import { firebaseClientConfig as firebaseConfig } from '../config/firebaseRuntimeConfig';
-import ViewportPortal from '../components/ViewportPortal';
+import AuthModal from '../components/AuthModal';
 
 export type PlatformOS = 'android' | 'ios' | 'windows' | 'macos' | 'linux' | 'unknown';
 export type RuntimeHost = 'apk_webview' | 'ios_standalone' | 'windows_app' | 'pwa_standalone' | 'iframe_sandbox' | 'mobile_browser' | 'desktop_browser';
@@ -691,7 +689,8 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
   };
 
   const signIn = async (initialMode: 'login' | 'register' | 'forgot' = 'login') => {
-    setAuthMode(initialMode);
+    const safeMode = initialMode === 'register' || initialMode === 'forgot' ? initialMode : 'login';
+    setAuthMode(safeMode);
     setAuthError('');
     setAuthSuccess('');
     setIsAuthModalOpen(true);
@@ -1117,7 +1116,7 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
     } catch (err: any) {
       console.warn("Register Error Details:", err);
       if (err.code === 'auth/operation-not-allowed') {
-        setAuthError('عذراً، خيار تسجيل الدخول بالبريد الإلكتروني (Email/Password) غير مفعّل في منصة Firebase لـ MOD. كمالك للتطبيق: توجه إلى Firebase Console ➔ Authentication ➔ Sign-in Method وفعل خيار "Email/Password" ليتمكن المستخدمون من التسجيل عبر الهواتف.');
+        setAuthError('عذراً، خيار تسجيل الدخول بالبريد الإلكتروني (Email/Password) غير مفعّل في منصة Firebase للتطبيق. كمالك للتطبيق: توجه إلى Firebase Console ➔ Authentication ➔ Sign-in Method وفعل خيار "Email/Password" ليتمكن المستخدمون من التسجيل عبر الهواتف.');
       } else if (err.code === 'auth/email-already-in-use') {
         setAuthError('هذا البريد الإلكتروني مسجل بالفعل لصالح حساب آخر.');
       } else if (err.code === 'auth/invalid-email') {
@@ -1233,7 +1232,7 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
               return;
             }
             if (legacyMsg.includes('10') || legacyMsg.toLowerCase().includes('developer_error')) {
-              setAuthError('تعذر التحقق من بصمة التطبيق (SHA-1) في Firebase. أضف بصمة SHA-1 لحزمة com.animemod.otakuhub داخل إعدادات تطبيق Android في Firebase Console.');
+              setAuthError('تعذر التحقق من بصمة التطبيق (SHA-1) في Firebase. أضف بصمة SHA-1 لحزمة com.zoryx داخل إعدادات تطبيق Android في Firebase Console.');
               return;
             }
             setAuthError(`تعذر الاتصال بحسابات Google في النظام (${legacyMsg || 'خطأ Play Services'}). يمكنك استخدام الدخول بالبريد أو الدخول الفوري.`);
@@ -1308,298 +1307,42 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
     }}>
       {children}
 
-      {/* Dynamic Native-Sensing Authentication Modal */}
-      <ViewportPortal>
-        <AnimatePresence>
-          {isAuthModalOpen && (
-            <div
-              className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-black/85 backdrop-blur-sm"
-              style={{
-                height: 'var(--vv-height, 100dvh)',
-                paddingTop: 'calc(var(--safe-top, 0px) + 1rem)',
-                paddingBottom: 'calc(var(--safe-bottom, 0px) + 1rem)',
-                paddingLeft: 'calc(var(--safe-left, 0px) + 1rem)',
-                paddingRight: 'calc(var(--safe-right, 0px) + 1rem)',
-              }}
-              dir="rtl"
-            >
-              <motion.div
-                initial={{ opacity: 0, scale: 0.96, y: 12 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.96, y: 12 }}
-                transition={{ duration: 0.14, ease: 'easeOut' }}
-                className="relative w-full max-w-sm bg-zinc-950 border border-zinc-800 rounded-2xl p-5 shadow-[0_20px_50px_rgba(0,0,0,0.9)] overflow-y-auto"
-                style={{
-                  maxHeight: 'calc(var(--vv-height, 100dvh) - var(--safe-top, 0px) - var(--safe-bottom, 0px) - 2rem)',
-                }}
-              >
-              {/* Background ambient decorative aura */}
-              <div className="absolute -top-10 -left-10 w-32 h-32 bg-purple-600/10 rounded-full blur-2xl pointer-events-none" />
-              <div className="absolute -bottom-10 -right-10 w-32 h-32 bg-[#FF1744]/5 rounded-full blur-2xl pointer-events-none" />
-
-              {/* Close button */}
-              <button
-                onClick={() => {
-                  setIsAuthModalOpen(false);
-                  resetAuthForm();
-                }}
-                className="absolute top-4 left-4 w-7 h-7 rounded-lg bg-zinc-900 border border-white/5 text-neutral-400 hover:text-white flex items-center justify-center cursor-pointer hover:border-white/10 transition"
-              >
-                <X size={14} />
-              </button>
-
-              {/* Header */}
-              <div className="text-center mb-5 mt-1">
-                <div className="inline-flex w-10 h-10 bg-gradient-to-tr from-[#FF1744] to-purple-600 rounded-xl items-center justify-center text-white shadow-lg mb-2.5">
-                  <Sparkles size={18} className="animate-pulse" />
-                </div>
-                <h3 className="text-base font-black text-white">
-                  {authMode === 'login' ? 'طلب تسجيل الدخول' : authMode === 'register' ? 'إنشاء حساب أوتاكو جديد' : 'استعادة حسابك'}
-                </h3>
-                <p className="text-[10px] text-neutral-400 mt-1 px-4 leading-normal">
-                  {authMode === 'login' ? 'سجل دخولك لتتمكن من حفظ أعمالك المفضلة، جمع الكوينز، ومشاركة التعليقات!' : authMode === 'register' ? 'انضم لأسرة أوتاكو MOD مجاناً بالكامل واحصل على جوائز يومية مذهلة!' : 'أدخل بريدك الإلكتروني وسيصلك رابط إعادة التعيين فوراً'}
-                </p>
-              </div>
-
-              {/* Success/Error Notices */}
-              {authError && (
-                <div className="mb-4 p-3 bg-red-500/10 border border-red-500/25 rounded-xl text-red-400 text-[10px] font-bold flex items-start gap-1.5 text-right">
-                  <AlertCircle size={13} className="mt-0.5 shrink-0" />
-                  <span>{authError}</span>
-                </div>
-              )}
-
-              {authSuccess && (
-                <div className="mb-4 p-3 bg-emerald-500/10 border border-emerald-500/25 rounded-xl text-emerald-400 text-[10px] font-bold flex items-start gap-1.5 text-right">
-                  <CheckCircle size={13} className="mt-0.5 shrink-0" />
-                  <span>{authSuccess}</span>
-                </div>
-              )}
-
-              {/* Interactive Form */}
-              <form onSubmit={authMode === 'login' ? handleLogin : authMode === 'register' ? handleRegister : handleForgotPassword} className="space-y-3.5">
-                
-                {/* Display name field (Registration mode only) */}
-                {authMode === 'register' && (
-                  <div className="space-y-1 text-right">
-                    <label className="text-[10px] font-bold text-neutral-300">الاسم المستعار (اسم العرض)</label>
-                    <div className="relative">
-                      <input
-                        type="text"
-                        required
-                        value={authDisplayName}
-                        onChange={(e) => setAuthDisplayName(e.target.value)}
-                        placeholder="لوفي الرائع أو سينباي"
-                        className="w-full bg-[#07070b]/90 border border-zinc-800 focus:border-[#FF1744] focus:ring-1 focus:ring-[#FF1744]/20 rounded-xl py-2 px-3 pr-9 text-xs text-white placeholder-neutral-500 outline-none transition text-right"
-                      />
-                      <UserPlus className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-500" size={13} />
-                    </div>
-                  </div>
-                )}
-
-                {/* Email address field */}
-                <div className="space-y-1 text-right">
-                  <label className="text-[10px] font-bold text-neutral-300">البريد الإلكتروني</label>
-                  <div className="relative">
-                    <input
-                      type="email"
-                      required
-                      value={authEmail}
-                      onChange={(e) => setAuthEmail(e.target.value)}
-                      placeholder="username@domain.com"
-                      className="w-full bg-[#07070b]/90 border border-zinc-800 focus:border-[#FF1744] focus:ring-1 focus:ring-[#FF1744]/20 rounded-xl py-2 px-3 pr-9 text-xs text-white placeholder-neutral-500 outline-none transition text-right"
-                      dir="ltr"
-                    />
-                    <Mail className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-500" size={13} />
-                  </div>
-                </div>
-
-                {/* Password field */}
-                {authMode !== 'forgot' && (
-                  <div className="space-y-1 text-right">
-                    <div className="flex items-center justify-between">
-                      {authMode === 'login' && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setAuthMode('forgot');
-                            setAuthError('');
-                            setAuthSuccess('');
-                          }}
-                          className="text-[9px] text-neutral-500 hover:text-white transition"
-                        >
-                          نسيت كلمة السر؟
-                        </button>
-                      )}
-                      <label className="text-[10px] font-bold text-neutral-300">كلمة المرور</label>
-                    </div>
-                    <div className="relative">
-                      <input
-                        type={showPassword ? "text" : "password"}
-                        required
-                        value={authPassword}
-                        onChange={(e) => setAuthPassword(e.target.value)}
-                        placeholder="••••••••"
-                        className="w-full bg-[#07070b]/90 border border-zinc-800 focus:border-[#FF1744] focus:ring-1 focus:ring-[#FF1744]/20 rounded-xl py-2 px-3 pr-9 pl-9 text-xs text-white placeholder-neutral-500 outline-none transition text-right"
-                        dir="ltr"
-                      />
-                      <Lock className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-500" size={13} />
-                      <button
-                        type="button"
-                        onClick={() => setShowPassword(!showPassword)}
-                        className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-500 hover:text-neutral-300 transition"
-                      >
-                        {showPassword ? <EyeOff size={13} /> : <Eye size={13} />}
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {/* Confirm password match */}
-                {authMode === 'register' && (
-                  <div className="space-y-1 text-right">
-                    <label className="text-[10px] font-bold text-neutral-300">تأكيد كلمة المرور</label>
-                    <div className="relative">
-                      <input
-                        type={showPassword ? "text" : "password"}
-                        required
-                        value={authConfirmPassword}
-                        onChange={(e) => setAuthConfirmPassword(e.target.value)}
-                        placeholder="••••••••"
-                        className="w-full bg-[#07070b]/90 border border-zinc-800 focus:border-[#FF1744] focus:ring-1 focus:ring-[#FF1744]/20 rounded-xl py-2 px-3 pr-9 text-xs text-white placeholder-neutral-500 outline-none transition text-right"
-                        dir="ltr"
-                      />
-                      <KeyRound className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-500" size={13} />
-                    </div>
-                  </div>
-                )}
-
-                {/* Form submit button */}
-                <button
-                  type="submit"
-                  disabled={authModalLoading}
-                  className="w-full bg-gradient-to-r from-purple-600 to-[#FF1744] disabled:opacity-50 hover:opacity-95 active:scale-[0.98] text-white text-xs font-black py-2.5 rounded-xl transition cursor-pointer flex items-center justify-center gap-1.5 mt-2 shadow-lg shadow-purple-900/10"
-                >
-                  {authModalLoading ? (
-                    <RefreshCw size={12} className="animate-spin text-white" />
-                  ) : authMode === 'login' ? (
-                    <LogIn size={12} />
-                  ) : authMode === 'register' ? (
-                    <UserPlus size={12} />
-                  ) : (
-                    <KeyRound size={12} />
-                  )}
-                  <span>
-                    {authModalLoading ? 'جاري التحقق...' : authMode === 'login' ? 'سجل دخول آمن' : authMode === 'register' ? 'تسجيل كـ أوتاكو جديد' : 'أرسل رابط التغيير'}
-                  </span>
-                </button>
-              </form>
-
-              {/* Social Login Options */}
-              {authMode !== 'forgot' && (
-                <>
-                  <div className="my-4 relative flex items-center justify-center">
-                    <div className="absolute inset-x-0 h-px bg-zinc-900" />
-                    <span className="relative bg-zinc-950 px-2.5 text-[10px] text-neutral-500 font-bold">أو المتابعة السريعة</span>
-                  </div>
-
-                  {/* Clean Google Sign-In Button */}
-                  <button
-                    type="button"
-                    disabled={authModalLoading}
-                    onClick={signInWithGoogleAdaptive}
-                    className="w-full mb-2.5 bg-white hover:bg-neutral-100 text-zinc-900 font-black text-xs py-2.5 px-4 rounded-xl transition cursor-pointer flex items-center justify-center gap-2 shadow-lg active:scale-[0.98] disabled:opacity-50"
-                  >
-                    <svg viewBox="0 0 24 24" className="w-4 h-4">
-                      <path fill="#EA4335" d="M12 5c1.6 0 3 .6 4.1 1.7l3.1-3.1C17.3 1.8 14.8 1 12 1 7.4 1 3.5 3.6 1.6 7.4l3.7 2.8C6.2 7.2 8.9 5 12 5z" />
-                      <path fill="#4285F4" d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.5c-.3 1.5-1.1 2.8-2.4 3.6l3.7 2.9c2.2-2 3.7-5 3.7-8.7z" />
-                      <path fill="#FBBC05" d="M5.3 14.8c-.2-.8-.4-1.6-.4-2.5s.2-1.7.4-2.5L1.6 7C.6 9 0 11.2 0 13.5s.6 4.5 1.6 6.5l3.7-2.9z" />
-                      <path fill="#34A853" d="M12 24c3.2 0 6-1.1 8-3l-3.7-2.9c-1.1.7-2.5 1.2-4.3 1.2-3.1 0-5.8-2.1-6.7-5l-3.7 2.8C3.5 21.4 7.4 24 12 24z" />
-                    </svg>
-                    <span>متابعة باستخدام Google</span>
-                  </button>
-
-                  {/* Instant One-Click Otaku Guest Login Button */}
-                  <button
-                    type="button"
-                    onClick={handleInstantOtakuLogin}
-                    disabled={authModalLoading}
-                    className="w-full mb-1 bg-gradient-to-r from-emerald-600/90 to-teal-600/90 hover:from-emerald-500 hover:to-teal-500 text-white text-[11px] font-black py-2.5 px-4 rounded-xl shadow-md transition flex items-center justify-center gap-2 cursor-pointer"
-                  >
-                    <Sparkles size={14} className="animate-pulse" />
-                    <span>⚡ دخول فوري كـ أوتاكو (بضغطة واحدة بدون تسجيل)</span>
-                  </button>
-                </>
-              )}
-
-              {/* Legal & Privacy Consent Disclosure */}
-              {authMode !== 'forgot' && (
-                <p className="mt-3.5 text-center text-[10px] text-neutral-400 leading-relaxed">
-                  بمتابعتك، أنت توافق على{' '}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsAuthModalOpen(false);
-                      window.dispatchEvent(new CustomEvent('open-legal-view', { detail: { section: 'terms' } }));
-                    }}
-                    className="text-sky-400 hover:underline font-bold cursor-pointer"
-                  >
-                    اتفاقية الاستخدام
-                  </button>{' '}
-                  و{' '}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsAuthModalOpen(false);
-                      window.dispatchEvent(new CustomEvent('open-legal-view', { detail: { section: 'privacy' } }));
-                    }}
-                    className="text-emerald-400 hover:underline font-bold cursor-pointer"
-                  >
-                    سياسة الخصوصية
-                  </button>
-                  .
-                </p>
-              )}
-
-              {/* Mode switch */}
-              <div className="mt-3 text-center text-[10px] leading-relaxed">
-                {authMode === 'login' ? (
-                  <p className="text-neutral-400">
-                    أنت جديد هنا؟{' '}
-                    <button
-                      onClick={() => {
-                        setAuthMode('register');
-                        setAuthError('');
-                        setAuthSuccess('');
-                      }}
-                      className="text-[#FF1744] hover:underline font-bold"
-                    >
-                      إنشاء حساب أوتاكو مجاني
-                    </button>
-                  </p>
-                ) : (
-                  <p className="text-neutral-400">
-                    تمتلك حساباً مسبقاً؟{' '}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAuthMode('login');
-                        setAuthError('');
-                        setAuthSuccess('');
-                      }}
-                      className="text-[#FF1744] hover:underline font-bold"
-                    >
-                      تسجيل دخول فوري
-                    </button>
-                  </p>
-                )}
-              </div>
-
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-      </ViewportPortal>
+      {/* Redesigned Authentication Modal */}
+      <AuthModal
+        isOpen={isAuthModalOpen}
+        authMode={authMode}
+        setAuthMode={setAuthMode}
+        authEmail={authEmail}
+        setAuthEmail={setAuthEmail}
+        authPassword={authPassword}
+        setAuthPassword={setAuthPassword}
+        authConfirmPassword={authConfirmPassword}
+        setAuthConfirmPassword={setAuthConfirmPassword}
+        authDisplayName={authDisplayName}
+        setAuthDisplayName={setAuthDisplayName}
+        showPassword={showPassword}
+        setShowPassword={setShowPassword}
+        authError={authError}
+        authSuccess={authSuccess}
+        clearNotices={() => {
+          setAuthError('');
+          setAuthSuccess('');
+        }}
+        loading={authModalLoading}
+        onClose={() => {
+          setIsAuthModalOpen(false);
+          resetAuthForm();
+        }}
+        onLogin={handleLogin}
+        onRegister={handleRegister}
+        onForgotPassword={handleForgotPassword}
+        onGoogleSignIn={signInWithGoogleAdaptive}
+        onInstantGuestLogin={handleInstantOtakuLogin}
+        onOpenLegal={(section) => {
+          setIsAuthModalOpen(false);
+          window.dispatchEvent(new CustomEvent('open-legal-view', { detail: { section } }));
+        }}
+      />
     </AuthContext.Provider>
   );
 };
