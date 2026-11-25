@@ -38,35 +38,33 @@ export interface SafeViewportMetrics {
 
 let trackingInitialized = false;
 let lastBroadcastSignature = '';
+let envInsetsCache: { top: number; bottom: number; left: number; right: number } | null = null;
+let rafPending = false;
 
-function measureCssEnvInset(side: 'top' | 'bottom' | 'left' | 'right'): number {
-  if (typeof document === 'undefined' || !document.body) return 0;
+function measureCssEnvInsets(forceRefresh = false): { top: number; bottom: number; left: number; right: number } {
+  if (!forceRefresh && envInsetsCache) {
+    return envInsetsCache;
+  }
+  if (typeof document === 'undefined' || !document.body) {
+    return { top: 0, bottom: 0, left: 0, right: 0 };
+  }
   try {
     const probe = document.createElement('div');
-    probe.style.position = 'fixed';
-    probe.style.visibility = 'hidden';
-    probe.style.pointerEvents = 'none';
-    probe.style.padding = '0';
-    probe.style.margin = '0';
-    if (side === 'top') probe.style.paddingTop = 'env(safe-area-inset-top, 0px)';
-    if (side === 'bottom') probe.style.paddingBottom = 'env(safe-area-inset-bottom, 0px)';
-    if (side === 'left') probe.style.paddingLeft = 'env(safe-area-inset-left, 0px)';
-    if (side === 'right') probe.style.paddingRight = 'env(safe-area-inset-right, 0px)';
+    probe.style.cssText =
+      'position:fixed;visibility:hidden;pointer-events:none;margin:0;padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) env(safe-area-inset-bottom,0px) env(safe-area-inset-left,0px);';
     document.body.appendChild(probe);
     const computed = window.getComputedStyle(probe);
-    const prop =
-      side === 'top'
-        ? computed.paddingTop
-        : side === 'bottom'
-        ? computed.paddingBottom
-        : side === 'left'
-        ? computed.paddingLeft
-        : computed.paddingRight;
+    const result = {
+      top: parseFloat(computed.paddingTop || '0') || 0,
+      bottom: parseFloat(computed.paddingBottom || '0') || 0,
+      left: parseFloat(computed.paddingLeft || '0') || 0,
+      right: parseFloat(computed.paddingRight || '0') || 0,
+    };
     document.body.removeChild(probe);
-    const parsed = parseFloat(prop || '0');
-    return Number.isFinite(parsed) ? parsed : 0;
+    envInsetsCache = result;
+    return result;
   } catch {
-    return 0;
+    return { top: 0, bottom: 0, left: 0, right: 0 };
   }
 }
 
@@ -170,10 +168,7 @@ export function applyViewportAndCutoutMetrics(): SafeViewportMetrics {
       }
     | undefined;
 
-  const envTop = measureCssEnvInset('top');
-  const envBottom = measureCssEnvInset('bottom');
-  const envLeft = measureCssEnvInset('left');
-  const envRight = measureCssEnvInset('right');
+  const { top: envTop, bottom: envBottom, left: envLeft, right: envRight } = measureCssEnvInsets(false);
 
   let safeTop = Math.max(envTop, Number(androidInsets?.top || 0), Number(androidInsets?.cutoutTop || 0));
   const safeBottom = Math.max(envBottom, Number(androidInsets?.bottom || 0));
@@ -322,29 +317,33 @@ export function initViewportAndCutoutTracking(): void {
   if (trackingInitialized || typeof window === 'undefined') return;
   trackingInitialized = true;
 
-  const sync = () => {
+  const sync = (invalidateEnv = false) => {
+    if (invalidateEnv) envInsetsCache = null;
+    if (rafPending) return;
+    rafPending = true;
     requestAnimationFrame(() => {
+      rafPending = false;
       applyViewportAndCutoutMetrics();
     });
   };
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', sync, { once: true });
+    document.addEventListener('DOMContentLoaded', () => sync(true), { once: true });
   } else {
+    measureCssEnvInsets(true);
     applyViewportAndCutoutMetrics();
   }
 
-  window.addEventListener('resize', sync, { passive: true });
-  window.addEventListener('orientationchange', sync, { passive: true });
-  window.addEventListener('android-insets-updated', sync);
-  window.visualViewport?.addEventListener('resize', sync);
-  window.visualViewport?.addEventListener('scroll', sync);
+  window.addEventListener('resize', () => sync(true), { passive: true });
+  window.addEventListener('orientationchange', () => sync(true), { passive: true });
+  window.addEventListener('android-insets-updated', () => sync(true));
+  window.visualViewport?.addEventListener('resize', () => sync(false));
 
   // Listen to W3C Device Posture API changes when supported (fold / unfold transitions)
   try {
     const dp = (navigator as any)?.devicePosture;
     if (dp && typeof dp.addEventListener === 'function') {
-      dp.addEventListener('change', sync);
+      dp.addEventListener('change', () => sync(true));
     }
   } catch {}
 
@@ -352,7 +351,7 @@ export function initViewportAndCutoutTracking(): void {
   try {
     const hq = window.matchMedia?.('(horizontal-viewport-segments: 2)');
     const vq = window.matchMedia?.('(vertical-viewport-segments: 2)');
-    hq?.addEventListener?.('change', sync);
-    vq?.addEventListener?.('change', sync);
+    hq?.addEventListener?.('change', () => sync(true));
+    vq?.addEventListener?.('change', () => sync(true));
   } catch {}
 }

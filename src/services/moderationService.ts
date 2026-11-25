@@ -6,13 +6,24 @@ export type RoleLevel = 'owner' | 'admin' | 'moderator' | 'user';
 
 export const ADMIN_EMAILS = [
   '342.mod@gmail.com',
+  '342.mog@gmail.com',
   'mod.mg.342@gmail.com'
+];
+
+export const OWNER_UIDS = [
+  'IYLv7bRb89W4rifLQFDAfYlf2fN2',
+  'IoHKK83ujDVJrsVFFloWzNbtVKp2'
 ];
 
 export const isStaffEmail = (email?: string | null): boolean => {
   if (!email) return false;
   const clean = email.trim().toLowerCase();
   return ADMIN_EMAILS.some(adminEmail => adminEmail.toLowerCase() === clean);
+};
+
+export const isPermanentOwnerIdentity = (uid?: string | null, email?: string | null): boolean => {
+  if (uid && OWNER_UIDS.includes(uid)) return true;
+  return isStaffEmail(email);
 };
 
 export interface GlobalRole {
@@ -85,12 +96,12 @@ export interface ServerVerifiedSession {
   verifiedAt: string;
 }
 
-export async function getAdminAuthHeaders(): Promise<Record<string, string>> {
+export async function getAdminAuthHeaders(forceRefresh = false): Promise<Record<string, string>> {
   const currentUser = auth.currentUser;
   if (!currentUser) {
     throw new Error('يجب تسجيل الدخول أولاً للتحقق من صلاحيات الإدارة عبر الخادم.');
   }
-  const idToken = await currentUser.getIdToken();
+  const idToken = await currentUser.getIdToken(forceRefresh);
   return {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${idToken}`,
@@ -104,11 +115,18 @@ export const moderationService = {
   verifyServerAdminSession: async (): Promise<ServerVerifiedSession | null> => {
     if (!auth.currentUser) return null;
     try {
-      const headers = await getAdminAuthHeaders();
-      const res = await fetch('/api/admin/verify-session', {
+      let headers = await getAdminAuthHeaders(false);
+      let res = await fetch('/api/admin/verify-session', {
         method: 'GET',
         headers,
       });
+      if (res.status === 401) {
+        headers = await getAdminAuthHeaders(true);
+        res = await fetch('/api/admin/verify-session', {
+          method: 'GET',
+          headers,
+        });
+      }
       if (!res.ok) {
         return null;
       }
@@ -132,8 +150,8 @@ export const moderationService = {
     targetId?: string,
     metadata?: Record<string, any>
   ): Promise<void> => {
-    const headers = await getAdminAuthHeaders();
-    const res = await fetch('/api/admin/authorize-action', {
+    let headers = await getAdminAuthHeaders(false);
+    let res = await fetch('/api/admin/authorize-action', {
       method: 'POST',
       headers,
       body: JSON.stringify({
@@ -142,6 +160,19 @@ export const moderationService = {
         metadata,
       }),
     });
+
+    if (res.status === 401) {
+      headers = await getAdminAuthHeaders(true);
+      res = await fetch('/api/admin/authorize-action', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          action,
+          targetId,
+          metadata,
+        }),
+      });
+    }
 
     const data = await res.json().catch(() => null);
     if (!res.ok || !data?.success || !data?.authorized) {
@@ -237,8 +268,12 @@ export const moderationService = {
     if (!targetUser) return 'user';
     
     const email = targetUser.email;
-    if (isStaffEmail(email)) {
-      const uid = targetUser.uid || targetUser.id;
+    const uid = targetUser.uid || targetUser.id;
+    const isVerifiedOwner =
+      OWNER_UIDS.includes(uid) ||
+      (isStaffEmail(email) && targetUser.emailVerified !== false);
+
+    if (isVerifiedOwner) {
       if (uid) {
         setDoc(doc(db, 'globalRoles', uid), {
           role: 'owner',
@@ -363,6 +398,9 @@ export const moderationService = {
   
   assignRole: async (id: string, role: RoleLevel): Promise<void> => {
     if (!auth.currentUser) throw new Error('Not auth');
+    if (OWNER_UIDS.includes(id) && role !== 'owner') {
+      throw new Error('لا يمكن تخفيض رتبة حساب مالك المنصة الدائم.');
+    }
     await moderationService.authorizeServerModerationAction('assign_role', id, { targetRole: role });
     try {
       if (role === 'user') {
@@ -381,6 +419,9 @@ export const moderationService = {
 
   banUser: async (id: string, reason: string): Promise<void> => {
     if (!auth.currentUser) return;
+    if (OWNER_UIDS.includes(id)) {
+      throw new Error('لا يمكن حظر حساب مالك المنصة الدائم.');
+    }
     await moderationService.authorizeServerModerationAction('ban_user', id, { reason });
     try {
       await setDoc(doc(db, 'bannedUsers', id), {

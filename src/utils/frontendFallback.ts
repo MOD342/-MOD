@@ -2775,11 +2775,15 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
     }
 
     if (cleanPath.startsWith('/api/admin/')) {
-      return createSimulatedResponse({
-        success: true,
-        verified: true,
-        role: 'owner'
-      });
+      return createSimulatedResponse(
+        {
+          success: false,
+          authorized: false,
+          code: 'OFFLINE_ADMIN_VERIFICATION_REQUIRED',
+          message: 'يتطلب تنفيذ إجراءات الإدارة اتصالاً نشطاً بالإنترنت للتحقق عبر الخادم.',
+        },
+        503
+      );
     }
   } catch (err) {
     console.warn(`[FrontendFallback] Gracefully bypassed ${cleanPath}:`, err);

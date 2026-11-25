@@ -47,6 +47,7 @@ declare global {
 
 export const ADMIN_EMAILS = [
   '342.mod@gmail.com',
+  '342.mog@gmail.com',
   'mod.mg.342@gmail.com'
 ];
 
@@ -216,14 +217,8 @@ async function verifyFirebaseIdToken(idToken: string): Promise<{
     };
   } catch (err: any) {
     const code = String(err?.code || '');
-    const msg = String(err?.message || '');
-    // Fallback cleanly to Node crypto x509 cert verification on ERR_REQUIRE_ESM (Node 20 jwks-rsa/jose) or missing Admin credentials
-    if (
-      code === 'ERR_REQUIRE_ESM' ||
-      msg.includes('require() of ES Module') ||
-      msg.includes('ERR_REQUIRE_ESM') ||
-      msg.includes('jwks-rsa')
-    ) {
+    // Fallback cleanly to Node crypto x509 cert verification if Admin SDK cannot verify in this environment
+    if (!code.startsWith('auth/') || code === 'auth/internal-error' || code === 'ERR_REQUIRE_ESM') {
       const verified = await verifyFirebaseIdTokenWithCerts(idToken);
       return { ...verified, verifiedVia: 'firebase_token_cert' };
     }
@@ -334,8 +329,15 @@ export async function verifyUserAdminContext(
     }
   }
 
-  // Check if user is a primary owner by email or UID
-  if (isStaffEmail(email) || OWNER_UIDS.includes(uid)) {
+  if (isStaffEmail(email) && !emailVerified && !OWNER_UIDS.includes(uid)) {
+    throw Object.assign(
+      new Error('يرجى تأكيد ملكية البريد الإلكتروني (أو تسجيل الدخول عبر Google) لتفعيل صلاحيات المالك الدائم.'),
+      { statusCode: 403, code: 'OWNER_EMAIL_UNVERIFIED' }
+    );
+  }
+
+  // Check if user is a primary owner by verified email or UID
+  if (OWNER_UIDS.includes(uid) || (emailVerified && isStaffEmail(email))) {
     const ownerContext: VerifiedAdminContext = {
       uid,
       email,
@@ -616,10 +618,11 @@ export function requireServerAdminAuth(
       next();
     } catch (error: any) {
       console.warn('[FirebaseAdminGuard] Token verification failed:', error?.message || error);
-      return res.status(401).json({
+      const status = error?.statusCode === 403 ? 403 : 401;
+      return res.status(status).json({
         success: false,
-        code: 'INVALID_AUTH_TOKEN',
-        message: 'فشل التحقق من جلسة المشرف عبر Firebase Admin SDK. يرجى إعادة تسجيل الدخول.',
+        code: error?.code || 'INVALID_AUTH_TOKEN',
+        message: error?.message || 'فشل التحقق من جلسة المشرف عبر Firebase Admin SDK. يرجى إعادة تسجيل الدخول.',
       });
     }
   };
@@ -686,6 +689,38 @@ router.post(
         role: ctx.role,
         requiredRole: check.requiredRole,
       });
+    }
+
+    // Protect permanent owners from being banned, restricted, or demoted
+    if (
+      targetId &&
+      (action === 'ban_user' || action === 'restrict_member' || action === 'assign_role')
+    ) {
+      const targetStr = String(targetId).trim();
+      const targetRoleRequested = metadata?.targetRole || req.body?.targetRole;
+      const isDemotion = action === 'assign_role' && targetRoleRequested !== 'owner';
+      if (action === 'ban_user' || action === 'restrict_member' || isDemotion) {
+        let targetIsOwner = OWNER_UIDS.includes(targetStr);
+        if (!targetIsOwner) {
+          const authHeader = req.headers.authorization || '';
+          const tok = authHeader.replace(/^Bearer\s+/i, '').trim();
+          const [tRoleDoc, tUserDoc] = await Promise.all([
+            fetchFirestoreDocServerSide('globalRoles', targetStr, tok),
+            fetchFirestoreDocServerSide('users', targetStr, tok),
+          ]);
+          if (tRoleDoc?.role === 'owner' || isStaffEmail(tUserDoc?.email)) {
+            targetIsOwner = true;
+          }
+        }
+        if (targetIsOwner) {
+          return res.status(403).json({
+            success: false,
+            authorized: false,
+            code: 'PROTECTED_PERMANENT_OWNER',
+            message: 'لا يمكن حظر أو تقييد أو تخفيض رتبة حساب مالك المنصة الدائم.',
+          });
+        }
+      }
     }
 
     // If role changes occurred, invalidate role cache for targetId

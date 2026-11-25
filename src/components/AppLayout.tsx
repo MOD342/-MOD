@@ -3,7 +3,7 @@ import { ReactNode, useState, useEffect, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import NotificationsModal from './NotificationsModal';
 import { db, auth } from '../firebase';
-import { collection, query, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, limit, onSnapshot } from 'firebase/firestore';
 import { useDeviceDisplay } from '../hooks/useDeviceDisplay';
 import type { HomeMode } from '../utils/appPreferences';
 
@@ -41,12 +41,15 @@ export function AppLayout({
       return;
     }
 
-    const q = query(collection(db, 'users', user.id, 'notifications'));
+    const q = query(
+      collection(db, 'users', user.id, 'notifications'),
+      where('read', '==', false),
+      limit(50)
+    );
     const unsub = onSnapshot(
       q,
       (snapshot) => {
-        const count = snapshot.docs.filter((d) => !d.data().read).length;
-        setUnreadNotifsCount(count);
+        setUnreadNotifsCount(snapshot.size);
       },
       (err) => {
         console.warn('Real-time notifications counter error:', err);
@@ -112,7 +115,7 @@ export function AppLayout({
             paddingBottom: 'calc(var(--safe-bottom, 0px) + 1rem)',
             paddingRight: 'var(--safe-right, 0px)',
           }}
-          className="fixed top-0 right-0 bottom-0 w-[76px] xl:w-56 bg-[#07070b]/95 backdrop-blur-xl border-l border-white/10 z-50 flex flex-col justify-between px-2.5 xl:px-3.5 select-none"
+          className="fixed top-0 right-0 bottom-0 w-[76px] xl:w-56 bg-[#07070b]/[0.97] border-l border-white/10 z-50 flex flex-col justify-between px-2.5 xl:px-3.5 select-none shadow-2xl"
         >
           <div className="space-y-4">
             {/* Brand / Mode Switcher */}
@@ -258,7 +261,7 @@ export function AppLayout({
             showNav ? 'translate-y-0 opacity-100' : '-translate-y-full opacity-0'
           }`}
         >
-          <div className="theme-keep-dark flex items-center gap-1.5 bg-black/75 backdrop-blur-md p-1 pl-2.5 sm:pl-3 rounded-full border border-white/15 shadow-xl pointer-events-auto min-w-0">
+          <div className="theme-keep-dark flex items-center gap-1.5 bg-[#09090d]/95 p-1 pl-2.5 sm:pl-3 rounded-full border border-white/15 shadow-xl pointer-events-auto min-w-0">
             <button
               type="button"
               onClick={() => onNavigateTo('profile')}
@@ -328,7 +331,7 @@ export function AppLayout({
               <button
                 onClick={() => onNavigateTo('notifications')}
                 aria-label="الإشعارات"
-                className="w-9 h-9 rounded-full bg-blue-600/30 backdrop-blur-md border border-blue-500/30 flex items-center justify-center text-blue-400 hover:bg-blue-600 hover:text-white transition relative cursor-pointer"
+                className="w-9 h-9 rounded-full bg-[#0c1428]/95 border border-blue-500/35 flex items-center justify-center text-blue-400 hover:bg-blue-600 hover:text-white transition relative cursor-pointer"
               >
                 <Bell size={16} />
                 {unreadNotifsCount > 0 && (
@@ -341,14 +344,14 @@ export function AppLayout({
             <button
               onClick={handleRandomAnime}
               aria-label="أنمي عشوائي"
-              className="w-9 h-9 rounded-full bg-orange-600/30 backdrop-blur-md border border-orange-500/30 flex items-center justify-center text-orange-400 hover:bg-orange-600 hover:text-white transition cursor-pointer"
+              className="w-9 h-9 rounded-full bg-[#24130a]/95 border border-orange-500/35 flex items-center justify-center text-orange-400 hover:bg-orange-600 hover:text-white transition cursor-pointer"
             >
               <Shuffle size={16} />
             </button>
             <button
               onClick={() => window.dispatchEvent(new Event('open-ai-chat'))}
               aria-label="مود (MOD)"
-              className="w-9 h-9 rounded-full bg-rose-600/30 backdrop-blur-md border border-rose-500/30 flex items-center justify-center text-rose-400 hover:bg-rose-600 hover:text-white transition cursor-pointer"
+              className="w-9 h-9 rounded-full bg-[#240b14]/95 border border-rose-500/35 flex items-center justify-center text-rose-400 hover:bg-rose-600 hover:text-white transition cursor-pointer"
             >
               <Bot size={16} />
             </button>
@@ -381,7 +384,7 @@ export function AppLayout({
       {!useSideRail && (
         <div
           style={{ bottom: 'calc(var(--safe-bottom, 0px) + 0.75rem)' }}
-          className={`app-bottom-dock fixed left-0 right-0 mx-auto w-[calc(100%-1.5rem)] max-w-[440px] bg-black/90 backdrop-blur-xl border border-white/10 rounded-2xl py-1.5 px-2 shadow-[0_10px_40px_rgba(0,0,0,0.85)] z-50 transition-all duration-300 ${
+          className={`app-bottom-dock fixed left-0 right-0 mx-auto w-[calc(100%-1.5rem)] max-w-[440px] bg-[#07070b]/[0.97] border border-white/10 rounded-2xl py-1.5 px-2 shadow-[0_10px_36px_rgba(0,0,0,0.85)] z-50 transition-all duration-200 ${
             showNav ? 'translate-y-0 opacity-100' : 'translate-y-24 opacity-0 pointer-events-none'
           }`}
         >

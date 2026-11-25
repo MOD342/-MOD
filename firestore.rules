@@ -290,11 +290,20 @@ service cloud.firestore {
         && data.createdAt == request.time;
     }
 
+    function isProtectedOwnerUid(uid) {
+      return uid in ['IYLv7bRb89W4rifLQFDAfYlf2fN2', 'IoHKK83ujDVJrsVFFloWzNbtVKp2'];
+    }
+
     function isOwnerAuth() {
       return isSignedIn() && (
         request.auth.uid == 'IYLv7bRb89W4rifLQFDAfYlf2fN2'
         || request.auth.uid == 'IoHKK83ujDVJrsVFFloWzNbtVKp2'
-        || (request.auth.token != null && request.auth.token.email != null && request.auth.token.email_verified == true && (request.auth.token.email == '342.mod@gmail.com' || request.auth.token.email == 'mod.mg.342@gmail.com'))
+        || (
+          request.auth.token != null &&
+          request.auth.token.email != null &&
+          request.auth.token.email_verified == true &&
+          request.auth.token.email.lower() in ['342.mod@gmail.com', '342.mog@gmail.com', 'mod.mg.342@gmail.com']
+        )
         || (exists(/databases/$(database)/documents/globalRoles/$(request.auth.uid)) && get(/databases/$(database)/documents/globalRoles/$(request.auth.uid)).data.role == 'owner')
       );
     }
@@ -480,7 +489,21 @@ service cloud.firestore {
 
     match /globalRoles/{userId} {
       allow read: if true;
-      allow write: if isAdminAuth();
+      allow create, update: if (
+        isOwnerAuth() && (!isProtectedOwnerUid(userId) || incoming().role == 'owner')
+      ) || (
+        isAdminAuth()
+        && !isProtectedOwnerUid(userId)
+        && incoming().role in ['admin', 'moderator']
+        && (!exists(/databases/$(database)/documents/globalRoles/$(userId)) || existing().role != 'owner')
+      );
+      allow delete: if (
+        isOwnerAuth() && !isProtectedOwnerUid(userId)
+      ) || (
+        isAdminAuth()
+        && !isProtectedOwnerUid(userId)
+        && existing().role != 'owner'
+      );
     }
 
     match /globalSettings/{settingsId} {
@@ -517,7 +540,10 @@ service cloud.firestore {
     
     match /bannedUsers/{userId} {
       allow read: if true;
-      allow write: if isAdminAuth();
+      allow create, update: if isAdminAuth()
+        && !isProtectedOwnerUid(userId)
+        && (!exists(/databases/$(database)/documents/globalRoles/$(userId)) || get(/databases/$(database)/documents/globalRoles/$(userId)).data.role != 'owner');
+      allow delete: if isAdminAuth();
     }
 
     match /comments/{commentId} {

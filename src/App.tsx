@@ -740,53 +740,35 @@ export default function App() {
       case 'home':
         return (
           <div className="w-full">
-            <AnimatePresence mode="wait">
-              {effectiveHomeMode === 'manga' ? (
-                <motion.div
-                  key="home-manga-screen"
-                  initial={{ opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -6 }}
-                  transition={{ duration: 0.18 }}
-                >
-                  <Suspense fallback={<ViewFallback />}>
-                    <MangaHubView
-                      isHomeMode
-                      onMangaClick={(id) => navigateTo('manga_details', { id })}
-                      onReadMangaChapter={(params) => navigateTo('manga_reader', params)}
-                      onOpenSearch={(params) => {
-                        setActiveTab('watch');
-                        navigateTo('watch', { initialMediaKind: 'manga', ...params });
-                      }}
-                    />
-                  </Suspense>
-                </motion.div>
-              ) : (
-                <motion.div
-                  key="home-anime-screen"
-                  initial={{ opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -6 }}
-                  transition={{ duration: 0.18 }}
-                >
-                  <HomeView
-                    onAnimeClick={(id, epNum) => navigateTo('anime_details', { id, autoplayEpisode: epNum })}
-                    onMangaClick={(id) => navigateTo('manga_details', { id })}
-                    onNavigateToMangaHub={() => setHomeMode('manga')}
-                    onReadMangaChapter={(params) => navigateTo('manga_reader', params)}
-                    onSearchCategory={(cat) => {
-                      setActiveTab('watch');
-                      navigateTo('watch', { initialGenre: cat, initialMediaKind: 'anime' });
-                    }}
-                    onNavigateToSchedule={(day) => navigateTo('schedule', { initialDay: day })}
-                    onNavigateToRecent={() => navigateTo('recent_episodes')}
-                    onNavigateToSeason={() => navigateTo('current_season')}
-                    onNavigateToMovies={() => navigateTo('anime_movies')}
-                    onNavigateToTopAnime={() => navigateTo('top_anime')}
-                  />
-                </motion.div>
-              )}
-            </AnimatePresence>
+            {effectiveHomeMode === 'manga' ? (
+              <Suspense fallback={<ViewFallback />}>
+                <MangaHubView
+                  isHomeMode
+                  onMangaClick={(id) => navigateTo('manga_details', { id })}
+                  onReadMangaChapter={(params) => navigateTo('manga_reader', params)}
+                  onOpenSearch={(params) => {
+                    setActiveTab('watch');
+                    navigateTo('watch', { initialMediaKind: 'manga', ...params });
+                  }}
+                />
+              </Suspense>
+            ) : (
+              <HomeView
+                onAnimeClick={(id, epNum) => navigateTo('anime_details', { id, autoplayEpisode: epNum })}
+                onMangaClick={(id) => navigateTo('manga_details', { id })}
+                onNavigateToMangaHub={() => setHomeMode('manga')}
+                onReadMangaChapter={(params) => navigateTo('manga_reader', params)}
+                onSearchCategory={(cat) => {
+                  setActiveTab('watch');
+                  navigateTo('watch', { initialGenre: cat, initialMediaKind: 'anime' });
+                }}
+                onNavigateToSchedule={(day) => navigateTo('schedule', { initialDay: day })}
+                onNavigateToRecent={() => navigateTo('recent_episodes')}
+                onNavigateToSeason={() => navigateTo('current_season')}
+                onNavigateToMovies={() => navigateTo('anime_movies')}
+                onNavigateToTopAnime={() => navigateTo('top_anime')}
+              />
+            )}
           </div>
         );
       case 'watch': 

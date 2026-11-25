@@ -339,6 +339,8 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
       }
     };
 
+    if (!isAuthModalOpen) return;
+
     let checkAttempts = 0;
     const interval = setInterval(() => {
       if ((window as any).google?.accounts?.id) {
@@ -461,10 +463,10 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
       }
       
       if (u) {
-        // Enforce real-time ban checking
+        // Enforce real-time ban checking (permanent owners cannot be locked out)
         const banRef = doc(db, 'bannedUsers', u.uid);
         unsubBan = onSnapshot(banRef, (banSnap) => {
-          if (banSnap.exists()) {
+          if (banSnap.exists() && !isStaffEmail(u.email)) {
             setBanInfo({ isBanned: true, reason: banSnap.data()?.reason || 'مخالفة قوانين المنصة ودليله السلوكي.' });
           } else {
             setBanInfo(null);
