@@ -172,6 +172,9 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
         url: episode.id || episode.link || '',
         animeId: anime?._id || anime?.malId,
         animeTitle: anime?.englishTitle || anime?.title,
+        englishTitle: anime?.englishTitle || anime?.title,
+        romajiTitle: anime?.romajiTitle,
+        okanimeSlug: anime?.okanimeSlug,
         seasonNumber: activeSeasonNumber,
         episodeNum: episode?.num,
       };
@@ -523,6 +526,9 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
           url: episode.id || episode.link || '',
           animeId: anime?._id || anime?.malId,
           animeTitle: anime?.englishTitle || anime?.title,
+          englishTitle: anime?.englishTitle || anime?.title,
+          romajiTitle: anime?.romajiTitle,
+          okanimeSlug: anime?.okanimeSlug,
           seasonNumber: activeSeasonNumber,
           episodeNum: episode?.num,
         },
@@ -1022,6 +1028,8 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
         malId: anime?.malId,
         title: anime?.title || 'أنمي',
         englishTitle: anime?.englishTitle,
+        romajiTitle: anime?.romajiTitle,
+        okanimeSlug: anime?.okanimeSlug,
         posterUrl: anime?.posterUrl || anime?.thumbnailUrl,
       },
       [

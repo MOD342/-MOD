@@ -1651,6 +1651,8 @@ export interface ServerLookupParams {
   animeId?: string | number;
   animeTitle?: string;
   englishTitle?: string;
+  romajiTitle?: string;
+  okanimeSlug?: string;
   seasonNumber?: number;
   episodeNum?: string | number;
 }

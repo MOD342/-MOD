@@ -378,8 +378,8 @@ function patchMainActivityJava() {
   }
 
   const current = fs.readFileSync(mainActivityPath, 'utf8');
-  if (current.includes('MOD_NATIVE_BRIDGE_V4')) {
-    console.log('ℹ️ MainActivity.java محدّث مسبقاً إلى MOD_NATIVE_BRIDGE_V4.');
+  if (current.includes('MOD_NATIVE_BRIDGE_V5')) {
+    console.log('ℹ️ MainActivity.java محدّث مسبقاً إلى MOD_NATIVE_BRIDGE_V5.');
     return;
   }
 
@@ -388,12 +388,13 @@ function patchMainActivityJava() {
 
   const upgradedJava = `package ${packageName};
 
-// MOD_NATIVE_BRIDGE_V4
+// MOD_NATIVE_BRIDGE_V5
 import android.app.DownloadManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
+import android.graphics.Rect;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -409,6 +410,7 @@ import android.webkit.WebView;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.core.graphics.Insets;
+import androidx.core.view.DisplayCutoutCompat;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
@@ -427,7 +429,9 @@ public class MainActivity extends BridgeActivity {
             WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 WindowManager.LayoutParams lp = getWindow().getAttributes();
-                lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+                lp.layoutInDisplayCutoutMode = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+                    ? WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                    : WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
                 getWindow().setAttributes(lp);
             }
         } catch (Throwable ignored) {}
@@ -488,6 +492,8 @@ public class MainActivity extends BridgeActivity {
                         Insets cutout = insets.getInsets(WindowInsetsCompat.Type.displayCutout());
                         Insets sysBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
                         float density = Math.max(1f, getResources().getDisplayMetrics().density);
+                        int viewWidthPx = v.getWidth() > 0 ? v.getWidth() : getResources().getDisplayMetrics().widthPixels;
+                        int screenWidthDp = Math.max(1, Math.round(viewWidthPx / density));
 
                         int topDp = Math.round(Math.max(cutout.top, sysBars.top) / density);
                         int bottomDp = Math.round(Math.max(cutout.bottom, sysBars.bottom) / density);
@@ -495,7 +501,73 @@ public class MainActivity extends BridgeActivity {
                         int rightDp = Math.round(Math.max(cutout.right, sysBars.right) / density);
                         int cutoutTopDp = Math.round(cutout.top / density);
 
-                        pushInsetsToWebView(topDp, bottomDp, leftDp, rightDp, cutoutTopDp);
+                        boolean cVisible = false;
+                        int cLeftDp = 0;
+                        int cTopDp = 0;
+                        int cWidthDp = 0;
+                        int cHeightDp = 0;
+                        int cRadiusDp = 0;
+                        String cShape = "none";
+                        String cPos = "center";
+
+                        DisplayCutoutCompat displayCutout = insets.getDisplayCutout();
+                        if (displayCutout != null) {
+                            List<Rect> rects = displayCutout.getBoundingRects();
+                            Rect topRect = null;
+                            int topLimitPx = Math.round(90 * density);
+                            if (rects != null) {
+                                for (Rect r : rects) {
+                                    if (r != null && r.width() > 0 && r.height() > 0 && r.top <= topLimitPx && r.bottom > 0) {
+                                        if (topRect == null || r.width() > topRect.width()) {
+                                            topRect = r;
+                                        }
+                                    }
+                                }
+                            }
+                            if (topRect != null) {
+                                cVisible = true;
+                                cLeftDp = Math.max(0, Math.round(topRect.left / density));
+                                cTopDp = Math.max(0, Math.round(topRect.top / density));
+                                cWidthDp = Math.max(12, Math.round(topRect.width() / density));
+                                cHeightDp = Math.max(12, Math.round(topRect.height() / density));
+                            } else if (cutoutTopDp > 0) {
+                                cVisible = true;
+                                cWidthDp = 24;
+                                cHeightDp = Math.min(28, Math.max(18, cutoutTopDp - 6));
+                                cLeftDp = Math.max(0, (screenWidthDp - cWidthDp) / 2);
+                                cTopDp = Math.max(4, (cutoutTopDp - cHeightDp) / 2);
+                            }
+
+                            if (cVisible) {
+                                double ratio = (double) cWidthDp / Math.max(1.0, (double) cHeightDp);
+                                if (cTopDp <= 2 && ratio >= 1.55) {
+                                    cShape = "notch";
+                                    cRadiusDp = Math.min(18, Math.round(cHeightDp * 0.45f));
+                                } else if (ratio >= 1.55) {
+                                    cShape = "pill";
+                                    cRadiusDp = Math.round(cHeightDp / 2.0f);
+                                } else {
+                                    cShape = "circle";
+                                    cRadiusDp = Math.round(Math.min(cWidthDp, cHeightDp) / 2.0f);
+                                }
+
+                                double centerX = cLeftDp + (cWidthDp / 2.0);
+                                double screenMid = screenWidthDp / 2.0;
+                                double centerTolerance = Math.max(28.0, screenWidthDp * 0.12);
+                                if (Math.abs(centerX - screenMid) <= centerTolerance) {
+                                    cPos = "center";
+                                } else if (centerX < screenMid) {
+                                    cPos = "left";
+                                } else {
+                                    cPos = "right";
+                                }
+                            }
+                        }
+
+                        pushInsetsToWebView(
+                            topDp, bottomDp, leftDp, rightDp, cutoutTopDp,
+                            cVisible, cLeftDp, cTopDp, cWidthDp, cHeightDp, cRadiusDp, cShape, cPos
+                        );
                     } catch (Throwable ignored) {}
                     return insets;
                 });
@@ -504,18 +576,31 @@ public class MainActivity extends BridgeActivity {
         } catch (Throwable ignored) {}
     }
 
-    private void pushInsetsToWebView(int top, int bottom, int left, int right, int cutoutTop) {
+    private void pushInsetsToWebView(
+        int top, int bottom, int left, int right, int cutoutTop,
+        boolean cVisible, int cLeft, int cTop, int cWidth, int cHeight, int cRadius, String cShape, String cPos
+    ) {
         try {
             if (isFinishing() || isDestroyed()) return;
             if (getBridge() == null || getBridge().getWebView() == null) return;
             final WebView webView = getBridge().getWebView();
+            final String safeShape = cShape != null ? cShape : "none";
+            final String safePos = cPos != null ? cPos : "center";
             final String js = "(function(){try{" +
-                "window.__ANDROID_INSETS__={top:" + top + ",bottom:" + bottom + ",left:" + left + ",right:" + right + ",cutoutTop:" + cutoutTop + "};" +
+                "window.__ANDROID_INSETS__={" +
+                  "top:" + top + ",bottom:" + bottom + ",left:" + left + ",right:" + right + ",cutoutTop:" + cutoutTop + "," +
+                  "cutout:{visible:" + cVisible + ",left:" + cLeft + ",top:" + cTop + ",width:" + cWidth + ",height:" + cHeight + ",radius:" + cRadius + ",shape:'" + safeShape + "',position:'" + safePos + "'}" +
+                "};" +
                 "var r=document.documentElement.style;" +
                 "r.setProperty('--safe-top','" + top + "px');" +
                 "r.setProperty('--safe-bottom','" + bottom + "px');" +
                 "r.setProperty('--safe-left','" + left + "px');" +
                 "r.setProperty('--safe-right','" + right + "px');" +
+                "r.setProperty('--cutout-left','" + cLeft + "px');" +
+                "r.setProperty('--cutout-top','" + cTop + "px');" +
+                "r.setProperty('--cutout-width','" + cWidth + "px');" +
+                "r.setProperty('--cutout-height','" + cHeight + "px');" +
+                "r.setProperty('--cutout-radius','" + cRadius + "px');" +
                 "window.dispatchEvent(new Event('android-insets-updated'));" +
                 "}catch(e){}})();";
             webView.post(() -> {

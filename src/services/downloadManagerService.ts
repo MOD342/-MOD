@@ -20,6 +20,8 @@ export interface DownloadQueueItem {
   animeId: string;
   animeTitle: string;
   englishTitle?: string;
+  romajiTitle?: string;
+  okanimeSlug?: string;
   posterUrl?: string;
   seasonNumber: number;
   episodeNum: string;
@@ -82,6 +84,8 @@ export interface BatchAnimeInput {
   malId?: string | number;
   title?: string;
   englishTitle?: string;
+  romajiTitle?: string;
+  okanimeSlug?: string;
   posterUrl?: string;
   thumbnailUrl?: string;
 }
@@ -558,6 +562,8 @@ class DownloadManagerService {
         animeId,
         animeTitle,
         englishTitle: anime?.englishTitle || anime?.title || undefined,
+        romajiTitle: anime?.romajiTitle || undefined,
+        okanimeSlug: anime?.okanimeSlug || undefined,
         posterUrl,
         seasonNumber,
         episodeNum: epNum,
@@ -886,16 +892,23 @@ class DownloadManagerService {
     usedFallbackQuality: boolean;
     serverName?: string | null;
   }> {
+    const slugCacheKey = `${item.animeId}::s${item.seasonNumber || 1}`;
+    const resolvedSlugHint =
+      item.okanimeSlug ||
+      (typeof window !== 'undefined' ? (window as any).__OTAKU_SLUG_HINTS__?.[slugCacheKey] : undefined);
+
     const serverLookup = {
       url: item.episodeUrl,
       animeId: item.animeId,
       animeTitle: item.animeTitle,
       englishTitle: item.englishTitle,
+      romajiTitle: item.romajiTitle,
+      okanimeSlug: resolvedSlugHint,
       seasonNumber: item.seasonNumber,
       episodeNum: item.episodeNum,
     };
 
-    const fetchLiveServers = async (): Promise<any[]> => {
+    const requestLiveServers = async (overridePayload?: Record<string, any>): Promise<any[]> => {
       const srvResp = await fetchWithTimeout(
         resolveApiUrl('/api/anime/servers'),
         {
@@ -906,18 +919,38 @@ class DownloadManagerService {
             animeId: item.animeId,
             animeTitle: item.animeTitle,
             englishTitle: item.englishTitle,
+            romajiTitle: item.romajiTitle,
+            okanimeSlug: resolvedSlugHint,
             seasonNumber: item.seasonNumber,
             episodeNum: item.episodeNum,
+            ...(overridePayload || {}),
           }),
         },
         signal,
-        25_000,
+        28_000,
         'استغرق البحث عن سيرفرات الحلقة وقتاً طويلاً، أعد المحاولة.',
       );
       const srvJson = await safeReadJson(srvResp);
-      const list = Array.isArray(srvJson?.data) ? srvJson.data : [];
-      if (!srvResp.ok || !srvJson?.success || list.length === 0) {
-        throw new Error(srvJson?.message || 'لم يتم العثور على سيرفرات متاحة لهذه الحلقة حالياً.');
+      return Array.isArray(srvJson?.data) ? srvJson.data : [];
+    };
+
+    const fetchLiveServers = async (): Promise<any[]> => {
+      let list = await requestLiveServers();
+
+      // Single clean retry using trimmed base title (before colon/dash) if first lookup returned empty
+      if (list.length === 0 && !signal.aborted) {
+        const primaryTitle = String(item.romajiTitle || item.englishTitle || item.animeTitle || '').trim();
+        const shortBaseTitle = primaryTitle.split(/[:\-–]/)[0]?.trim();
+        if (shortBaseTitle && shortBaseTitle.length >= 3 && shortBaseTitle !== primaryTitle) {
+          list = await requestLiveServers({
+            animeTitle: shortBaseTitle,
+            englishTitle: shortBaseTitle,
+          }).catch(() => []);
+        }
+      }
+
+      if (list.length === 0) {
+        throw new Error('لا تتوفر خيارات مشاهدة لهذه الحلقة حالياً.');
       }
       void cloudCatalogService.cacheResolvedEpisodeServers(serverLookup, list);
       return list;

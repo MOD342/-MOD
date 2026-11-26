@@ -1542,6 +1542,7 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
               okanimeSlug: scrapedSlug || undefined,
               title,
               englishTitle: title,
+              romajiTitle: media.title?.romaji || undefined,
               posterUrl,
               bannerUrl: media.bannerImage || posterUrl,
               description: arabicDesc || 'قصة هذا الأنمي متوفرة ومحدثة.',
@@ -1942,8 +1943,12 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
     if (cleanPath === '/api/anime/servers') {
       const bodyObj = parseRequestBody(options);
       const rawUrlOrId = String(bodyObj?.url || bodyObj?.animeId || '');
+      const animeIdRaw = bodyObj?.animeId ? String(bodyObj.animeId).trim() : '';
       const animeTitle = String(bodyObj?.animeTitle || '').trim();
       const englishTitle = String(bodyObj?.englishTitle || '').trim();
+      const romajiTitleInput = String(bodyObj?.romajiTitle || '').trim();
+      const okanimeSlugInput = String(bodyObj?.okanimeSlug || '').trim();
+      const seasonNumber = Math.max(1, Number(bodyObj?.seasonNumber || 1) || 1);
       let epNum = String(bodyObj?.episodeNum || '');
       if (!epNum) {
         if (rawUrlOrId.includes('__ep__')) epNum = rawUrlOrId.split('__ep__')[1];
@@ -1952,6 +1957,8 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
           epNum = m ? m[1] : '1';
         }
       }
+      epNum = String(parseInt(epNum, 10) || epNum || '1').trim();
+      const paddedEp = epNum.padStart(2, '0');
 
       const normalizeSlug = (t: string) =>
         t
@@ -1961,6 +1968,7 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
           .replace(/-+/g, '-')
           .replace(/^-+|-+$/g, '');
 
+      const candidateTitles: string[] = [];
       const slugCandidates: string[] = [];
       const addSlug = (s: string) => {
         const clean = s.replace(/^\/+|\/+$/g, '').trim();
@@ -1968,7 +1976,21 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
           slugCandidates.push(clean);
         }
       };
+      const pushTitleCandidate = (raw: unknown) => {
+        const cleanT = typeof raw === 'string' ? raw.trim() : '';
+        if (!cleanT) return;
+        if (!candidateTitles.includes(cleanT)) candidateTitles.push(cleanT);
+        addSlug(normalizeSlug(cleanT));
+        const splitParts = cleanT.split(/[:\-–]/).map((s) => s.trim()).filter((s) => s.length >= 3);
+        for (const part of splitParts) {
+          if (!candidateTitles.includes(part)) candidateTitles.push(part);
+          addSlug(normalizeSlug(part));
+        }
+      };
 
+      if (okanimeSlugInput && !/^\d+$/.test(okanimeSlugInput) && !okanimeSlugInput.startsWith('search-')) {
+        addSlug(okanimeSlugInput);
+      }
       if (rawUrlOrId.includes('__ep__')) {
         addSlug(rawUrlOrId.split('__ep__')[0]);
       } else if (rawUrlOrId.startsWith('http') || rawUrlOrId.includes('/episode/')) {
@@ -1976,17 +1998,35 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
       } else if (rawUrlOrId.includes('-episode-')) {
         addSlug(rawUrlOrId.replace(/-episode-\d+.*$/i, ''));
       }
-      if (bodyObj?.animeId && !/^\d+$/.test(String(bodyObj.animeId))) {
-        addSlug(String(bodyObj.animeId));
+      if (animeIdRaw && !/^\d+$/.test(animeIdRaw)) {
+        addSlug(animeIdRaw);
       }
-      if (englishTitle) {
-        addSlug(normalizeSlug(englishTitle));
-      }
-      if (animeTitle) {
-        addSlug(normalizeSlug(animeTitle));
-      }
+      pushTitleCandidate(romajiTitleInput);
+      pushTitleCandidate(englishTitle);
+      pushTitleCandidate(animeTitle);
 
       const scrapedServers: any[] = [];
+
+      const mapClientHostName = (rawServer: string, embedUrl: string) => {
+        const lower = embedUrl.toLowerCase();
+        if (/\bvk\b/i.test(rawServer) || lower.includes('vk.com') || lower.includes('vkvideo')) return 'VK Video';
+        if (lower.includes('share4max') || lower.includes('megamax')) return 'MegaMax';
+        if (lower.includes('mega.nz')) return 'Mega';
+        if (lower.includes('dailymotion')) return 'Dailymotion';
+        if (lower.includes('videa')) return 'Videa';
+        if (lower.includes('uqload')) return 'Uqload';
+        if (lower.includes('sendvid')) return 'Sendvid';
+        if (lower.includes('mp4upload')) return 'MP4Upload';
+        if (lower.includes('ok.ru')) return 'Ok.ru';
+        if (lower.includes('drive.google')) return 'Google Drive';
+        if (lower.includes('yourupload')) return 'YourUpload';
+        if (lower.includes('mixdrop')) return 'Mixdrop';
+        if (lower.includes('vidoza')) return 'Vidoza';
+        if (lower.includes('filemoon')) return 'Filemoon';
+        if (lower.includes('dood') || lower.includes('d000d')) return 'DoodStream';
+        if (lower.includes('mail.ru')) return 'Mail.ru';
+        return rawServer || 'سيرفر';
+      };
 
       const parseOkanimeEpisodeHtml = (okHtml: string) => {
         if (!okHtml || (!okHtml.includes('setServer(') && !okHtml.includes('ep-link')) || typeof DOMParser === 'undefined') {
@@ -2000,24 +2040,7 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
           if (!urlMatch || !urlMatch[1]) return;
           const embedUrl = urlMatch[1].replace(/\\u0026/g, '&').replace(/&amp;/g, '&').trim();
           if (!embedUrl.startsWith('http')) return;
-          const lower = embedUrl.toLowerCase();
-          let serverName = rawServer || 'سيرفر';
-          if (/\bvk\b/i.test(rawServer) || lower.includes('vk.com') || lower.includes('vkvideo')) serverName = 'VK Video';
-          else if (lower.includes('share4max') || lower.includes('megamax')) serverName = 'MegaMax';
-          else if (lower.includes('mega.nz')) serverName = 'Mega';
-          else if (lower.includes('dailymotion')) serverName = 'Dailymotion';
-          else if (lower.includes('videa')) serverName = 'Videa';
-          else if (lower.includes('uqload')) serverName = 'Uqload';
-          else if (lower.includes('sendvid')) serverName = 'Sendvid';
-          else if (lower.includes('mp4upload')) serverName = 'MP4Upload';
-          else if (lower.includes('ok.ru')) serverName = 'Ok.ru';
-          else if (lower.includes('drive.google')) serverName = 'Google Drive';
-          else if (lower.includes('yourupload')) serverName = 'YourUpload';
-          else if (lower.includes('mixdrop')) serverName = 'Mixdrop';
-          else if (lower.includes('vidoza')) serverName = 'Vidoza';
-          else if (lower.includes('filemoon')) serverName = 'Filemoon';
-          else if (lower.includes('dood') || lower.includes('d000d')) serverName = 'DoodStream';
-
+          const serverName = mapClientHostName(rawServer, embedUrl);
           const isMulti = ['VK Video', 'Ok.ru', 'Dailymotion', 'Videa', 'MegaMax'].includes(serverName);
           const qText = (el.textContent || '').toUpperCase();
           const quality = isMulti
@@ -2038,6 +2061,23 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
           }
         });
 
+        // Fallback sweep for any remaining setServer('https://...') calls
+        const setServerRe = /setServer\(\s*['"](https?:[^'"]+)['"]\s*\)/gi;
+        let sm: RegExpExecArray | null;
+        while ((sm = setServerRe.exec(okHtml)) !== null) {
+          const embedUrl = sm[1].replace(/\\u0026/g, '&').replace(/&amp;/g, '&').trim();
+          if (!embedUrl.startsWith('http') || scrapedServers.some(s => s.url === embedUrl && s.category === 'watch')) continue;
+          const serverName = mapClientHostName('', embedUrl);
+          const isMulti = ['VK Video', 'Ok.ru', 'Dailymotion', 'Videa', 'MegaMax'].includes(serverName);
+          scrapedServers.push({
+            serverName,
+            url: embedUrl,
+            type: 'iframe',
+            quality: isMulti ? 'multi' : '720p',
+            category: 'watch'
+          });
+        }
+
         doc.querySelectorAll('a.ep-link[href^="http"], a[data-umami-event-host][href^="http"]').forEach((el) => {
           const href = (el.getAttribute('href') || '').trim();
           if (!href || href.includes('okanime.xyz')) return;
@@ -2056,40 +2096,97 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
         });
       };
 
-      // 1. المحاولة المباشرة على OkAnime
-      for (const sCandidate of slugCandidates) {
+      const tryOkAnimeBySlug = async (slugVal: string) => {
+        if (!slugVal) return;
+        const paths = [`/episode/${slugVal}-episode-${epNum}`];
+        if (paddedEp !== epNum) paths.push(`/episode/${slugVal}-episode-${paddedEp}`);
+        for (const p of paths) {
+          try {
+            const okHtml = await fetchHtmlDirectInClient(`https://ww3.okanime.xyz${p}`);
+            parseOkanimeEpisodeHtml(okHtml);
+            if (scrapedServers.length > 0) return;
+          } catch {}
+        }
         try {
-          const okEpUrl = `https://ww3.okanime.xyz/episode/${sCandidate}-episode-${epNum}`;
-          const okHtml = await fetchHtmlDirectInClient(okEpUrl);
-          parseOkanimeEpisodeHtml(okHtml);
-          if (scrapedServers.length > 0) break;
+          const animeHtml = await fetchHtmlDirectInClient(`https://ww3.okanime.xyz/anime/${slugVal}`);
+          if (animeHtml && typeof DOMParser !== 'undefined') {
+            const aDoc = new DOMParser().parseFromString(animeHtml, 'text/html');
+            const epMatchRe = new RegExp(`-episode-0*${epNum}(?:$|\\?|#|/)`, 'i');
+            let matchedHref = '';
+            aDoc.querySelectorAll('a[href*="/episode/"]').forEach((aEl) => {
+              if (matchedHref) return;
+              const h = (aEl.getAttribute('href') || '').trim();
+              if (epMatchRe.test(h)) matchedHref = h;
+            });
+            if (matchedHref) {
+              const target = matchedHref.startsWith('http') ? matchedHref : `https://ww3.okanime.xyz${matchedHref}`;
+              const epHtml = await fetchHtmlDirectInClient(target);
+              parseOkanimeEpisodeHtml(epHtml);
+            }
+          }
+        } catch {}
+      };
+
+      // 1. المحاولة المباشرة على OkAnime
+      for (const sCandidate of slugCandidates.slice(0, 4)) {
+        await tryOkAnimeBySlug(sCandidate);
+        if (scrapedServers.length > 0) break;
+      }
+
+      // 2. جلب Romaji و Synonyms من AniList مباشرةً إذا لم ينجح المسار المباشر
+      if (scrapedServers.length === 0 && (/^\d+$/.test(animeIdRaw) || candidateTitles.length > 0)) {
+        try {
+          const aniData = /^\d+$/.test(animeIdRaw)
+            ? await queryAniListDirect(
+                `query ($idMal: Int) { Media(idMal: $idMal, type: ANIME) { title { romaji english } synonyms } }`,
+                { idMal: Number(animeIdRaw) }
+              ).catch(() => null)
+            : await queryAniListDirect(
+                `query ($s: String) { Media(search: $s, type: ANIME, isAdult: false) { title { romaji english } synonyms } }`,
+                { s: candidateTitles[0] }
+              ).catch(() => null);
+
+          const mTitle = aniData?.Media?.title;
+          const syns: string[] = Array.isArray(aniData?.Media?.synonyms) ? aniData.Media.synonyms.slice(0, 3) : [];
+          for (const extraT of [mTitle?.romaji, mTitle?.english, ...syns]) {
+            pushTitleCandidate(extraT);
+          }
+
+          for (const extraSlugSource of [mTitle?.romaji, mTitle?.english, ...syns]) {
+            if (!extraSlugSource || scrapedServers.length > 0) break;
+            const norm = normalizeSlug(String(extraSlugSource));
+            if (norm) await tryOkAnimeBySlug(norm);
+          }
         } catch {}
       }
 
-      // 2. البحث بالاسم إذا لم يطابق المسار المباشر
-      const searchTitle = englishTitle || animeTitle;
-      if (scrapedServers.length === 0 && searchTitle && typeof DOMParser !== 'undefined') {
-        try {
-          const searchHtml = await fetchHtmlDirectInClient(`https://ww3.okanime.xyz/search?q=${encodeURIComponent(searchTitle)}`);
-          if (searchHtml) {
+      // 3. البحث بالاسم (بما فيها Romaji والأجزاء قبل النقطتين) داخل OkAnime
+      if (scrapedServers.length === 0 && candidateTitles.length > 0 && typeof DOMParser !== 'undefined') {
+        for (const searchCand of candidateTitles.slice(0, 4)) {
+          try {
+            const searchHtml = await fetchHtmlDirectInClient(`https://ww3.okanime.xyz/search?q=${encodeURIComponent(searchCand)}`);
+            if (!searchHtml) continue;
             const sDoc = new DOMParser().parseFromString(searchHtml, 'text/html');
             const firstHref = sDoc.querySelector('.anime-card a[href*="/anime/"]')?.getAttribute('href') || '';
             const foundSlug = extractPrimarySlugClient(firstHref);
             if (foundSlug) {
               if (!slugCandidates.includes(foundSlug)) slugCandidates.unshift(foundSlug);
-              const okEpHtml = await fetchHtmlDirectInClient(`https://ww3.okanime.xyz/episode/${foundSlug}-episode-${epNum}`);
-              parseOkanimeEpisodeHtml(okEpHtml);
+              await tryOkAnimeBySlug(foundSlug);
+              if (scrapedServers.length > 0) break;
             }
-          }
-        } catch {}
+          } catch {}
+        }
       }
 
-      // 3. الدمج التكميلي من animedar عند قلة السيرفرات
-      if (scrapedServers.length < 4 && slugCandidates.length > 0) {
+      // 4. الدمج التكميلي السريع من animedar عند عدم توفر سيرفرات من OkAnime
+      if (scrapedServers.length === 0 && slugCandidates.length > 0) {
         const cleanSlug = slugCandidates[0];
         const targetAnimeUrl = `https://animedar.net/anime-p/${cleanSlug}/`;
         try {
-          const html = await fetchHtmlDirectInClient(targetAnimeUrl);
+          const html = await Promise.race([
+            fetchHtmlDirectInClient(targetAnimeUrl),
+            new Promise<string>((resolve) => setTimeout(() => resolve(''), 3500))
+          ]);
           if (html && html.includes('ServerList1') && typeof DOMParser !== 'undefined') {
             const doc = new DOMParser().parseFromString(html, 'text/html');
             const box =
@@ -2137,6 +2234,112 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
                   }
                 }
               });
+            }
+          }
+        } catch {}
+      }
+
+      // 5. المصدر الثالث #3: animerco.org / jet.animerco.org عند فشل OkAnime و AnimeDar
+      if (scrapedServers.length === 0 && candidateTitles.length > 0 && typeof DOMParser !== 'undefined') {
+        try {
+          let matchedAnimeUrl = '';
+          for (const qCand of candidateTitles.slice(0, 3)) {
+            const qClean = qCand.replace(/[:\-–]/g, ' ').replace(/\s+/g, ' ').trim();
+            if (qClean.length < 2) continue;
+            const searchHtml = await fetchHtmlDirectInClient(`https://animerco.org/?s=${encodeURIComponent(qClean)}`).catch(() => '');
+            if (!searchHtml) continue;
+            const sDoc = new DOMParser().parseFromString(searchHtml, 'text/html');
+            const firstLink =
+              sDoc.querySelector('a[href*="/animes/"]')?.getAttribute('href') ||
+              sDoc.querySelector('a[href*="/movies/"]')?.getAttribute('href') ||
+              '';
+            if (firstLink && firstLink.includes('animerco.org')) {
+              matchedAnimeUrl = firstLink;
+              break;
+            }
+          }
+
+          if (matchedAnimeUrl) {
+            let epPageUrl = matchedAnimeUrl.includes('/movies/') ? matchedAnimeUrl : '';
+            if (!epPageUrl) {
+              const animeHtml = await fetchHtmlDirectInClient(matchedAnimeUrl).catch(() => '');
+              if (animeHtml) {
+                const aDoc = new DOMParser().parseFromString(animeHtml, 'text/html');
+                const epRe = new RegExp(`-(?:%d8%a7%d9%84%d8%ad%d9%84%d9%82%d8%a9|الحلقة|episode)-0*${epNum}(?:\\/|\\?|#|$)`, 'i');
+                aDoc.querySelectorAll('a[href*="/episodes/"]').forEach((aEl) => {
+                  if (epPageUrl) return;
+                  const href = (aEl.getAttribute('href') || '').trim();
+                  let decoded = href;
+                  try { decoded = decodeURIComponent(href); } catch {}
+                  if (epRe.test(href) || epRe.test(decoded)) epPageUrl = href;
+                });
+
+                if (!epPageUrl) {
+                  const seasonUrls: string[] = [];
+                  aDoc.querySelectorAll('a[href*="/seasons/"]').forEach((sEl) => {
+                    const h = (sEl.getAttribute('href') || '').trim();
+                    if (h && !seasonUrls.includes(h)) seasonUrls.push(h);
+                  });
+                  if (seasonUrls.length > 0) {
+                    const targetSeasonUrl =
+                      seasonUrls.find(u => new RegExp(`(?:-|season-|s)${seasonNumber}(?:\\/|$)`, 'i').test(u)) ||
+                      seasonUrls[seasonNumber - 1] ||
+                      seasonUrls[0];
+                    const seasonHtml = await fetchHtmlDirectInClient(targetSeasonUrl).catch(() => '');
+                    if (seasonHtml) {
+                      const seDoc = new DOMParser().parseFromString(seasonHtml, 'text/html');
+                      seDoc.querySelectorAll('a[href*="/episodes/"]').forEach((aEl) => {
+                        if (epPageUrl) return;
+                        const href = (aEl.getAttribute('href') || '').trim();
+                        let decoded = href;
+                        try { decoded = decodeURIComponent(href); } catch {}
+                        if (epRe.test(href) || epRe.test(decoded)) epPageUrl = href;
+                      });
+                    }
+                  }
+                }
+              }
+            }
+
+            if (epPageUrl) {
+              const epHtml = await fetchHtmlDirectInClient(epPageUrl).catch(() => '');
+              if (epHtml) {
+                const epDoc = new DOMParser().parseFromString(epHtml, 'text/html');
+                const embeds: { embedUrl: string; label: string }[] = [];
+                epDoc.querySelectorAll('a[data-embed-url]').forEach((aEl) => {
+                  const embedUrl = (aEl.getAttribute('data-embed-url') || '').replace(/&amp;/g, '&').trim();
+                  const label = (aEl.textContent || '').replace(/\s+/g, ' ').trim();
+                  if (!embedUrl || /\bhqq\b|hqq\.|netu|waaw/i.test(label)) return;
+                  if (!embeds.some(e => e.embedUrl === embedUrl)) embeds.push({ embedUrl, label });
+                });
+
+                const resolved = await Promise.allSettled(
+                  embeds.slice(0, 6).map(async ({ embedUrl, label }) => {
+                    const pHtml = await fetchTextDirectInClient(embedUrl, 40, { Referer: epPageUrl });
+                    if (!pHtml) return null;
+                    const pDoc = new DOMParser().parseFromString(pHtml, 'text/html');
+                    const iframeSrc = (pDoc.querySelector('iframe')?.getAttribute('src') || '').trim();
+                    if (!iframeSrc.startsWith('http') || iframeSrc.includes('hqq.') || iframeSrc.includes('waaw.')) return null;
+                    const serverName = mapClientHostName(label, iframeSrc);
+                    const isMulti = ['VK Video', 'Ok.ru', 'Dailymotion', 'Videa', 'MegaMax'].includes(serverName);
+                    const upper = label.toUpperCase();
+                    const quality = isMulti ? 'multi' : upper.includes('FHD') || upper.includes('1080') ? '1080p' : upper.includes('SD') ? '480p' : '720p';
+                    return {
+                      serverName,
+                      url: iframeSrc,
+                      type: 'iframe',
+                      quality,
+                      category: 'watch',
+                    };
+                  })
+                );
+
+                for (const r of resolved) {
+                  if (r.status === 'fulfilled' && r.value && !scrapedServers.some(s => s.url === r.value!.url)) {
+                    scrapedServers.push(r.value);
+                  }
+                }
+              }
             }
           }
         } catch {}

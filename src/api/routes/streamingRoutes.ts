@@ -156,7 +156,7 @@ router.get(
 router.post(
   "/anime/servers",
   handleAsync(async (req: Request, res: Response) => {
-    const { url, animeId, episodeNum, seasonNumber, animeTitle, englishTitle } = req.body;
+    const { url, animeId, episodeNum, seasonNumber, animeTitle, englishTitle, romajiTitle, okanimeSlug } = req.body;
 
     if (!url || typeof url !== "string") {
       return res.status(400).json({
@@ -166,11 +166,20 @@ router.post(
       });
     }
 
-    const data = await scraper.getEpisodeServers(url, animeId, episodeNum, seasonNumber, animeTitle, englishTitle);
+    const data = await scraper.getEpisodeServers(
+      url,
+      animeId,
+      episodeNum,
+      seasonNumber,
+      animeTitle,
+      englishTitle,
+      romajiTitle,
+      okanimeSlug
+    );
 
     res.json({
-      success: true,
-      message: "تم جلب سيرفرات المشاهدة بنجاح.",
+      success: data.length > 0,
+      message: data.length > 0 ? "تم جلب سيرفرات المشاهدة بنجاح." : "لا تتوفر خيارات مشاهدة لهذه الحلقة حالياً.",
       data,
     });
   }),

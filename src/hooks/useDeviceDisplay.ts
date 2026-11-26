@@ -12,6 +12,7 @@ export interface DeviceDisplayState extends SafeViewportMetrics {
   isBookPosture: boolean;
   isTabletopPosture: boolean;
   isLandscape: boolean;
+  hasCameraCutout: boolean;
 }
 
 function buildState(m: SafeViewportMetrics): DeviceDisplayState {
@@ -25,6 +26,7 @@ function buildState(m: SafeViewportMetrics): DeviceDisplayState {
   const isTabletopPosture = m.posture === 'tabletop';
   const isLandscape = m.orientation === 'landscape';
   const isWideOrUnfolded = isUnfoldedFoldable || isTablet || isDesktop || m.viewportWidth >= 768;
+  const hasCameraCutout = Boolean(m.cutoutRect?.visible);
 
   return {
     ...m,
@@ -38,6 +40,7 @@ function buildState(m: SafeViewportMetrics): DeviceDisplayState {
     isBookPosture,
     isTabletopPosture,
     isLandscape,
+    hasCameraCutout,
   };
 }
 

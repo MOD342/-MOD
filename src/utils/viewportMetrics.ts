@@ -16,6 +16,20 @@ export interface FoldSegmentRect {
   height: number;
 }
 
+export type CutoutShape = 'circle' | 'pill' | 'notch' | 'none';
+export type CutoutPosition = 'center' | 'left' | 'right';
+
+export interface CutoutGeometry {
+  visible: boolean;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  radius: number;
+  shape: CutoutShape;
+  position: CutoutPosition;
+}
+
 export interface SafeViewportMetrics {
   safeTop: number;
   safeBottom: number;
@@ -34,7 +48,19 @@ export interface SafeViewportMetrics {
   rightPaneWidth: number;
   topPaneHeight: number;
   bottomPaneHeight: number;
+  cutoutRect: CutoutGeometry;
 }
+
+const EMPTY_CUTOUT: CutoutGeometry = {
+  visible: false,
+  left: 0,
+  top: 0,
+  width: 0,
+  height: 0,
+  radius: 0,
+  shape: 'none',
+  position: 'center',
+};
 
 let trackingInitialized = false;
 let lastBroadcastSignature = '';
@@ -128,6 +154,72 @@ function detectTouchCapability(): boolean {
   }
 }
 
+function resolveCutoutGeometry(
+  rawCutout:
+    | {
+        visible?: boolean;
+        left?: number;
+        top?: number;
+        width?: number;
+        height?: number;
+        radius?: number;
+        shape?: string;
+        position?: string;
+      }
+    | undefined,
+  safeTop: number,
+  viewportWidth: number,
+): CutoutGeometry {
+  if (rawCutout) {
+    const w = Math.max(0, Math.round(Number(rawCutout.width || 0)));
+    const h = Math.max(0, Math.round(Number(rawCutout.height || 0)));
+    if (rawCutout.visible && w > 0 && h > 0) {
+      const left = Math.max(0, Math.round(Number(rawCutout.left || 0)));
+      const top = Math.max(0, Math.round(Number(rawCutout.top || 0)));
+      const radius = Math.max(0, Math.round(Number(rawCutout.radius || Math.ceil(Math.min(w, h) / 2))));
+      const shapeRaw = String(rawCutout.shape || '').toLowerCase();
+      const shape: CutoutShape =
+        shapeRaw === 'pill' || shapeRaw === 'notch' || shapeRaw === 'circle'
+          ? (shapeRaw as CutoutShape)
+          : top <= 2 && w > 54
+          ? 'notch'
+          : w / Math.max(1, h) >= 1.45
+          ? 'pill'
+          : 'circle';
+      const posRaw = String(rawCutout.position || '').toLowerCase();
+      let position: CutoutPosition = 'center';
+      if (posRaw === 'left' || posRaw === 'right' || posRaw === 'center') {
+        position = posRaw as CutoutPosition;
+      } else if (viewportWidth > 0) {
+        const centerX = left + w / 2;
+        if (centerX < viewportWidth * 0.36) position = 'left';
+        else if (centerX > viewportWidth * 0.64) position = 'right';
+      }
+      return { visible: true, left, top, width: w, height: h, radius, shape, position };
+    }
+    if (rawCutout.visible === false) {
+      return { ...EMPTY_CUTOUT };
+    }
+  }
+
+  // Fallback estimation for native Android WebViews before native bridge injection finishes
+  if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android' && safeTop >= 22 && viewportWidth > 0) {
+    const size = 22;
+    return {
+      visible: true,
+      left: Math.round((viewportWidth - size) / 2),
+      top: Math.max(4, Math.round((safeTop - size) / 2)),
+      width: size,
+      height: size,
+      radius: 11,
+      shape: 'circle',
+      position: 'center',
+    };
+  }
+
+  return { ...EMPTY_CUTOUT };
+}
+
 export function applyViewportAndCutoutMetrics(): SafeViewportMetrics {
   if (typeof window === 'undefined' || typeof document === 'undefined') {
     return {
@@ -148,6 +240,7 @@ export function applyViewportAndCutoutMetrics(): SafeViewportMetrics {
       rightPaneWidth: 0,
       topPaneHeight: 0,
       bottomPaneHeight: 0,
+      cutoutRect: { ...EMPTY_CUTOUT },
     };
   }
 
@@ -165,6 +258,16 @@ export function applyViewportAndCutoutMetrics(): SafeViewportMetrics {
         cutoutTop?: number;
         hingeGap?: number;
         posture?: FoldPosture;
+        cutout?: {
+          visible?: boolean;
+          left?: number;
+          top?: number;
+          width?: number;
+          height?: number;
+          radius?: number;
+          shape?: CutoutShape;
+          position?: CutoutPosition;
+        };
       }
     | undefined;
 
@@ -185,7 +288,8 @@ export function applyViewportAndCutoutMetrics(): SafeViewportMetrics {
     }
   }
 
-  const hasNotch = safeTop > 0 || safeLeft > 0 || safeRight > 0;
+  const cutoutRect = resolveCutoutGeometry(androidInsets?.cutout, safeTop, viewportWidth);
+  const hasNotch = cutoutRect.visible || safeTop > 0 || safeLeft > 0 || safeRight > 0;
   const isTouchDevice = detectTouchCapability();
   const orientation: 'portrait' | 'landscape' = viewportWidth > viewportHeight ? 'landscape' : 'portrait';
   const aspectRatio = viewportHeight > 0 ? viewportWidth / viewportHeight : 1;
@@ -270,6 +374,23 @@ export function applyViewportAndCutoutMetrics(): SafeViewportMetrics {
   root.style.setProperty('--fold-top-pane', `${Math.round(topPaneHeight)}px`);
   root.style.setProperty('--fold-bottom-pane', `${Math.round(bottomPaneHeight)}px`);
 
+  const clearLeft =
+    cutoutRect.visible && cutoutRect.position === 'left'
+      ? Math.max(0, cutoutRect.left + cutoutRect.width + 10)
+      : 0;
+  const clearRight =
+    cutoutRect.visible && cutoutRect.position === 'right' && viewportWidth > 0
+      ? Math.max(0, viewportWidth - cutoutRect.left + 10)
+      : 0;
+
+  root.style.setProperty('--cutout-left', `${cutoutRect.left}px`);
+  root.style.setProperty('--cutout-top', `${cutoutRect.top}px`);
+  root.style.setProperty('--cutout-width', `${cutoutRect.width}px`);
+  root.style.setProperty('--cutout-height', `${cutoutRect.height}px`);
+  root.style.setProperty('--cutout-radius', `${cutoutRect.radius}px`);
+  root.style.setProperty('--cutout-clear-left', `${clearLeft}px`);
+  root.style.setProperty('--cutout-clear-right', `${clearRight}px`);
+
   if (viewportHeight > 0) {
     root.style.setProperty('--vv-height', `${viewportHeight}px`);
   }
@@ -281,6 +402,8 @@ export function applyViewportAndCutoutMetrics(): SafeViewportMetrics {
   root.dataset.posture = posture;
   root.dataset.orientation = orientation;
   root.dataset.pointer = isTouchDevice ? 'touch' : 'fine';
+  root.dataset.cutoutShape = cutoutRect.shape;
+  root.dataset.cutoutPos = cutoutRect.position;
 
   const metrics: SafeViewportMetrics = {
     safeTop: Math.round(safeTop),
@@ -300,9 +423,10 @@ export function applyViewportAndCutoutMetrics(): SafeViewportMetrics {
     rightPaneWidth: Math.round(rightPaneWidth),
     topPaneHeight: Math.round(topPaneHeight),
     bottomPaneHeight: Math.round(bottomPaneHeight),
+    cutoutRect,
   };
 
-  const sig = `${formFactor}|${posture}|${orientation}|${viewportWidth}x${viewportHeight}|${metrics.hingeGap}|${metrics.safeTop}`;
+  const sig = `${formFactor}|${posture}|${orientation}|${viewportWidth}x${viewportHeight}|${metrics.hingeGap}|${metrics.safeTop}|${cutoutRect.visible ? `${cutoutRect.shape}:${cutoutRect.position}:${cutoutRect.left}:${cutoutRect.top}:${cutoutRect.width}x${cutoutRect.height}` : 'no-cutout'}`;
   if (sig !== lastBroadcastSignature) {
     lastBroadcastSignature = sig;
     try {

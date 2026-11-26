@@ -249,115 +249,186 @@ export function AppLayout({
         </aside>
       )}
 
-      {/* Mobile / Cover Screen Floating Top Bar on Home */}
-      {!useSideRail && activeTab === 'home' && (
-        <div
-          style={{
-            paddingTop: 'calc(var(--safe-top, 0px) + 0.65rem)',
-            paddingLeft: 'calc(var(--safe-left, 0px) + 0.75rem)',
-            paddingRight: 'calc(var(--safe-right, 0px) + 0.75rem)',
-          }}
-          className={`fixed top-0 left-0 right-0 w-full z-50 bg-transparent flex justify-between items-center gap-2 transition-all duration-200 pointer-events-none ${
-            showNav ? 'translate-y-0 opacity-100' : '-translate-y-full opacity-0'
-          }`}
-        >
-          <div className="theme-keep-dark flex items-center gap-1.5 bg-[#09090d]/95 p-1 pl-2.5 sm:pl-3 rounded-full border border-white/15 shadow-xl pointer-events-auto min-w-0">
-            <button
-              type="button"
-              onClick={() => onNavigateTo('profile')}
-              aria-label={user ? 'الملف الشخصي' : 'حسابي وتسجيل الدخول'}
-              className="rounded-full flex items-center justify-center shrink-0 cursor-pointer active:scale-95 transition"
-            >
-              {user ? (
-                user.photoURL ? (
-                  <img
-                    src={user.photoURL}
-                    alt="Profile"
-                    referrerPolicy="no-referrer"
-                    className="w-8 h-8 rounded-full object-cover border border-purple-500/40 shrink-0"
+      {/* Hardware-Integrated Full-Width Top Bar for Phones & Cover Screens on Home */}
+      {!useSideRail && activeTab === 'home' && (() => {
+        const cutout = display.cutoutRect;
+        const hasCutout = Boolean(cutout?.visible && cutout.width > 0 && cutout.height > 0);
+        const isCenterCutout = hasCutout && cutout.position === 'center';
+        const isLeftCutout = hasCutout && cutout.position === 'left';
+        const isRightCutout = hasCutout && cutout.position === 'right';
+        // When edge-to-edge safeTop is minimal (immersive/landscape) and cutout is centered, controls flank the cutout inline
+        const inlineFlankCenterCutout =
+          isCenterCutout && display.safeTop < 12 && display.viewportWidth >= 340;
+
+        const barPaddingLeft = isLeftCutout
+          ? Math.max(display.safeLeft + 12, cutout.left + cutout.width + 10)
+          : undefined;
+        const barPaddingRight = isRightCutout && display.viewportWidth > 0
+          ? Math.max(display.safeRight + 12, display.viewportWidth - cutout.left + 10)
+          : undefined;
+
+        const cutoutBorderRadius =
+          cutout?.shape === 'notch'
+            ? '0 0 12px 12px'
+            : `${Math.max(4, cutout?.radius || Math.ceil((cutout?.height || 22) / 2))}px`;
+
+        return (
+          <header
+            aria-label="الشريط العلوي"
+            style={{
+              paddingTop: inlineFlankCenterCutout
+                ? `${Math.max(4, cutout.top)}px`
+                : 'calc(var(--safe-top, 0px) + 0.25rem)',
+              paddingBottom: '0.35rem',
+              paddingLeft: barPaddingLeft
+                ? `${barPaddingLeft}px`
+                : 'calc(var(--safe-left, 0px) + 0.75rem)',
+              paddingRight: barPaddingRight
+                ? `${barPaddingRight}px`
+                : 'calc(var(--safe-right, 0px) + 0.75rem)',
+            }}
+            className={`theme-keep-dark fixed top-0 left-0 right-0 w-full z-50 bg-[#07080e]/92 backdrop-blur-xl border-b border-white/[0.08] shadow-[0_8px_28px_rgba(0,0,0,0.48)] transition-all duration-200 ${
+              showNav ? 'translate-y-0 opacity-100' : '-translate-y-full opacity-0 pointer-events-none'
+            }`}
+          >
+            {/* Physical Camera Cutout Frame integrated inside top status strip when status inset covers cutout */}
+            {hasCutout && !inlineFlankCenterCutout && (
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute bg-[#020205] border border-white/[0.12] shadow-inner"
+                style={{
+                  left: `${cutout.left}px`,
+                  top: `${cutout.top}px`,
+                  width: `${cutout.width}px`,
+                  height: `${cutout.height}px`,
+                  borderRadius: cutoutBorderRadius,
+                }}
+              />
+            )}
+
+            <div className="w-full max-w-7xl mx-auto flex items-center justify-between gap-2 min-h-[44px]">
+              {/* RTL Start (Physical Right): Avatar + Brand Wordmark without pill wrapper */}
+              <div className="flex items-center gap-2 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => onNavigateTo('profile')}
+                  aria-label={user ? 'الملف الشخصي' : 'حسابي وتسجيل الدخول'}
+                  className="min-w-[44px] min-h-[44px] -my-1 flex items-center justify-center rounded-xl hover:bg-white/[0.06] active:scale-95 transition cursor-pointer shrink-0"
+                >
+                  {user ? (
+                    user.photoURL ? (
+                      <img
+                        src={user.photoURL}
+                        alt="Profile"
+                        referrerPolicy="no-referrer"
+                        className="w-8 h-8 rounded-full object-cover border border-purple-500/45 shrink-0"
+                      />
+                    ) : (
+                      <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-600 to-purple-600 flex items-center justify-center font-black text-xs text-white shrink-0">
+                        {user.displayName ? user.displayName.charAt(0).toUpperCase() : 'U'}
+                      </div>
+                    )
+                  ) : (
+                    <div className="w-8 h-8 rounded-full bg-[#FF1744]/20 border border-[#FF1744]/40 flex items-center justify-center text-[#FF1744] shrink-0">
+                      <UserCircle size={18} />
+                    </div>
+                  )}
+                </button>
+
+                <span className="w-px h-4 bg-white/15 shrink-0" aria-hidden="true" />
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (canToggleHomeMode) onToggleHomeMode?.();
+                  }}
+                  aria-label={
+                    canToggleHomeMode
+                      ? homeMode === 'anime'
+                        ? 'التبديل إلى رئيسية المانجا والمانهوا'
+                        : 'التبديل إلى رئيسية الأنمي'
+                      : 'أوتاكو MOD'
+                  }
+                  title={
+                    canToggleHomeMode
+                      ? homeMode === 'anime'
+                        ? 'اضغط للتبديل إلى المانجا والمانهوا'
+                        : 'اضغط للتبديل إلى الأنمي'
+                      : 'أوتاكو MOD'
+                  }
+                  className="flex items-center min-h-[44px] px-1.5 rounded-xl hover:bg-white/[0.05] active:scale-95 transition cursor-pointer min-w-0"
+                >
+                  <h1 className="text-[13px] sm:text-sm font-black tracking-tight text-white whitespace-nowrap truncate">
+                    أوتاكو{' '}
+                    <span
+                      className={
+                        homeMode === 'manga'
+                          ? 'text-transparent bg-clip-text bg-gradient-to-r from-amber-300 to-orange-500'
+                          : 'text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-500'
+                      }
+                    >
+                      MOD
+                    </span>
+                  </h1>
+                </button>
+              </div>
+
+              {/* Inline Hardware Camera Cutout Island when controls share the cutout row */}
+              {inlineFlankCenterCutout && (
+                <div
+                  aria-hidden="true"
+                  className="shrink-0 flex items-center justify-center pointer-events-none"
+                  style={{ minWidth: `${Math.max(cutout.width + 16, 42)}px` }}
+                >
+                  <div
+                    className="bg-[#020205] border border-white/[0.12] shadow-inner"
+                    style={{
+                      width: `${cutout.width}px`,
+                      height: `${cutout.height}px`,
+                      borderRadius: cutoutBorderRadius,
+                    }}
                   />
-                ) : (
-                  <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-600 to-purple-600 flex items-center justify-center font-black text-xs text-white shrink-0">
-                    {user.displayName ? user.displayName.charAt(0).toUpperCase() : 'U'}
-                  </div>
-                )
-              ) : (
-                <div className="w-8 h-8 rounded-full bg-[#FF1744]/20 border border-[#FF1744]/40 flex items-center justify-center text-[#FF1744] shrink-0">
-                  <UserCircle size={18} />
                 </div>
               )}
-            </button>
 
-            <span className="w-px h-4 bg-white/15 shrink-0" aria-hidden="true" />
-
-            <button
-              type="button"
-              onClick={() => {
-                if (canToggleHomeMode) onToggleHomeMode?.();
-              }}
-              aria-label={
-                canToggleHomeMode
-                  ? homeMode === 'anime'
-                    ? 'التبديل إلى رئيسية المانجا والمانهوا'
-                    : 'التبديل إلى رئيسية الأنمي'
-                  : 'أوتاكو MOD'
-              }
-              title={
-                canToggleHomeMode
-                  ? homeMode === 'anime'
-                    ? 'اضغط للتبديل إلى المانجا والمانهوا'
-                    : 'اضغط للتبديل إلى الأنمي'
-                  : 'أوتاكو MOD'
-              }
-              className="flex items-center min-h-[34px] px-1.5 rounded-full hover:bg-white/5 active:scale-95 transition cursor-pointer min-w-0"
-            >
-              <h1 className="text-xs sm:text-sm font-black tracking-tight text-white whitespace-nowrap truncate">
-                أوتاكو{' '}
-                <span
-                  className={
-                    homeMode === 'manga'
-                      ? 'text-transparent bg-clip-text bg-gradient-to-r from-amber-300 to-orange-500'
-                      : 'text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-500'
-                  }
-                >
-                  MOD
-                </span>
-              </h1>
-            </button>
-          </div>
-
-          <div className="flex items-center gap-1.5 sm:gap-2 pointer-events-auto shrink-0">
-            {user && (
-              <button
-                onClick={() => onNavigateTo('notifications')}
-                aria-label="الإشعارات"
-                className="w-9 h-9 rounded-full bg-[#0c1428]/95 border border-blue-500/35 flex items-center justify-center text-blue-400 hover:bg-blue-600 hover:text-white transition relative cursor-pointer"
-              >
-                <Bell size={16} />
-                {unreadNotifsCount > 0 && (
-                  <span className="absolute -top-1 -left-1 bg-red-600 text-white text-[10px] font-black min-w-[16px] h-4 px-1 rounded-full flex items-center justify-center border border-black tabular-nums">
-                    {unreadNotifsCount > 99 ? '99+' : unreadNotifsCount}
-                  </span>
+              {/* RTL End (Physical Left): Compact Utility Triggers */}
+              <div className="flex items-center gap-1 shrink-0">
+                {user && (
+                  <button
+                    type="button"
+                    onClick={() => onNavigateTo('notifications')}
+                    aria-label="الإشعارات"
+                    className="min-w-[44px] min-h-[44px] rounded-xl bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-blue-400 hover:bg-blue-500/20 hover:text-white active:scale-95 transition relative cursor-pointer"
+                  >
+                    <Bell size={17} />
+                    {unreadNotifsCount > 0 && (
+                      <span className="absolute top-1.5 left-1.5 bg-red-600 text-white text-[10px] font-black min-w-[16px] h-4 px-1 rounded-full flex items-center justify-center border border-[#07080e] tabular-nums">
+                        {unreadNotifsCount > 99 ? '99+' : unreadNotifsCount}
+                      </span>
+                    )}
+                  </button>
                 )}
-              </button>
-            )}
-            <button
-              onClick={handleRandomAnime}
-              aria-label="أنمي عشوائي"
-              className="w-9 h-9 rounded-full bg-[#24130a]/95 border border-orange-500/35 flex items-center justify-center text-orange-400 hover:bg-orange-600 hover:text-white transition cursor-pointer"
-            >
-              <Shuffle size={16} />
-            </button>
-            <button
-              onClick={() => window.dispatchEvent(new Event('open-ai-chat'))}
-              aria-label="مود (MOD)"
-              className="w-9 h-9 rounded-full bg-[#240b14]/95 border border-rose-500/35 flex items-center justify-center text-rose-400 hover:bg-rose-600 hover:text-white transition cursor-pointer"
-            >
-              <Bot size={16} />
-            </button>
-          </div>
-        </div>
-      )}
+                <button
+                  type="button"
+                  onClick={handleRandomAnime}
+                  aria-label="أنمي عشوائي"
+                  className="min-w-[44px] min-h-[44px] rounded-xl bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-orange-400 hover:bg-orange-500/20 hover:text-white active:scale-95 transition cursor-pointer"
+                >
+                  <Shuffle size={17} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => window.dispatchEvent(new Event('open-ai-chat'))}
+                  aria-label="مود (MOD)"
+                  className="min-w-[44px] min-h-[44px] rounded-xl bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-rose-400 hover:bg-rose-500/20 hover:text-white active:scale-95 transition cursor-pointer"
+                >
+                  <Bot size={17} />
+                </button>
+              </div>
+            </div>
+          </header>
+        );
+      })()}
 
       {/* Main Content Area */}
       <main
