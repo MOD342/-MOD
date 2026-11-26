@@ -633,18 +633,17 @@ export default function HomeView({
       )}
 
       {/* 2. Quick Navigation / Categories */}
-      <section className="px-4 md:px-8 space-y-3">
-        <div className="flex gap-2.5 overflow-x-auto hide-scrollbar pb-1 pt-1 max-w-7xl mx-auto snap-x snap-proximity">
+      <section className="px-3.5 sm:px-4 md:px-8 space-y-3">
+        <div className="flex gap-2 overflow-x-auto hide-scrollbar pb-1 pt-1 max-w-7xl mx-auto snap-x snap-proximity">
           {categories.map((cat, idx) => (
-            <motion.button
+            <button
               key={idx}
+              type="button"
               onClick={() => onSearchCategory?.(cat)}
-              whileHover={{ scale: 1.05, y: -2 }}
-              whileTap={{ scale: 0.95 }}
-              className="snap-start flex-shrink-0 px-4 py-2 bg-neutral-900/60 border border-neutral-800 hover:border-purple-500 hover:bg-neutral-800 hover:text-white rounded-full text-xs font-bold text-neutral-300 transition whitespace-nowrap cursor-pointer gpu-accelerated"
+              className="snap-start flex-shrink-0 min-h-[38px] px-4 py-1.5 bg-neutral-900/75 border border-neutral-800 hover:border-purple-500 hover:bg-neutral-800 hover:text-white rounded-full text-xs font-bold text-neutral-300 transition-transform duration-150 hover:-translate-y-0.5 active:scale-95 whitespace-nowrap cursor-pointer"
             >
               {cat}
-            </motion.button>
+            </button>
           ))}
         </div>
       </section>
@@ -682,19 +681,18 @@ export default function HomeView({
                   Math.max(22, Number(item.progress) || ((Number(item.lastEpisode || 1) * 19) % 75) + 20)
                 );
                 return (
-                  <motion.div
+                  <div
                     key={`history-${item.id}-${idx}`}
                     onClick={() => onAnimeClick?.(item.id, item.lastEpisode)}
                     onMouseEnter={() => prefetchDetails(item.id)}
-                    whileHover={{ y: -6, scale: 1.02, borderColor: '#3b82f6' }}
-                    whileTap={{ scale: 0.98 }}
-                    className={`snap-start theme-keep-dark cursor-pointer ${display.isCoverScreen ? 'w-[170px]' : 'w-[205px] sm:w-[235px] md:w-[265px] lg:w-[295px]'} flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 transition-all duration-300 aspect-[16/9] bg-neutral-900 gpu-accelerated shadow-lg`}
+                    className={`snap-start theme-keep-dark cursor-pointer ${display.isCoverScreen ? 'w-[172px]' : 'w-[205px] sm:w-[232px] md:w-[258px] lg:w-[280px] xl:w-[295px]'} flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 hover:border-blue-500 transition-transform duration-200 hover:-translate-y-1 active:scale-[0.98] aspect-[16/9] bg-neutral-900 shadow-lg`}
                   >
                     <img
                       src={item.posterUrl || FALLBACK_POSTER_DATA_URL}
                       referrerPolicy="no-referrer"
                       loading="lazy"
-                      className="w-full h-full object-cover group-hover:scale-105 transition-all duration-500"
+                      decoding="async"
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                       alt="poster"
                     />
                     {/* Quick Remove Button */}
@@ -704,7 +702,7 @@ export default function HomeView({
                       onPointerDown={(e) => e.stopPropagation()}
                       title="إزالة من متابعة المشاهدة"
                       aria-label="إزالة من متابعة المشاهدة"
-                      className="absolute top-2 left-2 z-20 w-7 h-7 rounded-full bg-black/75 hover:bg-red-600 text-neutral-200 hover:text-white border border-white/20 flex items-center justify-center opacity-90 sm:opacity-0 sm:group-hover:opacity-100 transition-all cursor-pointer"
+                      className="absolute top-2 left-2 z-20 w-7 h-7 rounded-full bg-black/80 hover:bg-red-600 text-neutral-200 hover:text-white border border-white/20 flex items-center justify-center opacity-90 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity cursor-pointer"
                     >
                       <X size={13} strokeWidth={2.5} />
                     </button>
@@ -722,7 +720,7 @@ export default function HomeView({
                             الحلقة {item.lastEpisode || 1}
                           </span>
                         </div>
-                        <span className="text-[10px] text-neutral-200 font-mono flex items-center gap-1">
+                        <span className="text-[10px] text-neutral-200 font-mono flex items-center gap-1 tabular-nums">
                           <Clock size={10} />
                           {progressPct}%
                         </span>
@@ -733,12 +731,12 @@ export default function HomeView({
                       {/* Visual Episode Progress Bar */}
                       <div className="w-full h-1 bg-white/20 rounded-full overflow-hidden">
                         <div
-                          className="h-full bg-gradient-to-r from-blue-500 to-cyan-400 rounded-full transition-all duration-500"
+                          className="h-full bg-gradient-to-r from-blue-500 to-cyan-400 rounded-full"
                           style={{ width: `${progressPct}%` }}
                         />
                       </div>
                     </div>
-                  </motion.div>
+                  </div>
                 );
               })}
             </div>
@@ -803,13 +801,11 @@ export default function HomeView({
               ep.episodeNumber || (ep.title && ep.title.match(/الحلقة\s*(\d+)/)?.[1]) || '1';
 
             return (
-              <motion.div
+              <div
                 key={`recent-${ep._id}-${idx}`}
                 onClick={() => onAnimeClick?.(String(animeTargetId))}
                 onMouseEnter={() => prefetchDetails(animeTargetId)}
-                whileHover={{ y: -4, scale: 1.02 }}
-                whileTap={{ scale: 0.98 }}
-                className={`snap-start theme-keep-dark cursor-pointer ${display.isCoverScreen ? 'w-[126px]' : 'w-[154px] sm:w-[178px] md:w-[205px] lg:w-[228px]'} flex-shrink-0 relative aspect-[3/4] rounded-2xl overflow-hidden border border-neutral-800/80 hover:border-red-500/60 transition-all duration-300 bg-neutral-900 shadow-md hover:shadow-red-950/20 group`}
+                className={`snap-start theme-keep-dark cursor-pointer ${display.isCoverScreen ? 'w-[126px]' : 'w-[152px] sm:w-[176px] md:w-[196px] lg:w-[214px] xl:w-[228px]'} flex-shrink-0 relative aspect-[3/4] rounded-2xl overflow-hidden border border-neutral-800/80 hover:border-red-500/70 transition-transform duration-200 hover:-translate-y-1 active:scale-[0.98] bg-neutral-900 shadow-md group`}
               >
                 <img
                   src={epPoster}
@@ -821,12 +817,13 @@ export default function HomeView({
                   }}
                   referrerPolicy="no-referrer"
                   loading="lazy"
-                  className="w-full h-full object-cover group-hover:scale-105 transition-all duration-500"
+                  decoding="async"
+                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                   alt={cleanTitle}
                 />
 
                 <div className="absolute top-2 right-2 z-10 pointer-events-none">
-                  <span className="bg-red-600/95 backdrop-blur-md text-white border border-red-500/30 px-2 py-0.5 rounded-lg text-[10px] md:text-xs font-black shadow-lg">
+                  <span className="bg-red-600 text-white border border-red-400/40 px-2 py-0.5 rounded-lg text-[10px] md:text-xs font-black shadow-lg tabular-nums">
                     حلقة {epNumber}
                   </span>
                 </div>
@@ -842,7 +839,7 @@ export default function HomeView({
                     <LongPressCopy text={cleanTitle}>{cleanTitle}</LongPressCopy>
                   </h5>
                 </div>
-              </motion.div>
+              </div>
             );
           })}
         </div>
@@ -865,33 +862,32 @@ export default function HomeView({
             const rank = idx + 1;
             const isTop3 = rank <= 3;
             return (
-              <motion.div
+              <div
                 key={`trending-today-${anime._id}-${idx}`}
                 onClick={() => onAnimeClick?.(anime._id)}
                 onMouseEnter={() => prefetchDetails(anime._id)}
-                whileHover={{ y: -6, scale: 1.02, borderColor: '#f97316' }}
-                whileTap={{ scale: 0.98 }}
-                className={`snap-start theme-keep-dark cursor-pointer ${display.isCoverScreen ? 'w-[132px]' : 'w-[158px] sm:w-[182px] md:w-[210px] lg:w-[235px]'} flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 transition-all duration-300 aspect-[3/4] bg-neutral-900 gpu-accelerated shadow-lg`}
+                className={`snap-start theme-keep-dark cursor-pointer ${display.isCoverScreen ? 'w-[130px]' : 'w-[156px] sm:w-[180px] md:w-[202px] lg:w-[220px] xl:w-[235px]'} flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 hover:border-orange-500 transition-transform duration-200 hover:-translate-y-1 active:scale-[0.98] aspect-[3/4] bg-neutral-900 shadow-lg`}
               >
                 <img
                   src={anime.posterUrl || FALLBACK_POSTER_DATA_URL}
                   referrerPolicy="no-referrer"
                   loading="lazy"
-                  className="w-full h-full object-cover group-hover:scale-105 transition-all duration-500"
+                  decoding="async"
+                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                   alt={anime.title}
                 />
 
                 {/* Top Rank Badge */}
                 <div className="absolute top-2 right-2 z-10 pointer-events-none">
                   <span
-                    className={`px-2.5 py-0.5 rounded-lg text-[11px] font-black shadow-lg border ${
+                    className={`px-2.5 py-0.5 rounded-lg text-[11px] font-black shadow-lg border tabular-nums ${
                       rank === 1
                         ? 'bg-gradient-to-r from-orange-500 to-amber-400 text-black border-yellow-200'
                         : rank === 2
                         ? 'bg-gradient-to-r from-slate-200 to-slate-400 text-black border-white'
                         : rank === 3
                         ? 'bg-gradient-to-r from-amber-600 to-orange-700 text-white border-amber-400/50'
-                        : 'bg-black/75 backdrop-blur-md text-orange-400 border-orange-500/30'
+                        : 'bg-black/85 text-orange-400 border-orange-500/35'
                     }`}
                   >
                     #{rank}
@@ -901,7 +897,7 @@ export default function HomeView({
                 {/* Rating Pill on Top Left */}
                 {anime.rating && (
                   <div className="absolute top-2 left-2 z-10 pointer-events-none">
-                    <span className="bg-black/70 backdrop-blur-md text-white px-2 py-0.5 rounded-lg text-[10px] font-bold flex items-center gap-1 border border-white/10">
+                    <span className="bg-black/85 text-white px-2 py-0.5 rounded-lg text-[10px] font-bold flex items-center gap-1 border border-white/15 tabular-nums">
                       <Star size={10} className="text-yellow-400" fill="currentColor" />
                       {anime.rating}
                     </span>
@@ -910,7 +906,7 @@ export default function HomeView({
 
                 {/* Giant Decorative Rank Watermark */}
                 <span
-                  className={`absolute bottom-8 left-2 font-black text-5xl md:text-6xl leading-none select-none pointer-events-none transition-transform duration-300 group-hover:scale-110 ${
+                  className={`absolute bottom-8 left-2 font-black text-5xl md:text-6xl leading-none select-none pointer-events-none transition-transform duration-200 group-hover:scale-105 ${
                     isTop3 ? 'text-orange-400/25' : 'text-white/15'
                   }`}
                   style={{ WebkitTextStroke: '1.5px rgba(255,255,255,0.28)' }}
@@ -926,7 +922,7 @@ export default function HomeView({
                     <LongPressCopy text={anime.title}>{anime.title}</LongPressCopy>
                   </h5>
                 </div>
-              </motion.div>
+              </div>
             );
           })}
         </div>
@@ -945,29 +941,28 @@ export default function HomeView({
             onClick={onNavigateToSeason}
             title="عرض الكل"
             aria-label="عرض كل انميات الموسم الحالي"
-            className="p-1.5 rounded-full bg-transparent border-0 hover:bg-white/5 text-neutral-300 hover:text-white flex items-center justify-center transition active:scale-90 group cursor-pointer"
+            className="min-w-[36px] min-h-[36px] p-1.5 rounded-full bg-transparent border-0 hover:bg-white/5 text-neutral-300 hover:text-white flex items-center justify-center transition active:scale-90 group cursor-pointer"
           >
             <ChevronLeft size={23} strokeWidth={2.4} className="transition-transform group-hover:-translate-x-0.5" />
           </button>
         </div>
         <div className="flex gap-3 overflow-x-auto pb-1.5 hide-scrollbar max-w-7xl mx-auto snap-x snap-mandatory">
           {displayCurrentSeason.map((anime: any, idx: number) => (
-            <motion.div
+            <div
               key={`current-${anime._id}-${idx}`}
               onClick={() => onAnimeClick?.(anime._id)}
               onMouseEnter={() => prefetchDetails(anime._id)}
-              whileHover={{ y: -6, scale: 1.02, borderColor: '#a855f7' }}
-              whileTap={{ scale: 0.98 }}
-              className={`snap-start theme-keep-dark cursor-pointer ${display.isCoverScreen ? 'w-[126px]' : 'w-[154px] sm:w-[178px] md:w-[208px] lg:w-[235px]'} flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 transition-all duration-300 aspect-[3/4] bg-neutral-900 gpu-accelerated`}
+              className={`snap-start theme-keep-dark cursor-pointer ${display.isCoverScreen ? 'w-[126px]' : 'w-[152px] sm:w-[176px] md:w-[198px] lg:w-[216px] xl:w-[235px]'} flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 hover:border-purple-500 transition-transform duration-200 hover:-translate-y-1 active:scale-[0.98] aspect-[3/4] bg-neutral-900`}
             >
               <img
                 src={anime.posterUrl || FALLBACK_POSTER_DATA_URL}
                 referrerPolicy="no-referrer"
                 loading="lazy"
-                className="w-full h-full object-cover group-hover:scale-[1.03] transition-all duration-500"
+                decoding="async"
+                className="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-300"
                 alt="poster"
               />
-              <span className="absolute top-2 right-2 bg-black/65 backdrop-blur-md text-white px-2 py-1 rounded text-[10px] font-bold shadow-lg flex items-center gap-1 pointer-events-none">
+              <span className="absolute top-2 right-2 bg-black/80 text-white px-2 py-0.5 rounded text-[10px] font-bold shadow-lg flex items-center gap-1 pointer-events-none tabular-nums">
                 <Star size={10} className="text-yellow-400" fill="currentColor" /> {anime.rating || 'N/A'}
               </span>
               <span className="absolute top-2 left-2 bg-purple-600 text-white px-2 py-0.5 rounded text-[10px] font-bold shadow-lg flex items-center gap-1 pointer-events-none">
@@ -981,7 +976,7 @@ export default function HomeView({
                   <LongPressCopy text={anime.title}>{anime.title}</LongPressCopy>
                 </h5>
               </div>
-            </motion.div>
+            </div>
           ))}
         </div>
       </section>
@@ -1000,7 +995,7 @@ export default function HomeView({
               onClick={onNavigateToTopAnime}
               title="عرض الكل"
               aria-label="عرض كل أفضل الأنميات"
-              className="p-1.5 rounded-full bg-transparent border-0 hover:bg-white/5 text-neutral-300 hover:text-white flex items-center justify-center transition active:scale-90 group cursor-pointer"
+              className="min-w-[36px] min-h-[36px] p-1.5 rounded-full bg-transparent border-0 hover:bg-white/5 text-neutral-300 hover:text-white flex items-center justify-center transition active:scale-90 group cursor-pointer"
             >
               <ChevronLeft size={23} strokeWidth={2.4} className="transition-transform group-hover:-translate-x-0.5" />
             </button>
@@ -1009,26 +1004,25 @@ export default function HomeView({
             {displayTopAnime.map((anime: any, idx: number) => {
               const targetId = String(anime._id || anime.slug || anime.id || `search-${anime.title}`);
               return (
-                <motion.div
+                <div
                   key={`top-anime-${targetId}-${idx}`}
                   onClick={() => onAnimeClick?.(targetId)}
                   onMouseEnter={() => prefetchDetails(targetId)}
-                  whileHover={{ y: -6, scale: 1.02, borderColor: '#f59e0b' }}
-                  whileTap={{ scale: 0.98 }}
-                  className={`snap-start theme-keep-dark cursor-pointer ${display.isCoverScreen ? 'w-[126px]' : 'w-[154px] sm:w-[178px] md:w-[208px] lg:w-[235px]'} flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 transition-all duration-300 aspect-[3/4] bg-neutral-900 gpu-accelerated`}
+                  className={`snap-start theme-keep-dark cursor-pointer ${display.isCoverScreen ? 'w-[126px]' : 'w-[152px] sm:w-[176px] md:w-[198px] lg:w-[216px] xl:w-[235px]'} flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 hover:border-amber-500 transition-transform duration-200 hover:-translate-y-1 active:scale-[0.98] aspect-[3/4] bg-neutral-900`}
                 >
                   <img
                     src={anime.posterUrl || FALLBACK_POSTER_DATA_URL}
                     referrerPolicy="no-referrer"
                     loading="lazy"
-                    className="w-full h-full object-cover group-hover:scale-[1.03] transition-all duration-500"
+                    decoding="async"
+                    className="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-300"
                     alt={anime.title}
                   />
-                  <span className="absolute top-2 right-2 bg-amber-500 text-black px-2 py-0.5 rounded text-[10px] font-black shadow-lg pointer-events-none">
+                  <span className="absolute top-2 right-2 bg-amber-500 text-black px-2 py-0.5 rounded text-[10px] font-black shadow-lg pointer-events-none tabular-nums">
                     #{idx + 1}
                   </span>
                   {anime.episodesCount && (
-                    <span className="absolute top-2 left-2 bg-black/70 backdrop-blur-md text-white px-2 py-0.5 rounded text-[10px] font-bold border border-white/10 pointer-events-none">
+                    <span className="absolute top-2 left-2 bg-black/80 text-white px-2 py-0.5 rounded text-[10px] font-bold border border-white/15 pointer-events-none tabular-nums">
                       {anime.episodesCount} حلقة
                     </span>
                   )}
@@ -1040,7 +1034,7 @@ export default function HomeView({
                       <LongPressCopy text={anime.title}>{anime.title}</LongPressCopy>
                     </h5>
                   </div>
-                </motion.div>
+                </div>
               );
             })}
           </div>
@@ -1060,7 +1054,7 @@ export default function HomeView({
               onClick={onNavigateToMovies}
               title="عرض الكل"
               aria-label="عرض كل أفلام الأنمي"
-              className="p-1.5 rounded-full bg-transparent border-0 hover:bg-white/5 text-neutral-300 hover:text-white flex items-center justify-center transition active:scale-90 group cursor-pointer"
+              className="min-w-[36px] min-h-[36px] p-1.5 rounded-full bg-transparent border-0 hover:bg-white/5 text-neutral-300 hover:text-white flex items-center justify-center transition active:scale-90 group cursor-pointer"
             >
               <ChevronLeft size={23} strokeWidth={2.4} className="transition-transform group-hover:-translate-x-0.5" />
             </button>
@@ -1069,19 +1063,18 @@ export default function HomeView({
             {displayMovies.map((anime: any, idx: number) => {
               const targetId = String(anime._id || anime.slug || anime.id || `search-${anime.title}`);
               return (
-                <motion.div
+                <div
                   key={`movie-anime-${targetId}-${idx}`}
                   onClick={() => onAnimeClick?.(targetId)}
                   onMouseEnter={() => prefetchDetails(targetId)}
-                  whileHover={{ y: -6, scale: 1.02, borderColor: '#f43f5e' }}
-                  whileTap={{ scale: 0.98 }}
-                  className={`snap-start theme-keep-dark cursor-pointer ${display.isCoverScreen ? 'w-[126px]' : 'w-[154px] sm:w-[178px] md:w-[208px] lg:w-[235px]'} flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 transition-all duration-300 aspect-[3/4] bg-neutral-900 gpu-accelerated`}
+                  className={`snap-start theme-keep-dark cursor-pointer ${display.isCoverScreen ? 'w-[126px]' : 'w-[152px] sm:w-[176px] md:w-[198px] lg:w-[216px] xl:w-[235px]'} flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 hover:border-rose-500 transition-transform duration-200 hover:-translate-y-1 active:scale-[0.98] aspect-[3/4] bg-neutral-900`}
                 >
                   <img
                     src={anime.posterUrl || FALLBACK_POSTER_DATA_URL}
                     referrerPolicy="no-referrer"
                     loading="lazy"
-                    className="w-full h-full object-cover group-hover:scale-[1.03] transition-all duration-500"
+                    decoding="async"
+                    className="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-300"
                     alt={anime.title}
                   />
                   <span className="absolute top-2 left-2 bg-rose-600 text-white px-2 py-0.5 rounded text-[10px] font-black shadow-lg pointer-events-none">
@@ -1095,14 +1088,14 @@ export default function HomeView({
                       <LongPressCopy text={anime.title}>{anime.title}</LongPressCopy>
                     </h5>
                   </div>
-                </motion.div>
+                </div>
               );
             })}
           </div>
         </section>
       )}
 
-      {/* 8. Interactive Broadcast Schedule with Instant Day Switcher */}
+      {/* 8. Interactive Broadcast Schedule */}
       {animeSec.schedule && (
       <section className="px-4 md:px-8">
         <div className="max-w-7xl mx-auto space-y-3">
@@ -1140,23 +1133,22 @@ export default function HomeView({
               {displaySchedule.map((anime: any, idx: number) => {
                 const targetId = String(anime._id || anime.slug || anime.mal_id || `search-${anime.title}`);
                 return (
-                  <motion.div
+                  <div
                     key={`schedule-${selectedScheduleDay}-${targetId}-${idx}`}
                     onClick={() => onAnimeClick?.(targetId)}
                     onMouseEnter={() => prefetchDetails(targetId)}
-                    whileHover={{ y: -6, scale: 1.02, borderColor: '#3b82f6' }}
-                    whileTap={{ scale: 0.98 }}
-                    className={`snap-start theme-keep-dark cursor-pointer ${display.isCoverScreen ? 'w-[126px]' : 'w-[154px] sm:w-[178px] md:w-[208px] lg:w-[235px]'} flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 transition-all duration-300 aspect-[3/4] bg-neutral-900 gpu-accelerated`}
+                    className={`snap-start theme-keep-dark cursor-pointer ${display.isCoverScreen ? 'w-[126px]' : 'w-[152px] sm:w-[176px] md:w-[198px] lg:w-[216px] xl:w-[235px]'} flex-shrink-0 relative rounded-2xl overflow-hidden group border border-neutral-800 hover:border-blue-500 transition-transform duration-200 hover:-translate-y-1 active:scale-[0.98] aspect-[3/4] bg-neutral-900`}
                   >
                     <img
                       src={anime.posterUrl || FALLBACK_POSTER_DATA_URL}
                       referrerPolicy="no-referrer"
                       loading="lazy"
-                      className="w-full h-full object-cover group-hover:scale-105 transition-all duration-500"
+                      decoding="async"
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                       alt={anime.title}
                     />
                     {anime.broadcast?.time && (
-                      <span className="absolute top-2 left-2 bg-blue-600/90 backdrop-blur-md text-white px-2 py-0.5 rounded text-[10px] font-black shadow flex items-center gap-1 pointer-events-none">
+                      <span className="absolute top-2 left-2 bg-blue-600/95 text-white px-2 py-0.5 rounded text-[10px] font-black shadow flex items-center gap-1 pointer-events-none tabular-nums">
                         <Clock size={9} />
                         <span>{anime.broadcast.time}</span>
                       </span>
@@ -1169,7 +1161,7 @@ export default function HomeView({
                         <LongPressCopy text={anime.title}>{anime.title}</LongPressCopy>
                       </h5>
                     </div>
-                  </motion.div>
+                  </div>
                 );
               })}
             </div>

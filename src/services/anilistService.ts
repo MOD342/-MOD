@@ -170,7 +170,12 @@ export function mapAniListToJikan(media: any): any {
     score,
     status: statusMap[media.status] || "Currently Airing",
     airing: media.status === "RELEASING",
-    episodes: media.episodes || (media.nextAiringEpisode?.episode ? Math.max(12, media.nextAiringEpisode.episode) : 12),
+    episodes:
+      media.status === "RELEASING"
+        ? (media.nextAiringEpisode?.episode ? Math.max(1, media.nextAiringEpisode.episode - 1) : 1)
+        : media.status === "NOT_YET_RELEASED"
+        ? 0
+        : media.episodes || 12,
     latestEpisode:
       media.status === "NOT_YET_RELEASED"
         ? 0

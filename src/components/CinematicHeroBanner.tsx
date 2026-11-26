@@ -524,7 +524,7 @@ export default function CinematicHeroBanner({
           type="button"
           onClick={goPrev}
           aria-label="الشريحة السابقة"
-          className={`hidden md:flex absolute ${insetClass.split(' ')[0]} top-1/2 -translate-y-1/2 z-30 w-10 h-10 rounded-full bg-black/55 hover:bg-black/85 border border-white/15 text-white items-center justify-center backdrop-blur-md opacity-0 group-hover/banner:opacity-100 focus-visible:opacity-100 transition-opacity duration-200 cursor-pointer`}
+          className={`hidden md:flex absolute ${insetClass.split(' ')[0]} top-1/2 -translate-y-1/2 z-30 w-10 h-10 rounded-full bg-black/75 hover:bg-black/95 border border-white/15 text-white items-center justify-center opacity-0 group-hover/banner:opacity-100 focus-visible:opacity-100 transition-opacity duration-200 cursor-pointer`}
         >
           <ChevronRight size={20} />
         </button>
@@ -532,7 +532,7 @@ export default function CinematicHeroBanner({
           type="button"
           onClick={goNext}
           aria-label="الشريحة التالية"
-          className={`hidden md:flex absolute ${insetClass.split(' ')[1]} top-1/2 -translate-y-1/2 z-30 w-10 h-10 rounded-full bg-black/55 hover:bg-black/85 border border-white/15 text-white items-center justify-center backdrop-blur-md opacity-0 group-hover/banner:opacity-100 focus-visible:opacity-100 transition-opacity duration-200 cursor-pointer`}
+          className={`hidden md:flex absolute ${insetClass.split(' ')[1]} top-1/2 -translate-y-1/2 z-30 w-10 h-10 rounded-full bg-black/75 hover:bg-black/95 border border-white/15 text-white items-center justify-center opacity-0 group-hover/banner:opacity-100 focus-visible:opacity-100 transition-opacity duration-200 cursor-pointer`}
         >
           <ChevronLeft size={20} />
         </button>
@@ -788,8 +788,9 @@ export default function CinematicHeroBanner({
             <img
               src={activeBackdrop}
               alt=""
+              decoding="async"
               referrerPolicy="no-referrer"
-              className="w-full h-full object-cover scale-125 blur-3xl saturate-150 opacity-30 transition-all duration-700"
+              className="w-full h-full object-cover scale-110 blur-xl saturate-125 opacity-25 transition-opacity duration-500"
             />
           </div>
         )}
@@ -846,7 +847,7 @@ export default function CinematicHeroBanner({
                     />
 
                     <div
-                      className="absolute inset-x-0 bottom-0 bg-black/65 backdrop-blur-md border-t border-white/15 px-3.5 py-2.5 space-y-1"
+                      className="absolute inset-x-0 bottom-0 bg-black/80 border-t border-white/15 px-3.5 py-2.5 space-y-1"
                       style={{ textShadow: '0 1px 4px rgba(0,0,0,0.9)' }}
                     >
                       <div className="flex items-center justify-between gap-2 text-[11px] font-bold tabular-nums">

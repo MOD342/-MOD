@@ -755,8 +755,11 @@ async function fetchLiveAndSyncBundle<T>(
 // ============================================================================
 // Domain 2: Unified Anime Details + Episodes Segmentation (`catalog_anime`)
 // ============================================================================
+const ANIME_CATALOG_SCHEMA_VERSION = 3;
+
 function compactAnimeForCloud(anime: any): Record<string, any> {
   const sanitized = sanitizeFirestoreData(anime) || {};
+  sanitized.catalogSchemaVersion = ANIME_CATALOG_SCHEMA_VERSION;
   // Keep top fields lean; episodes are stored compactly (or segmented)
   if (Array.isArray(sanitized.episodes)) {
     sanitized.episodes = sanitized.episodes.map((ep: any, idx: number) => ({
@@ -782,14 +785,17 @@ export async function getAnimeDetailsWithCloud(
   if (!id || id === 'random' || id === 'unknown') return null;
 
   const docId = toCanonicalKey('anime', id);
-  const localKey = `anime_v2:${docId}`;
+  const localKey = `anime_v3:${docId}`;
   const force = options?.forceRefresh === true;
 
   if (!force) {
     const ramHit = ramGet<any>(localKey);
     if (ramHit?.data) {
+      const hasV3 =
+        Number(ramHit.data.relatedGraphVersion || 0) >= 2 &&
+        Number(ramHit.data.catalogSchemaVersion || 0) >= ANIME_CATALOG_SCHEMA_VERSION;
       options?.onData?.(ramHit.data, 'ram');
-      if (Date.now() < ramHit.freshUntil && Number(ramHit.data.relatedGraphVersion || 0) >= 2) {
+      if (Date.now() < ramHit.freshUntil && hasV3) {
         return ramHit.data;
       }
       void syncAnimeBackground(id, docId, localKey, options?.onData);
@@ -798,8 +804,11 @@ export async function getAnimeDetailsWithCloud(
 
     const idbHit = await idbGet<any>(localKey);
     if (idbHit?.data) {
+      const hasV3 =
+        Number(idbHit.data.relatedGraphVersion || 0) >= 2 &&
+        Number(idbHit.data.catalogSchemaVersion || 0) >= ANIME_CATALOG_SCHEMA_VERSION;
       options?.onData?.(idbHit.data, 'idb');
-      if (Date.now() < idbHit.freshUntil && Number(idbHit.data.relatedGraphVersion || 0) >= 2) {
+      if (Date.now() < idbHit.freshUntil && hasV3) {
         return idbHit.data;
       }
       void syncAnimeBackground(id, docId, localKey, options?.onData);
@@ -825,8 +834,10 @@ export async function getAnimeDetailsWithCloud(
           const now = Date.now();
           const freshUntil = Number(cloudDoc.freshUntil) || now + 3 * 3600 * 1000;
           const staleUntil = Number(cloudDoc.staleUntil) || now + 7 * 24 * 3600 * 1000;
-          const hasV2Graph = Number(assembled.relatedGraphVersion || 0) >= 2;
-          if (hasV2Graph) {
+          const hasV3 =
+            Number(assembled.relatedGraphVersion || 0) >= 2 &&
+            Number(assembled.catalogSchemaVersion || 0) >= ANIME_CATALOG_SCHEMA_VERSION;
+          if (hasV3) {
             await idbSet({
               key: localKey,
               data: assembled,
@@ -837,11 +848,16 @@ export async function getAnimeDetailsWithCloud(
             });
           }
           options?.onData?.(assembled, 'cloud');
-          if (hasV2Graph && now < freshUntil && Number(cloudDoc.failReports || 0) === 0) {
+          if (hasV3 && now < freshUntil && Number(cloudDoc.failReports || 0) === 0) {
             return assembled;
           }
-          // Stale cloud entry or pre-v2 relations graph -> refresh silently in background
-          void fetchLiveAnimeAndSync(id, docId, localKey, cloudDoc, force, options?.onData);
+          // Stale cloud entry or pre-v3 episode schema -> refresh live immediately/in background
+          if (!hasV3) {
+            const liveFresh = await fetchLiveAnimeAndSync(id, docId, localKey, cloudDoc, true, options?.onData);
+            if (liveFresh) return liveFresh;
+          } else {
+            void fetchLiveAnimeAndSync(id, docId, localKey, cloudDoc, force, options?.onData);
+          }
           return assembled;
         }
       }
@@ -897,7 +913,11 @@ async function syncAnimeBackground(
       Number(cloudDoc.failReports || 0) === 0
     ) {
       const assembled = await reassembleAnimeFromCloudDoc(docId, cloudDoc);
-      if (assembled && Number(assembled.relatedGraphVersion || 0) >= 2) {
+      if (
+        assembled &&
+        Number(assembled.relatedGraphVersion || 0) >= 2 &&
+        Number(assembled.catalogSchemaVersion || 0) >= ANIME_CATALOG_SCHEMA_VERSION
+      ) {
         await idbSet({
           key: localKey,
           data: assembled,
@@ -960,7 +980,7 @@ async function fetchLiveAnimeAndSync(
 
     // Also store under resolved _id / malId alias locally if different
     if (data._id && String(data._id) !== String(rawId)) {
-      const aliasKey = `anime_v2:${toCanonicalKey('anime', String(data._id))}`;
+      const aliasKey = `anime_v3:${toCanonicalKey('anime', String(data._id))}`;
       void idbSet({
         key: aliasKey,
         data,
@@ -996,15 +1016,23 @@ async function syncCompactAnimeToCloud(
   const episodesCount = allEpisodes.length;
   const hash = computeContentHash(compacted);
   const now = Date.now();
+  const existingVersion = Number(existingCloudDoc?.data?.catalogSchemaVersion || 0);
 
   const canOverwrite =
     !existingCloudDoc ||
+    existingVersion < ANIME_CATALOG_SCHEMA_VERSION ||
     Number(existingCloudDoc.failReports || 0) >= 1 ||
     now >= Number(existingCloudDoc.freshUntil || 0) ||
+    (isOngoing && episodesCount !== Number(existingCloudDoc.episodesCount || 0)) ||
     episodesCount >= Number(existingCloudDoc.episodesCount || 0);
 
   if (!canOverwrite) return;
-  if (existingCloudDoc && existingCloudDoc.contentHash === hash && Number(existingCloudDoc.failReports || 0) === 0) {
+  if (
+    existingCloudDoc &&
+    existingVersion >= ANIME_CATALOG_SCHEMA_VERSION &&
+    existingCloudDoc.contentHash === hash &&
+    Number(existingCloudDoc.failReports || 0) === 0
+  ) {
     return;
   }
 
@@ -1058,7 +1086,7 @@ async function syncCompactAnimeToCloud(
 export async function updateCachedAnimeSynopsis(rawId: string, translatedDesc: string): Promise<void> {
   if (!rawId || !translatedDesc || !/[\u0600-\u06FF]/.test(translatedDesc)) return;
   const docId = toCanonicalKey('anime', rawId);
-  const localKey = `anime_v2:${docId}`;
+  const localKey = `anime_v3:${docId}`;
   const existingLocal = ramGet<any>(localKey) || (await idbGet<any>(localKey));
   if (existingLocal?.data) {
     const updated = { ...existingLocal.data, description: translatedDesc };
@@ -1622,6 +1650,7 @@ export interface ServerLookupParams {
   url: string;
   animeId?: string | number;
   animeTitle?: string;
+  englishTitle?: string;
   seasonNumber?: number;
   episodeNum?: string | number;
 }
@@ -1791,6 +1820,22 @@ export async function cacheResolvedEpisodeServers(
   }
 }
 
+export async function invalidateEpisodeServersCache(
+  params: ServerLookupParams,
+): Promise<void> {
+  const rawEpKey = `${params.animeId || 'unknown'}_s${params.seasonNumber || 1}_ep${params.episodeNum || params.url || '1'}`;
+  const epKey = toCanonicalKey('ep', rawEpKey);
+  const localKey = `servers_v2:${epKey}`;
+  ramCatalog.delete(localKey);
+  const database = await openCatalogDb();
+  if (database) {
+    try {
+      const tx = database.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).delete(localKey);
+    } catch {}
+  }
+}
+
 export async function recordServerOutcome(
   params: ServerLookupParams,
   serverUrl: string,
@@ -1957,6 +2002,7 @@ export const cloudCatalogService = {
   getEpisodeServersWithCloud,
   tryReadEpisodeServersCacheOrCloud,
   cacheResolvedEpisodeServers,
+  invalidateEpisodeServersCache,
   setPreferredServerHost,
   getPreferredServerHost,
   recordServerOutcome,

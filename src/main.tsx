@@ -155,7 +155,7 @@ async function smartFetch(input: RequestInfo | URL, init?: RequestInit): Promise
     const isLongCatalogEndpoint =
       isMangaEndpoint || rawPathname.startsWith('/api/anime/details/');
     const timeoutMs = isNonFallbackResolveEndpoint
-      ? 36000
+      ? 46000
       : isMangaEndpoint
       ? 34000
       : isAiChatEndpoint
@@ -163,7 +163,7 @@ async function smartFetch(input: RequestInfo | URL, init?: RequestInit): Promise
       : isLongCatalogEndpoint
       ? 28000
       : isServersEndpoint
-      ? 18000
+      ? 26000
       : 11000;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);

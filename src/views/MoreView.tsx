@@ -332,7 +332,7 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
                 <span>{cat.title}</span>
               </h4>
 
-              <div className="grid grid-cols-3 gap-1.5 sm:gap-2">
+              <div className={`grid ${display.isCoverScreen ? 'grid-cols-2' : 'grid-cols-3'} gap-1.5 sm:gap-2`}>
                 {visibleItems.map((item) => (
                   <button
                     key={item.id}
@@ -343,7 +343,7 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
                         onNavigate(item.id);
                       }
                     }}
-                    className="group bg-[#18181f] hover:bg-[#202029] border border-white/5 hover:border-[#FF1744]/40 rounded-xl py-2.5 px-1.5 flex flex-col items-center justify-center gap-1.5 transition-all active:scale-95 cursor-pointer"
+                    className="group min-h-[76px] bg-[#18181f] hover:bg-[#202029] border border-white/5 hover:border-[#FF1744]/40 rounded-xl py-2.5 px-1.5 flex flex-col items-center justify-center gap-1.5 transition-colors active:scale-95 cursor-pointer"
                     id={`btn_more_menu_${item.id}`}
                   >
                     <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${item.bg} group-hover:scale-105 transition-transform`}>

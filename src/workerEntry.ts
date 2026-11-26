@@ -6,6 +6,19 @@ import {
   getAboutAppHtml,
 } from './api/helpers/legalPages';
 
+import {
+  EDGE_CORS_HEADERS,
+  handleEdgeAnimeDetails,
+  handleEdgeAnimeServers,
+  handleEdgeResolveDownload,
+  handleEdgeResolvePlay,
+  handleEdgeDownloadStream,
+  handleEdgePlayStream,
+  handleEdgeStreamProxy,
+  handleEdgeDirectDownloadGet,
+  handleEdgeExtractPost,
+} from './utils/edgeAnimeEngine';
+
 export interface WorkerEnv {
   ASSETS: { fetch(input: Request | URL | string, init?: RequestInit): Promise<Response> };
   BACKEND_API_URL?: string;
@@ -13,6 +26,7 @@ export interface WorkerEnv {
   PUBLIC_APP_URL?: string;
   FIREBASE_PROJECT_ID?: string;
   FIREBASE_DATABASE_ID?: string;
+  EDGE_TOKEN_SECRET?: string;
 }
 
 type RoleLevel = 'owner' | 'admin' | 'moderator' | 'user';
@@ -58,9 +72,8 @@ const isStaffEmail = (email?: string | null): boolean => {
 };
 
 const CORS_HEADERS: Record<string, string> = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Cache-Control, Pragma',
+  ...EDGE_CORS_HEADERS,
+  'Access-Control-Allow-Methods': 'GET, HEAD, POST, PUT, DELETE, OPTIONS',
 };
 
 function jsonResponse(data: unknown, status = 200, extraHeaders: Record<string, string> = {}): Response {
@@ -763,6 +776,48 @@ async function handleImageProxy(requestUrl: URL): Promise<Response> {
   }
 }
 
+async function handleEdgeAnimeRoutes(
+  request: Request,
+  url: URL,
+  env: WorkerEnv
+): Promise<Response | null> {
+  const pathname = url.pathname;
+  const method = request.method.toUpperCase();
+
+  if (pathname.startsWith('/api/anime/details/') && method === 'GET') {
+    const rawId = pathname.slice('/api/anime/details/'.length);
+    return handleEdgeAnimeDetails(rawId);
+  }
+  if (pathname === '/api/anime/servers' && method === 'POST') {
+    const body = await request.json().catch(() => ({}));
+    return handleEdgeAnimeServers(body);
+  }
+  if (pathname === '/api/anime/resolve-download' && method === 'POST') {
+    return handleEdgeResolveDownload(request, env);
+  }
+  if (pathname === '/api/anime/resolve-play' && method === 'POST') {
+    return handleEdgeResolvePlay(request, env);
+  }
+  if (pathname === '/api/anime/extract' && method === 'POST') {
+    return handleEdgeExtractPost(request);
+  }
+  if (pathname === '/api/anime/download-stream' && (method === 'GET' || method === 'HEAD')) {
+    return handleEdgeDownloadStream(request, url, env);
+  }
+  if (pathname.startsWith('/api/anime/play-stream/') && (method === 'GET' || method === 'HEAD')) {
+    const rest = pathname.slice('/api/anime/play-stream/'.length);
+    const token = rest.split('/')[0] || '';
+    return handleEdgePlayStream(request, token, env);
+  }
+  if (pathname === '/api/anime/stream-proxy' && (method === 'GET' || method === 'HEAD')) {
+    return handleEdgeStreamProxy(request, url);
+  }
+  if (pathname === '/api/anime/download' && (method === 'GET' || method === 'HEAD')) {
+    return handleEdgeDirectDownloadGet(request, url);
+  }
+  return null;
+}
+
 async function proxyToBackend(
   request: Request,
   url: URL,
@@ -781,6 +836,8 @@ async function proxyToBackend(
     if (val) fwdHeaders.set(key, val);
   }
 
+  const edgeFallbackReq = request.method !== 'GET' && request.method !== 'HEAD' ? request.clone() : request;
+
   try {
     const reqClone = request.method !== 'GET' && request.method !== 'HEAD' ? request.clone() : request;
     const upstream = await fetch(targetUrl, {
@@ -791,6 +848,10 @@ async function proxyToBackend(
     if (upstream.status >= 500 && url.pathname.startsWith('/api/admin/')) {
       const edgeAdminResp = await handleEdgeAdminRoutes(request, url.pathname, env);
       if (edgeAdminResp) return edgeAdminResp;
+    }
+    if (upstream.status >= 500 || upstream.headers.get('x-hybrid-fallback') === '1') {
+      const edgeAnimeResp = await handleEdgeAnimeRoutes(edgeFallbackReq, url, env);
+      if (edgeAnimeResp) return edgeAnimeResp;
     }
     const respHeaders = new Headers(upstream.headers);
     for (const [k, v] of Object.entries(CORS_HEADERS)) {
@@ -803,6 +864,8 @@ async function proxyToBackend(
   } catch {
     const edgeAdminResp = await handleEdgeAdminRoutes(request, url.pathname, env);
     if (edgeAdminResp) return edgeAdminResp;
+    const edgeAnimeResp = await handleEdgeAnimeRoutes(edgeFallbackReq, url, env);
+    if (edgeAnimeResp) return edgeAnimeResp;
     return jsonResponse(
       { success: false, hybridFallback: true, message: 'Backend unreachable, engaging hybrid mode.' },
       200,
@@ -872,6 +935,9 @@ export default {
       if (pathname === '/api/manga/image-proxy' && request.method === 'GET') {
         return handleImageProxy(url);
       }
+
+      const edgeAnimeResp = await handleEdgeAnimeRoutes(request, url, env);
+      if (edgeAnimeResp) return edgeAnimeResp;
 
       // Signal client hybrid engine cleanly (zero red error telemetry)
       return jsonResponse(

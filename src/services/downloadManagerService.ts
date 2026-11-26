@@ -19,6 +19,7 @@ export interface DownloadQueueItem {
   itemType?: 'episode' | 'chapter';
   animeId: string;
   animeTitle: string;
+  englishTitle?: string;
   posterUrl?: string;
   seasonNumber: number;
   episodeNum: string;
@@ -321,6 +322,34 @@ function triggerBrowserBlobSave(blobUrl: string, filename: string) {
   } catch {}
 }
 
+let browserSaveQueue: Promise<void> = Promise.resolve();
+function queueBrowserBlobSave(blobUrl: string, filename: string, revokeAfterMs = 60_000): Promise<void> {
+  const job = browserSaveQueue.then(async () => {
+    triggerBrowserBlobSave(blobUrl, filename);
+    await new Promise((r) => setTimeout(r, 550));
+    if (revokeAfterMs > 0 && blobUrl.startsWith('blob:')) {
+      setTimeout(() => {
+        try {
+          URL.revokeObjectURL(blobUrl);
+        } catch {}
+      }, revokeAfterMs);
+    }
+  });
+  browserSaveQueue = job.catch(() => {});
+  return job;
+}
+
+let externalLaunchQueue: Promise<boolean> = Promise.resolve(false);
+function queueExternalDownloadLaunch(url: string, filename: string, mimeType: string): Promise<boolean> {
+  const job = externalLaunchQueue.then(async () => {
+    const ok = await openDownloadManager(url, filename, mimeType);
+    await new Promise((r) => setTimeout(r, 380));
+    return ok;
+  });
+  externalLaunchQueue = job.catch(() => false);
+  return job;
+}
+
 async function fetchWithTimeout(
   input: RequestInfo | URL,
   init: RequestInit,
@@ -528,6 +557,7 @@ class DownloadManagerService {
         id: itemId,
         animeId,
         animeTitle,
+        englishTitle: anime?.englishTitle || anime?.title || undefined,
         posterUrl,
         seasonNumber,
         episodeNum: epNum,
@@ -844,8 +874,10 @@ class DownloadManagerService {
   private async resolveEpisodeWithFallback(
     item: DownloadQueueItem,
     signal: AbortSignal,
+    forceFresh = false,
   ): Promise<{
     downloadUrl: string;
+    mode?: string;
     externalDirectUrl?: string | null;
     externalDirectMime?: string | null;
     filename: string;
@@ -854,19 +886,16 @@ class DownloadManagerService {
     usedFallbackQuality: boolean;
     serverName?: string | null;
   }> {
-    // 1. Check Tier 1/2 cache & shared cloud first, then fall back to live endpoint with strict AbortSignal timeout
     const serverLookup = {
       url: item.episodeUrl,
       animeId: item.animeId,
       animeTitle: item.animeTitle,
+      englishTitle: item.englishTitle,
       seasonNumber: item.seasonNumber,
       episodeNum: item.episodeNum,
     };
 
-    let rawServers: any[] =
-      (await cloudCatalogService.tryReadEpisodeServersCacheOrCloud(serverLookup)) || [];
-
-    if (rawServers.length === 0) {
+    const fetchLiveServers = async (): Promise<any[]> => {
       const srvResp = await fetchWithTimeout(
         resolveApiUrl('/api/anime/servers'),
         {
@@ -876,62 +905,95 @@ class DownloadManagerService {
             url: item.episodeUrl,
             animeId: item.animeId,
             animeTitle: item.animeTitle,
+            englishTitle: item.englishTitle,
             seasonNumber: item.seasonNumber,
             episodeNum: item.episodeNum,
           }),
         },
         signal,
-        22_000,
+        25_000,
         'استغرق البحث عن سيرفرات الحلقة وقتاً طويلاً، أعد المحاولة.',
       );
       const srvJson = await safeReadJson(srvResp);
-      rawServers = Array.isArray(srvJson?.data) ? srvJson.data : [];
-      if (!srvResp.ok || !srvJson?.success || rawServers.length === 0) {
+      const list = Array.isArray(srvJson?.data) ? srvJson.data : [];
+      if (!srvResp.ok || !srvJson?.success || list.length === 0) {
         throw new Error(srvJson?.message || 'لم يتم العثور على سيرفرات متاحة لهذه الحلقة حالياً.');
       }
-      void cloudCatalogService.cacheResolvedEpisodeServers(serverLookup, rawServers);
+      void cloudCatalogService.cacheResolvedEpisodeServers(serverLookup, list);
+      return list;
+    };
+
+    let rawServers: any[] = [];
+    let usedCache = false;
+    if (!forceFresh) {
+      const cached = await cloudCatalogService.tryReadEpisodeServersCacheOrCloud(serverLookup);
+      if (cached && cached.length > 0) {
+        rawServers = cached;
+        usedCache = true;
+      }
+    } else {
+      await cloudCatalogService.invalidateEpisodeServersCache(serverLookup).catch(() => {});
     }
 
-    const dlServers = rawServers.filter((s) => s.category === 'download');
-    const watchServers = rawServers.filter((s) => s.category !== 'download');
-    const orderedServers = [...dlServers, ...watchServers];
-    const serverCandidates = orderedServers.map((s) => ({
-      url: s.url,
-      quality: s.quality,
-      serverName: s.serverName,
-      category: s.category,
-    }));
+    if (rawServers.length === 0) {
+      rawServers = await fetchLiveServers();
+    }
 
     const wantExternal = item.targetMode === 'external' || Capacitor.isNativePlatform();
 
-    // 2. Try requested quality first (server already tries fallback, and we also retry 'auto' if needed)
-    const callResolve = async (qual: DownloadQualityPref) => {
-      const r = await fetchWithTimeout(
-        resolveApiUrl('/api/anime/resolve-download'),
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            url: orderedServers[0]?.url || '',
-            fallbackUrls: orderedServers.slice(1).map((s) => s.url),
-            serverCandidates,
-            preferredQuality: qual,
-            title: item.animeTitle,
-            ep: item.episodeNum,
-            preferExternal: wantExternal,
-          }),
-        },
-        signal,
-        40_000,
-        'استغرق تجهيز رابط الحلقة وقتاً طويلاً، أعد المحاولة.',
-      );
-      const json = await safeReadJson(r);
-      return json || { success: false, message: 'تعذر قراءة استجابة السيرفر.' };
+    const tryResolveWithServers = async (servers: any[]) => {
+      const dlServers = servers.filter((s) => s.category === 'download');
+      const watchServers = servers.filter((s) => s.category !== 'download');
+      const orderedServers = [...dlServers, ...watchServers];
+      const serverCandidates = orderedServers.map((s) => ({
+        url: s.url,
+        quality: s.quality,
+        serverName: s.serverName,
+        category: s.category,
+      }));
+
+      const callResolve = async (qual: DownloadQualityPref) => {
+        const r = await fetchWithTimeout(
+          resolveApiUrl('/api/anime/resolve-download'),
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              url: orderedServers[0]?.url || '',
+              fallbackUrls: orderedServers.slice(1).map((s) => s.url),
+              serverCandidates,
+              preferredQuality: qual,
+              title: item.animeTitle,
+              ep: item.episodeNum,
+              preferExternal: wantExternal,
+            }),
+          },
+          signal,
+          44_000,
+          'استغرق تجهيز رابط الحلقة وقتاً طويلاً، أعد المحاولة.',
+        );
+        const json = await safeReadJson(r);
+        return json || { success: false, message: 'تعذر قراءة استجابة السيرفر.' };
+      };
+
+      let resolvedJson = await callResolve(item.requestedQuality);
+      if (!resolvedJson?.success && item.requestedQuality !== 'auto' && !signal.aborted) {
+        resolvedJson = await callResolve('auto');
+      }
+      return { resolvedJson, orderedServers };
     };
 
-    let resolvedJson = await callResolve(item.requestedQuality);
-    if (!resolvedJson?.success && item.requestedQuality !== 'auto' && !signal.aborted) {
-      resolvedJson = await callResolve('auto');
+    let { resolvedJson, orderedServers } = await tryResolveWithServers(rawServers);
+
+    // If cached servers failed to yield a working download URL, purge cache & re-fetch live servers once
+    if ((!resolvedJson?.success || !resolvedJson?.downloadUrl) && usedCache && !signal.aborted) {
+      await cloudCatalogService.invalidateEpisodeServersCache(serverLookup).catch(() => {});
+      try {
+        const freshServers = await fetchLiveServers();
+        if (freshServers.length > 0) {
+          ({ resolvedJson, orderedServers } = await tryResolveWithServers(freshServers));
+        }
+      } catch {}
     }
 
     if (!resolvedJson?.success || !resolvedJson?.downloadUrl) {
@@ -959,6 +1021,7 @@ class DownloadManagerService {
 
     return {
       downloadUrl: resolvedJson.downloadUrl,
+      mode: resolvedJson.mode || 'mp4',
       externalDirectUrl: resolvedJson.externalDirectUrl || null,
       externalDirectMime: resolvedJson.externalDirectMime || 'video/mp4',
       filename: resolvedJson.filename || item.filename,
@@ -967,6 +1030,143 @@ class DownloadManagerService {
       usedFallbackQuality,
       serverName: resolvedJson.serverName || orderedServers[0]?.serverName || null,
     };
+  }
+
+  private async downloadHlsPlaylistToBlob(
+    initialPlaylistText: string,
+    playlistUrl: string,
+    signal: AbortSignal,
+    onProgress: (downloadedBytes: number, totalBytes: number, progress: number, speedBps: number) => void,
+  ): Promise<{ blob: Blob; totalBytes: number }> {
+    const resolvePlaylistRef = (ref: string, base: string) => {
+      const trimmed = ref.trim();
+      if (trimmed.startsWith('/api/')) return resolveApiUrl(trimmed);
+      try {
+        return resolveApiUrl(new URL(trimmed, base).toString());
+      } catch {
+        return resolveApiUrl(trimmed);
+      }
+    };
+
+    let mediaText = initialPlaylistText;
+    let mediaUrl = playlistUrl;
+
+    // If master playlist, pick highest bandwidth variant
+    if (mediaText.includes('#EXT-X-STREAM-INF')) {
+      const lines = mediaText.split(/\r?\n/);
+      let bestBw = -1;
+      let bestUri = '';
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (line.startsWith('#EXT-X-STREAM-INF')) {
+          const bw = Number(line.match(/BANDWIDTH=(\d+)/i)?.[1] || 0);
+          for (let j = i + 1; j < lines.length; j++) {
+            const nextLine = lines[j].trim();
+            if (nextLine && !nextLine.startsWith('#')) {
+              if (bw >= bestBw) {
+                bestBw = bw;
+                bestUri = nextLine;
+              }
+              break;
+            }
+          }
+        }
+      }
+      if (!bestUri) {
+        throw new Error('لم يتم العثور على مسار بث صالح في قائمة HLS.');
+      }
+      mediaUrl = resolvePlaylistRef(bestUri, playlistUrl);
+      const varResp = await fetchWithTimeout(
+        mediaUrl,
+        {},
+        signal,
+        24_000,
+        'انتهت مهلة تحميل قائمة أجزاء الفيديو.',
+      );
+      if (!varResp.ok) {
+        throw new Error('تعذر جلب قائمة أجزاء الفيديو.');
+      }
+      mediaText = await varResp.text();
+    }
+
+    const lines = mediaText.split(/\r?\n/);
+    const segmentUrls: string[] = [];
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      if (line.startsWith('#EXT-X-KEY') && /METHOD=AES-128/i.test(line)) {
+        throw new Error('هذا السيرفر يستخدم تشفير HLS غير مدعوم للتنزيل الداخلي؛ جرب التحميل الخارجي.');
+      }
+      if (line.startsWith('#EXT-X-MAP')) {
+        const mapUri = line.match(/URI="([^"]+)"/i)?.[1];
+        if (mapUri) segmentUrls.push(resolvePlaylistRef(mapUri, mediaUrl));
+        continue;
+      }
+      if (!line.startsWith('#')) {
+        segmentUrls.push(resolvePlaylistRef(line, mediaUrl));
+      }
+    }
+
+    if (segmentUrls.length === 0) {
+      throw new Error('لم يتم العثور على مقاطع فيديو صالحة للتنزيل.');
+    }
+
+    const segBuffers: (ArrayBuffer | null)[] = new Array(segmentUrls.length).fill(null);
+    let nextIdx = 0;
+    let completed = 0;
+    let downloadedBytes = 0;
+    const startedAt = Date.now();
+    const concurrency = Math.min(3, segmentUrls.length);
+
+    const workers = Array.from({ length: concurrency }, async () => {
+      while (true) {
+        if (signal.aborted) return;
+        const idx = nextIdx++;
+        if (idx >= segmentUrls.length) return;
+        const segUrl = segmentUrls[idx];
+        let buf: ArrayBuffer | null = null;
+        for (let attempt = 0; attempt < 2 && !buf; attempt++) {
+          if (signal.aborted) return;
+          try {
+            const segResp = await fetchWithTimeout(
+              segUrl,
+              {},
+              signal,
+              25_000,
+              'انتهت مهلة تنزيل مقطع فيديو.',
+            );
+            if (segResp.ok) {
+              const ab = await segResp.arrayBuffer();
+              if (ab.byteLength > 0) buf = ab;
+            }
+          } catch {}
+        }
+        if (!buf) {
+          throw new Error(`تعذر تحميل مقطع الفيديو (${idx + 1}/${segmentUrls.length})، أعد المحاولة.`);
+        }
+        segBuffers[idx] = buf;
+        completed++;
+        downloadedBytes += buf.byteLength;
+        const elapsedSec = Math.max(0.25, (Date.now() - startedAt) / 1000);
+        const speedBps = Math.round(downloadedBytes / elapsedSec);
+        const estimatedTotal = Math.round((downloadedBytes / completed) * segmentUrls.length);
+        const progress = Math.min(99, Math.max(1, Math.round((completed / segmentUrls.length) * 100)));
+        onProgress(downloadedBytes, estimatedTotal, progress, speedBps);
+      }
+    });
+
+    await Promise.all(workers);
+    if (signal.aborted) {
+      throw new Error('ABORTED');
+    }
+
+    const validParts = segBuffers.filter((b): b is ArrayBuffer => Boolean(b && b.byteLength > 0));
+    if (validParts.length !== segmentUrls.length) {
+      throw new Error('لم تكتمل جميع مقاطع الفيديو، أعد المحاولة.');
+    }
+
+    const blob = new Blob(validParts, { type: 'video/mp2t' });
+    return { blob, totalBytes: downloadedBytes };
   }
 
   private async processChapterItem(item: DownloadQueueItem, controller: AbortController) {
@@ -1124,7 +1324,7 @@ class DownloadManagerService {
         return;
       }
 
-      const resolved = await this.resolveEpisodeWithFallback(item, controller.signal);
+      let resolved = await this.resolveEpisodeWithFallback(item, controller.signal);
       if (this.manualAbortReasons.has(id)) return;
       if (controller.signal.aborted) {
         throw new Error('تعذر إكمال تجهيز الحلقة، أعد المحاولة.');
@@ -1146,7 +1346,7 @@ class DownloadManagerService {
         const directTarget =
           resolved.externalDirectUrl ||
           resolveAbsoluteApiUrlForExternalIntent(resolved.downloadUrl);
-        await openDownloadManager(
+        await queueExternalDownloadLaunch(
           directTarget,
           resolved.filename,
           resolved.externalDirectMime || 'video/mp4',
@@ -1162,13 +1362,41 @@ class DownloadManagerService {
       // Internal Download Manager streaming download
       this.updateItem(id, { status: 'downloading', progress: 0, downloadedBytes: 0 });
 
-      const resp = await fetchWithTimeout(
-        resolveApiUrl(resolved.downloadUrl),
-        { credentials: 'include' },
+      let streamUrl = resolveApiUrl(resolved.downloadUrl);
+      let resp = await fetchWithTimeout(
+        streamUrl,
+        {},
         controller.signal,
-        32_000,
+        35_000,
         'تأخر سيرفر التحميل في الاستجابة، أعد المحاولة.',
       );
+
+      // Token may have expired or rotated between Edge isolates: re-resolve once cleanly
+      if ((resp.status === 404 || resp.status === 401 || resp.status === 403) && !controller.signal.aborted) {
+        try {
+          await resp.body?.cancel();
+        } catch {}
+        resolved = await this.resolveEpisodeWithFallback(item, controller.signal, true);
+        streamUrl = resolveApiUrl(resolved.downloadUrl);
+        this.updateItem(id, {
+          downloadUrl: resolved.downloadUrl,
+          externalDirectUrl: resolved.externalDirectUrl,
+          externalDirectMime: resolved.externalDirectMime,
+          filename: resolved.filename,
+          totalBytes: resolved.sizeBytes || 0,
+          resolvedQuality: resolved.resolvedQuality,
+          usedFallbackQuality: resolved.usedFallbackQuality,
+          serverName: resolved.serverName || undefined,
+        });
+        resp = await fetchWithTimeout(
+          streamUrl,
+          {},
+          controller.signal,
+          35_000,
+          'تأخر سيرفر التحميل في الاستجابة، أعد المحاولة.',
+        );
+      }
+
       const ct = (resp.headers.get('content-type') || '').toLowerCase();
       if (!resp.ok || ct.includes('text/html') || !resp.body) {
         let serverMsg = '';
@@ -1181,72 +1409,106 @@ class DownloadManagerService {
         throw new Error(serverMsg || 'تعذر بدء تنزيل الملف من المصدر، يرجى المحاولة مجدداً.');
       }
 
-      const headerLen = Number(resp.headers.get('content-length') || 0);
-      const totalBytes = headerLen > 0 ? headerLen : Number(resolved.sizeBytes || 0);
-      const reader = resp.body.getReader();
-      const chunks: BlobPart[] = [];
+      const isHlsResponse =
+        resolved.mode === 'hls' ||
+        ct.includes('mpegurl') ||
+        resp.headers.get('x-edge-media-mode') === 'hls';
+
+      let blob: Blob;
+      let finalFilename = resolved.filename;
       let downloaded = 0;
-      let lastUpdate = Date.now();
-      let lastBytes = 0;
+      let totalBytes = 0;
 
-      while (true) {
-        const { done, value } = await readChunkWithTimeout(reader, controller.signal, 30_000);
-        if (done) break;
-        if (this.manualAbortReasons.has(id) || controller.signal.aborted) {
-          try {
-            await reader.cancel();
-          } catch {}
-          if (this.manualAbortReasons.has(id)) return;
-          throw new Error('توقف تنزيل الحلقة، أعد المحاولة.');
+      if (isHlsResponse) {
+        const playlistText = await resp.text();
+        if (!playlistText.includes('#EXTM3U')) {
+          throw new Error('استجابة البث غير صالحة للتنزيل، أعد المحاولة.');
         }
-        chunks.push(value);
-        downloaded += value.byteLength;
+        const hlsResult = await this.downloadHlsPlaylistToBlob(
+          playlistText,
+          streamUrl,
+          controller.signal,
+          (dlBytes, estTotal, progress, speedBps) => {
+            this.updateItem(
+              id,
+              {
+                downloadedBytes: dlBytes,
+                totalBytes: estTotal,
+                progress,
+                speedBps,
+              },
+              false,
+            );
+          },
+        );
+        blob = hlsResult.blob;
+        downloaded = hlsResult.totalBytes;
+        totalBytes = hlsResult.totalBytes;
+        finalFilename = finalFilename.replace(/\.(mp4|mkv|webm)$/i, '.ts');
+      } else {
+        const headerLen = Number(resp.headers.get('content-length') || 0);
+        totalBytes = headerLen > 0 ? headerLen : Number(resolved.sizeBytes || 0);
+        const reader = resp.body.getReader();
+        const chunks: BlobPart[] = [];
+        let lastUpdate = Date.now();
+        let lastBytes = 0;
 
-        const now = Date.now();
-        const dt = now - lastUpdate;
-        if (dt >= 350) {
-          const speedBps = Math.max(0, Math.round(((downloaded - lastBytes) * 1000) / dt));
-          const progress =
-            totalBytes > 0
-              ? Math.min(99, Math.max(1, Math.round((downloaded / totalBytes) * 100)))
-              : Math.min(92, Math.max(5, Math.round((downloaded / (downloaded + 90 * 1024 * 1024)) * 92)));
-          lastUpdate = now;
-          lastBytes = downloaded;
-          this.updateItem(
-            id,
-            {
-              downloadedBytes: downloaded,
-              totalBytes,
-              progress,
-              speedBps,
-            },
-            false,
-          );
+        while (true) {
+          const { done, value } = await readChunkWithTimeout(reader, controller.signal, 30_000);
+          if (done) break;
+          if (this.manualAbortReasons.has(id) || controller.signal.aborted) {
+            try {
+              await reader.cancel();
+            } catch {}
+            if (this.manualAbortReasons.has(id)) return;
+            throw new Error('توقف تنزيل الحلقة، أعد المحاولة.');
+          }
+          chunks.push(value);
+          downloaded += value.byteLength;
+
+          const now = Date.now();
+          const dt = now - lastUpdate;
+          if (dt >= 350) {
+            const speedBps = Math.max(0, Math.round(((downloaded - lastBytes) * 1000) / dt));
+            const progress =
+              totalBytes > 0
+                ? Math.min(99, Math.max(1, Math.round((downloaded / totalBytes) * 100)))
+                : Math.min(92, Math.max(5, Math.round((downloaded / (downloaded + 90 * 1024 * 1024)) * 92)));
+            lastUpdate = now;
+            lastBytes = downloaded;
+            this.updateItem(
+              id,
+              {
+                downloadedBytes: downloaded,
+                totalBytes,
+                progress,
+                speedBps,
+              },
+              false,
+            );
+          }
         }
+
+        if (downloaded <= 0) {
+          throw new Error('استُلم ملف فارغ من السيرفر، أعد المحاولة.');
+        }
+
+        blob = new Blob(chunks, { type: ct.startsWith('video/') ? ct : 'video/mp4' });
       }
 
-      if (downloaded <= 0) {
-        throw new Error('استُلم ملف فارغ من السيرفر، أعد المحاولة.');
-      }
-
-      const blob = new Blob(chunks, { type: ct.startsWith('video/') ? ct : 'video/mp4' });
       if (blob.size <= 0) {
         throw new Error('استُلم ملف فارغ من السيرفر، أعد المحاولة.');
       }
       const storedOffline = await saveBlobOffline(id, blob);
 
-      // Trigger automatic save to user's Downloads folder
+      // Trigger staggered save to user's Downloads folder so browsers do not drop batch downloads
       const blobUrl = URL.createObjectURL(blob);
-      triggerBrowserBlobSave(blobUrl, resolved.filename);
-      setTimeout(() => {
-        try {
-          URL.revokeObjectURL(blobUrl);
-        } catch {}
-      }, 60_000);
+      await queueBrowserBlobSave(blobUrl, finalFilename, 60_000);
 
       this.updateItem(id, {
         status: 'completed',
         progress: 100,
+        filename: finalFilename,
         downloadedBytes: downloaded || blob.size,
         totalBytes: totalBytes || downloaded || blob.size,
         speedBps: 0,

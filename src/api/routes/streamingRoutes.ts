@@ -156,7 +156,7 @@ router.get(
 router.post(
   "/anime/servers",
   handleAsync(async (req: Request, res: Response) => {
-    const { url, animeId, episodeNum, seasonNumber, animeTitle } = req.body;
+    const { url, animeId, episodeNum, seasonNumber, animeTitle, englishTitle } = req.body;
 
     if (!url || typeof url !== "string") {
       return res.status(400).json({
@@ -166,7 +166,7 @@ router.post(
       });
     }
 
-    const data = await scraper.getEpisodeServers(url, animeId, episodeNum, seasonNumber, animeTitle);
+    const data = await scraper.getEpisodeServers(url, animeId, episodeNum, seasonNumber, animeTitle, englishTitle);
 
     res.json({
       success: true,

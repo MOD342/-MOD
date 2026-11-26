@@ -317,7 +317,7 @@ export function translateDescriptionInBackground(id: string, description: string
   translateToArabic(description)
     .then(async (translated) => {
       if (translated && translated !== description) {
-        const cacheKey = `anime-details-v9-${id}`;
+        const cacheKey = `anime-details-v10-${id}`;
         const cached = await serverCache.get<any>(cacheKey);
         if (cached) {
           cached.description = translated;

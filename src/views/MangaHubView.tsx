@@ -346,7 +346,7 @@ export default function MangaHubView({
       >
         {/* Top Bar for standalone Manga Hub navigation */}
         {!isHomeMode && (
-          <header className="sticky top-0 z-30 bg-black/90 backdrop-blur-xl border-b border-white/10 px-3.5 md:px-6 py-3">
+          <header className="sticky top-0 z-30 bg-black/[0.97] border-b border-white/10 px-3.5 md:px-6 py-3 shadow-lg">
             <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
               <div className="flex items-center gap-2.5 min-w-0">
                 {onBack && (
@@ -526,7 +526,7 @@ export default function MangaHubView({
                         ? Math.min(100, Math.max(8, Math.round(((item.pageIndex || 1) / item.totalPages) * 100)))
                         : 40;
                       return (
-                        <motion.div
+                        <div
                           key={`reading-hub-${item.mangaId}-${idx}`}
                           onClick={() => {
                             if (onReadMangaChapter && item.chapterId) {
@@ -556,18 +556,17 @@ export default function MangaHubView({
                               onMangaClick(item.mangaId);
                             }
                           }}
-                          whileHover={{ y: -4 }}
-                          whileTap={{ scale: 0.98 }}
                           className={`snap-start theme-keep-dark cursor-pointer ${
-                            display.isCoverScreen ? 'w-[160px]' : 'w-[185px] md:w-[240px]'
-                          } flex-shrink-0 group relative rounded-2xl overflow-hidden border border-neutral-800 hover:border-amber-400/70 transition-all aspect-[16/9] bg-neutral-900 shadow-lg`}
+                            display.isCoverScreen ? 'w-[162px]' : 'w-[185px] sm:w-[215px] md:w-[240px] lg:w-[260px]'
+                          } flex-shrink-0 group relative rounded-2xl overflow-hidden border border-neutral-800 hover:border-amber-400/70 transition-transform duration-200 hover:-translate-y-1 active:scale-[0.98] aspect-[16/9] bg-neutral-900 shadow-lg`}
                         >
                           {item.posterUrl ? (
                             <img
                               src={item.posterUrl}
                               referrerPolicy="no-referrer"
                               loading="lazy"
-                              className="w-full h-full object-cover group-hover:scale-105 transition-all duration-500"
+                              decoding="async"
+                              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                               alt={item.title}
                             />
                           ) : (
@@ -581,7 +580,7 @@ export default function MangaHubView({
                             onPointerDown={(e) => e.stopPropagation()}
                             title="إزالة من استمر في القراءة"
                             aria-label="إزالة من استمر في القراءة"
-                            className="absolute top-2 left-2 z-20 w-7 h-7 rounded-full bg-black/75 hover:bg-red-600 text-neutral-200 hover:text-white border border-white/20 flex items-center justify-center opacity-90 sm:opacity-0 sm:group-hover:opacity-100 transition-all cursor-pointer"
+                            className="absolute top-2 left-2 z-20 w-7 h-7 rounded-full bg-black/80 hover:bg-red-600 text-neutral-200 hover:text-white border border-white/20 flex items-center justify-center opacity-90 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity cursor-pointer"
                           >
                             <X size={13} strokeWidth={2.5} />
                           </button>
@@ -610,7 +609,7 @@ export default function MangaHubView({
                               style={{ width: `${pct}%` }}
                             />
                           </div>
-                        </motion.div>
+                        </div>
                       );
                     })}
                   </div>
@@ -632,23 +631,22 @@ export default function MangaHubView({
                   {trending.map((item, idx) => {
                     const rank = idx + 1;
                     return (
-                      <motion.button
+                      <button
                         key={`trend-${item._id}-${idx}`}
                         type="button"
                         onClick={() => onMangaClick(String(item._id))}
-                        whileHover={{ y: -4 }}
-                        whileTap={{ scale: 0.98 }}
                         className={`snap-start theme-keep-dark ${
-                          display.isCoverScreen ? 'w-[122px]' : 'w-[140px] md:w-[178px] lg:w-[198px]'
-                        } shrink-0 text-right group cursor-pointer relative aspect-[3/4] rounded-2xl overflow-hidden bg-neutral-900 border border-white/10 hover:border-amber-400/60 transition-colors shadow-lg`}
+                          display.isCoverScreen ? 'w-[122px]' : 'w-[144px] sm:w-[168px] md:w-[186px] lg:w-[202px] xl:w-[218px]'
+                        } shrink-0 text-right group cursor-pointer relative aspect-[3/4] rounded-2xl overflow-hidden bg-neutral-900 border border-white/10 hover:border-amber-400/60 transition-transform duration-200 hover:-translate-y-1 active:scale-[0.98] shadow-lg`}
                       >
                         {item.posterUrl ? (
                           <img
                             src={item.posterUrl}
                             alt={item.title}
                             loading="lazy"
+                            decoding="async"
                             referrerPolicy="no-referrer"
-                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                           />
                         ) : (
                           <div className="w-full h-full bg-gradient-to-br from-neutral-900 to-neutral-800 flex items-center justify-center text-neutral-600">
@@ -665,14 +663,14 @@ export default function MangaHubView({
                               ? 'bg-slate-200 text-black'
                               : rank === 3
                               ? 'bg-orange-600 text-white'
-                              : 'bg-black/75 text-amber-300 border border-white/10'
+                              : 'bg-black/85 text-amber-300 border border-white/15'
                           }`}
                         >
                           #{rank}
                         </span>
 
                         {item.rating > 0 && (
-                          <span className="absolute top-2 left-2 bg-black/75 backdrop-blur-md text-yellow-400 px-2 py-0.5 rounded-lg text-[10px] font-bold flex items-center gap-0.5 border border-white/10 tabular-nums">
+                          <span className="absolute top-2 left-2 bg-black/85 text-yellow-400 px-2 py-0.5 rounded-lg text-[10px] font-bold flex items-center gap-0.5 border border-white/15 tabular-nums">
                             <Star size={10} fill="currentColor" />
                             {Number(item.rating).toFixed(1)}
                           </span>
@@ -689,7 +687,7 @@ export default function MangaHubView({
                             <LongPressCopy text={item.title}>{item.title}</LongPressCopy>
                           </h3>
                         </div>
-                      </motion.button>
+                      </button>
                     );
                   })}
                 </div>
@@ -759,7 +757,7 @@ export default function MangaHubView({
                   </div>
                 ) : (
                   <div className={isListMode ? 'px-3 md:px-6' : 'px-0 md:px-6'}>
-                    <div className={getLayoutGridClasses(layoutMode)}>
+                    <div className={getLayoutGridClasses(layoutMode, display.isCoverScreen)}>
                       {filteredLatest.map((item, idx) => {
                         if (isListMode) {
                           return (
@@ -767,7 +765,7 @@ export default function MangaHubView({
                               key={`latest-list-${item._id}-${idx}`}
                               type="button"
                               onClick={() => onMangaClick(String(item._id))}
-                              className="w-full cursor-pointer group flex items-stretch bg-neutral-900/95 border border-neutral-800/90 hover:border-amber-500/60 rounded-xl transition-all overflow-hidden text-right min-h-[124px]"
+                              className="w-full cursor-pointer group flex items-stretch bg-neutral-900/95 border border-neutral-800/90 hover:border-amber-500/60 rounded-xl transition-colors overflow-hidden text-right min-h-[124px]"
                             >
                               <div className="w-24 sm:w-28 shrink-0 bg-neutral-950 border-l border-white/10 overflow-hidden flex items-center justify-center">
                                 {item.posterUrl ? (
@@ -775,6 +773,7 @@ export default function MangaHubView({
                                     src={item.posterUrl}
                                     alt={item.title}
                                     loading="lazy"
+                                    decoding="async"
                                     referrerPolicy="no-referrer"
                                     className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                                   />
@@ -832,8 +831,9 @@ export default function MangaHubView({
                                 src={item.posterUrl}
                                 alt={item.title}
                                 loading="lazy"
+                                decoding="async"
                                 referrerPolicy="no-referrer"
-                                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                               />
                             ) : (
                               <div className="w-full h-full bg-gradient-to-br from-neutral-900 to-neutral-800 flex items-center justify-center text-neutral-600">

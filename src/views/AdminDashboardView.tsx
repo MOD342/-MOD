@@ -49,7 +49,7 @@ import { moderationService, RoleLevel, GlobalRole, ModPermissions, AuditLogEntry
 import { notificationsService } from '../services/notificationsService';
 import { Recommendation } from '../services/animeInteractionService';
 import { auth, db } from '../firebase';
-import { collection, onSnapshot, doc, getDoc, updateDoc, deleteDoc, deleteField, increment, serverTimestamp } from 'firebase/firestore';
+import { collection, query, limit, onSnapshot, doc, getDoc, updateDoc, deleteDoc, deleteField, increment, serverTimestamp } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
 import { AdminDashboardProvider } from './admin/AdminDashboardContext';
 import { AdminOverviewTab } from './admin/AdminOverviewTab';
@@ -484,74 +484,74 @@ export default function AdminDashboardView({
         if (fetched.length > 0) setAllUsers(fetched);
       });
 
-      unsubReports = onSnapshot(collection(db, 'reports'), snap => {
+      unsubReports = onSnapshot(query(collection(db, 'reports'), limit(200)), snap => {
         const list: any[] = [];
         snap.forEach(d => list.push({ id: d.id, ...d.data() }));
         list.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
         setReports(list);
       });
 
-      unsubBans = onSnapshot(collection(db, 'bannedUsers'), snap => {
+      unsubBans = onSnapshot(query(collection(db, 'bannedUsers'), limit(300)), snap => {
         const list: any[] = [];
         snap.forEach(d => list.push({ id: d.id, uid: d.id, ...d.data() }));
         setBannedUsers(list);
       });
 
-      unsubRoles = onSnapshot(collection(db, 'globalRoles'), snap => {
+      unsubRoles = onSnapshot(query(collection(db, 'globalRoles'), limit(200)), snap => {
         const list: any[] = [];
         snap.forEach(d => list.push({ id: d.id, uid: d.id, ...d.data() }));
         setUsersInfo(list);
       });
 
-      unsubUsers = onSnapshot(collection(db, 'users'), snap => {
+      unsubUsers = onSnapshot(query(collection(db, 'users'), limit(300)), snap => {
         const list: any[] = [];
         snap.forEach(d => list.push({ id: d.id, uid: d.id, ...d.data() }));
         setAllUsers(list);
       });
 
-      unsubRecs = onSnapshot(collection(db, 'recommendations'), snap => {
+      unsubRecs = onSnapshot(query(collection(db, 'recommendations'), limit(200)), snap => {
         const list: any[] = [];
         snap.forEach(d => list.push({ id: d.id, ...d.data() }));
         list.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
         setRecommendations(list as Recommendation[]);
       });
 
-      unsubSuggestions = onSnapshot(collection(db, 'suggestions'), snap => {
+      unsubSuggestions = onSnapshot(query(collection(db, 'suggestions'), limit(200)), snap => {
         const list: any[] = [];
         snap.forEach(d => list.push({ id: d.id, ...d.data() }));
         list.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
         setSuggestionsList(list);
       });
 
-      unsubAudit = onSnapshot(collection(db, 'auditLogs'), snap => {
+      unsubAudit = onSnapshot(query(collection(db, 'auditLogs'), limit(120)), snap => {
         const list: any[] = [];
         snap.forEach(d => list.push({ id: d.id, ...d.data() }));
         list.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
         setAuditLogs(list.slice(0, 100));
       });
 
-      unsubPromos = onSnapshot(collection(db, 'promoCodes'), snap => {
+      unsubPromos = onSnapshot(query(collection(db, 'promoCodes'), limit(150)), snap => {
         const list: any[] = [];
         snap.forEach(d => list.push({ id: d.id, ...d.data() }));
         list.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
         setPromoCodesList(list);
       });
 
-      unsubComments = onSnapshot(collection(db, 'comments'), snap => {
+      unsubComments = onSnapshot(query(collection(db, 'comments'), limit(200)), snap => {
         const list: any[] = [];
         snap.forEach(d => list.push({ id: d.id, _collection: 'comments', ...d.data() }));
         list.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
         setLiveComments(list);
       });
 
-      unsubArena = onSnapshot(collection(db, 'arenaFeed'), snap => {
+      unsubArena = onSnapshot(query(collection(db, 'arenaFeed'), limit(150)), snap => {
         const list: any[] = [];
         snap.forEach(d => list.push({ id: d.id, _collection: 'arenaFeed', ...d.data() }));
         list.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
         setLiveArenaPosts(list);
       });
 
-      unsubLeaks = onSnapshot(collection(db, 'otakuLeaks'), snap => {
+      unsubLeaks = onSnapshot(query(collection(db, 'otakuLeaks'), limit(150)), snap => {
         const list: any[] = [];
         snap.forEach(d => list.push({ id: d.id, _collection: 'otakuLeaks', ...d.data() }));
         list.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));

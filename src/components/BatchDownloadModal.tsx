@@ -72,7 +72,7 @@ export default function BatchDownloadModal({
   const [rangeEnd, setRangeEnd] = useState<string>(() =>
     normalizedEpisodes[normalizedEpisodes.length - 1]
       ? String(normalizedEpisodes[normalizedEpisodes.length - 1].epNum)
-      : '12',
+      : '1',
   );
 
   useEffect(() => {
@@ -85,7 +85,7 @@ export default function BatchDownloadModal({
       setRangeEnd(
         normalizedEpisodes[normalizedEpisodes.length - 1]
           ? String(normalizedEpisodes[normalizedEpisodes.length - 1].epNum)
-          : '12',
+          : '1',
       );
       setSelectedNums(
         normalizedEpisodes.slice(0, Math.min(5, normalizedEpisodes.length)).map((e) => e.epNum),

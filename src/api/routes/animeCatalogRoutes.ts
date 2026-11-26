@@ -37,7 +37,7 @@ router.post(
     try {
       const translated = await translateToArabic(text);
       if (animeId && translated && translated !== text) {
-        const cacheKey = `anime-details-v9-${animeId}`;
+        const cacheKey = `anime-details-v10-${animeId}`;
         const cached = await serverCache.get<any>(cacheKey);
         if (cached) {
           cached.description = translated;
@@ -92,8 +92,8 @@ router.get(
         // Harvest any numeric IDs already warmed in RAM cache so random pool grows organically
         const poolSet = new Set<string>(RANDOM_ANIME_POOL);
         for (const k of serverCache.getKeys()) {
-          if (k.startsWith("anime-details-v9-")) {
-            const candidate = k.replace("anime-details-v9-", "");
+          if (k.startsWith("anime-details-v10-")) {
+            const candidate = k.replace("anime-details-v10-", "");
             if (/^\d+$/.test(candidate)) poolSet.add(candidate);
           }
         }
@@ -110,8 +110,8 @@ router.get(
         const cachedCandidates: string[] = [];
         const availableSet = new Set(available);
         for (const k of serverCache.getKeys()) {
-          if (k.startsWith("anime-details-v9-")) {
-            const candidate = k.replace("anime-details-v9-", "");
+          if (k.startsWith("anime-details-v10-")) {
+            const candidate = k.replace("anime-details-v10-", "");
             if (availableSet.has(candidate)) {
               cachedCandidates.push(candidate);
             }
@@ -127,7 +127,7 @@ router.get(
       }
 
       // Now check cache AFTER resolving random ID!
-      const cached = await serverCache.get<any>(`anime-details-v9-${id}`);
+      const cached = await serverCache.get<any>(`anime-details-v10-${id}`);
       if (
         cached !== null &&
         cached.description &&
@@ -146,7 +146,7 @@ router.get(
           const translated = await raceTimeout(translateToArabic(cleanedDesc), 2500, "");
           if (translated && /[\u0600-\u06FF]/.test(translated)) {
             cached.description = translated;
-            await serverCache.set(`anime-details-v9-${id}`, cached, 12 * 60 * 60 * 1000);
+            await serverCache.set(`anime-details-v10-${id}`, cached, 12 * 60 * 60 * 1000);
           }
         }
         return res.json({ success: true, resolvedId: cached._id || id, data: cached });
@@ -371,11 +371,17 @@ router.get(
       if (!data) {
         if (catalogData) {
           const yr = catalogData.year || 2025;
-          const totalCatalogEps = Math.max(
-            parseInt(catalogData.latestEpisode) || 0,
-            parseInt(catalogData.episodes) || 0,
-            12
-          );
+          const statusAr = normalizeArabicStatus(catalogData.status);
+          const totalCatalogEps =
+            statusAr === "قادم"
+              ? 0
+              : statusAr === "مستمر"
+              ? Math.max(parseInt(catalogData.latestEpisode) || 1, 1)
+              : Math.max(
+                  parseInt(catalogData.latestEpisode) || 0,
+                  parseInt(catalogData.episodes) || 0,
+                  1
+                );
           data = {
             _id: catalogData.mal_id?.toString() || id,
             title: catalogData.title_english || catalogData.title,
@@ -389,7 +395,7 @@ router.get(
             seasonsList: [],
             genres: catalogData.genres?.map((g: any) => g.name) || ["أكشن", "فانتازيا"],
             rating: catalogData.score || 8.0,
-            status: normalizeArabicStatus(catalogData.status),
+            status: statusAr,
             type: catalogData.type || "TV",
             episodesCount: totalCatalogEps,
             releaseYear: yr,
@@ -462,9 +468,12 @@ router.get(
             /currently airing|releasing|مستمر/i.test(String(catalogData?.status || ""));
 
           // For ongoing (مستمر) anime, NEVER use total planned episodes (e.g. 12 or 24) to generate un-aired future episodes!
-          // Only use actual scraped episodes or `latestEpisode` (nextAiringEpisode.episode - 1).
+          // If we have real scraped episodes from OkAnime/AnimeDar, trust ONLY those real scraped episodes.
+          const hasRealScrapedEps = data.episodes.length > 0;
           const airedCatalogCount = isOngoing
-            ? parseInt(catalogData?.latestEpisode) || data.episodes.length || 1
+            ? hasRealScrapedEps
+              ? data.episodes.length
+              : parseInt(catalogData?.latestEpisode) || 1
             : Math.max(
                 parseInt(catalogData?.latestEpisode) || 0,
                 parseInt(catalogData?.episodes) || 0
@@ -472,13 +481,15 @@ router.get(
 
           const targetCount = Math.min(
             isOngoing
-              ? Math.max(airedCatalogCount, data.episodes.length)
+              ? hasRealScrapedEps
+                ? data.episodes.length
+                : Math.max(airedCatalogCount, 1)
               : Math.max(airedCatalogCount, data.episodes.length, parseInt(data.episodesCount) || 0, 1),
             1200
           );
 
           // If ongoing anime had extra placeholder episodes beyond what actually aired, trim them
-          if (isOngoing && airedCatalogCount > 0 && data.episodes.length > targetCount) {
+          if (isOngoing && !hasRealScrapedEps && airedCatalogCount > 0 && data.episodes.length > targetCount) {
             data.episodes = data.episodes.filter(
               (ep: any) => (parseInt(ep.num, 10) || 0) <= targetCount
             );
@@ -533,6 +544,7 @@ router.get(
       data.characters = characters;
       data.related = related.sort((a, b) => (a.mal_id || 0) - (b.mal_id || 0));
       data.relatedGraphVersion = 2;
+      data.catalogSchemaVersion = 3;
       data.jikanRecommendations = jikanRecommendations;
       if (aniPictures.length > 0) {
         data.pictures = aniPictures;
@@ -578,7 +590,7 @@ router.get(
         const resolvedKeyId = data._id && data._id !== "random" ? String(data._id) : id;
         if (resolvedKeyId && resolvedKeyId !== "random") {
           await serverCache.set(
-            `anime-details-v9-${resolvedKeyId}`,
+            `anime-details-v10-${resolvedKeyId}`,
             data,
             12 * 60 * 60 * 1000,
           );
@@ -586,14 +598,14 @@ router.get(
         const requestParamId = req.params.id;
         if (requestParamId && requestParamId !== "random" && requestParamId !== resolvedKeyId) {
           await serverCache.set(
-            `anime-details-v9-${requestParamId}`,
+            `anime-details-v10-${requestParamId}`,
             data,
             12 * 60 * 60 * 1000,
           );
         }
         if (data.malId && String(data.malId) !== resolvedKeyId) {
           await serverCache.set(
-            `anime-details-v9-${data.malId}`,
+            `anime-details-v10-${data.malId}`,
             data,
             12 * 60 * 60 * 1000,
           );

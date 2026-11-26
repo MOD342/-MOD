@@ -153,13 +153,20 @@ function mapMediaToCard(m: any) {
   const posterUrl = m.coverImage?.extraLarge || m.coverImage?.large || '';
   const rating = m.averageScore ? Number((m.averageScore / 10).toFixed(1)) : 8.4;
   const genres = (m.genres || []).map((g: string) => GENRE_MAP_AR[g] || g);
-  const latestEp = m.nextAiringEpisode?.episode
+  const isUpcoming = m.status === 'NOT_YET_RELEASED';
+  const isReleasing = m.status === 'RELEASING';
+  const latestEp = isUpcoming
+    ? 0
+    : m.nextAiringEpisode?.episode
     ? Math.max(1, m.nextAiringEpisode.episode - 1)
+    : isReleasing
+    ? 1
     : m.episodes || 12;
+  const cardEpisodes = isUpcoming ? 0 : isReleasing ? latestEp : (m.episodes || 12);
 
   return {
     _id: id,
-    id: `${id}-episode-${latestEp}`,
+    id: `${id}-episode-${Math.max(1, latestEp)}`,
     mal_id: Number(id),
     title,
     title_english: title,
@@ -173,11 +180,11 @@ function mapMediaToCard(m: any) {
     favourites: m.favourites || 2500,
     trending: m.trending || 100,
     genres,
-    status: m.status === 'RELEASING' ? 'مستمر' : 'مكتمل',
-    episodes: m.episodes || 12,
-    episodesCount: m.episodes || 12,
-    episode: String(latestEp),
-    episodeNumber: String(latestEp),
+    status: isUpcoming ? 'قادم' : isReleasing ? 'مستمر' : 'مكتمل',
+    episodes: cardEpisodes,
+    episodesCount: cardEpisodes,
+    episode: String(Math.max(1, latestEp)),
+    episodeNumber: String(Math.max(1, latestEp)),
     releaseYear: String(m.seasonYear || 2025),
     season: (m.season || 'winter').toLowerCase(),
     animeId: {
@@ -1269,20 +1276,98 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
           const resolvedMalId = media.idMal || media.id || numId || 1;
           const title = media.title?.english || media.title?.romaji || 'Anime';
           const posterUrl = media.coverImage?.extraLarge || media.coverImage?.large || '';
-          const totalEps = Math.min(
-            media.episodes || (media.nextAiringEpisode?.episode ? media.nextAiringEpisode.episode - 1 : 12) || 12,
-            1200
-          );
-          const slugPrefix = !isPureNum && !cleanIdPart.startsWith('search-') ? cleanIdPart : String(resolvedMalId);
-          const episodesList = Array.from({ length: Math.max(1, totalEps) }, (_, i) => ({
-            id: !isPureNum && !cleanIdPart.startsWith('search-')
-              ? `${slugPrefix}__ep__${i + 1}`
-              : `${resolvedMalId}-episode-${i + 1}`,
-            num: String(i + 1),
-            title: `الحلقة ${i + 1}`,
-            seasonNumber: 1,
-            link: `/anime/${slugPrefix}/episode/${i + 1}`
-          }));
+          const isUpcoming = media.status === 'NOT_YET_RELEASED';
+          const isReleasing = media.status === 'RELEASING';
+          const statusAr = isUpcoming ? 'قادم' : isReleasing ? 'مستمر' : 'مكتمل';
+
+          let scrapedSlug = !isPureNum && !cleanIdPart.startsWith('search-') ? cleanIdPart : '';
+          const realScrapedEps: any[] = [];
+
+          if (!isUpcoming && typeof DOMParser !== 'undefined') {
+            try {
+              const tryParseOkAnimePage = (html: string, slugVal: string) => {
+                if (!html || !html.includes('/episode/')) return;
+                const doc = new DOMParser().parseFromString(html, 'text/html');
+                const seenNums = new Set<string>();
+                doc.querySelectorAll('a[href*="/episode/"]').forEach((aEl) => {
+                  const href = (aEl.getAttribute('href') || '').trim();
+                  const m = href.match(/-episode-(\d+)/i);
+                  if (!m || !m[1]) return;
+                  const epNum = String(parseInt(m[1], 10));
+                  if (!epNum || seenNums.has(epNum)) return;
+                  seenNums.add(epNum);
+                  const epSlug = extractPrimarySlugClient(href) || slugVal;
+                  realScrapedEps.push({
+                    id: `${epSlug}__ep__${epNum}`,
+                    num: epNum,
+                    title: `الحلقة ${epNum}`,
+                    seasonNumber: 1,
+                    link: href.startsWith('http') ? href : `https://ww3.okanime.xyz${href}`,
+                  });
+                });
+                realScrapedEps.sort((a, b) => (parseInt(a.num, 10) || 0) - (parseInt(b.num, 10) || 0));
+              };
+
+              if (scrapedSlug) {
+                const okHtml = await fetchHtmlDirectInClient(`https://ww3.okanime.xyz/anime/${scrapedSlug}`).catch(() => '');
+                tryParseOkAnimePage(okHtml, scrapedSlug);
+              } else {
+                const sQuery = media.title?.english || media.title?.romaji || '';
+                if (sQuery) {
+                  const searchHtml = await fetchHtmlDirectInClient(
+                    `https://ww3.okanime.xyz/search?q=${encodeURIComponent(sQuery)}`
+                  ).catch(() => '');
+                  if (searchHtml) {
+                    const sDoc = new DOMParser().parseFromString(searchHtml, 'text/html');
+                    const firstHref = sDoc.querySelector('.anime-card a[href*="/anime/"]')?.getAttribute('href') || '';
+                    const foundSlug = extractPrimarySlugClient(firstHref);
+                    if (foundSlug) {
+                      scrapedSlug = foundSlug;
+                      const okHtml = await fetchHtmlDirectInClient(`https://ww3.okanime.xyz/anime/${foundSlug}`).catch(() => '');
+                      tryParseOkAnimePage(okHtml, foundSlug);
+                    }
+                  }
+                }
+              }
+            } catch {}
+          }
+
+          const slugPrefix = scrapedSlug || (!isPureNum && !cleanIdPart.startsWith('search-') ? cleanIdPart : String(resolvedMalId));
+          let episodesList: any[] = [];
+          let totalEps = 0;
+
+          if (isUpcoming) {
+            episodesList = [];
+            totalEps = 0;
+          } else if (realScrapedEps.length > 0) {
+            episodesList = realScrapedEps;
+            totalEps = realScrapedEps.length;
+          } else if (isReleasing) {
+            // Strictly aired count for ongoing anime (never planned 12/25 total!)
+            const nextEp = Number(media.nextAiringEpisode?.episode || 0);
+            const streamedLen = Array.isArray(media.streamingEpisodes) ? media.streamingEpisodes.length : 0;
+            totalEps = Math.min(nextEp > 1 ? nextEp - 1 : Math.max(1, streamedLen), 1200);
+            episodesList = Array.from({ length: totalEps }, (_, i) => ({
+              id: !isPureNum && !cleanIdPart.startsWith('search-')
+                ? `${slugPrefix}__ep__${i + 1}`
+                : `${resolvedMalId}-episode-${i + 1}`,
+              num: String(i + 1),
+              title: `الحلقة ${i + 1}`,
+              seasonNumber: 1,
+              link: `/anime/${slugPrefix}/episode/${i + 1}`
+            }));
+          } else {
+            totalEps = Math.min(Math.max(Number(media.episodes || 0), 1), 1200);
+            episodesList = Array.from({ length: totalEps }, (_, i) => ({
+              id: !isPureNum && !cleanIdPart.startsWith('search-')
+                ? `${slugPrefix}__ep__${i + 1}`
+                : `${resolvedMalId}-episode-${i + 1}`,
+              num: String(i + 1),
+              title: `الحلقة ${i + 1}`,
+              seasonNumber: 1,
+              link: `/anime/${slugPrefix}/episode/${i + 1}`
+            }));
+          }
 
           const arabicDesc = await translateTextToArabicClient(media.description || '');
 
@@ -1454,33 +1539,37 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
               _id: slugPrefix,
               malId: resolvedMalId,
               anilistId: media.id,
+              okanimeSlug: scrapedSlug || undefined,
               title,
               englishTitle: title,
               posterUrl,
               bannerUrl: media.bannerImage || posterUrl,
               description: arabicDesc || 'قصة هذا الأنمي متوفرة ومحدثة.',
               episodes: episodesList,
-              seasonsList: [
-                {
-                  seasonNumber: 1,
-                  title: 'الموسم 1',
-                  malId: resolvedMalId,
-                  posterUrl,
-                  episodesCount: episodesList.length,
-                  episodes: episodesList
-                }
-              ],
+              seasonsList: episodesList.length > 0
+                ? [
+                    {
+                      seasonNumber: 1,
+                      title: 'الموسم 1',
+                      malId: resolvedMalId,
+                      posterUrl,
+                      episodesCount: episodesList.length,
+                      episodes: episodesList
+                    }
+                  ]
+                : [],
               activeSeason: 1,
               genres: (media.genres || []).map((g: string) => GENRE_MAP_AR[g] || g),
               rating: media.averageScore ? Number((media.averageScore / 10).toFixed(1)) : 8.5,
-              status: media.status === 'RELEASING' ? 'مستمر' : 'مكتمل',
+              status: statusAr,
               type: media.format || 'TV',
-              episodesCount: String(totalEps),
+              episodesCount: String(episodesList.length),
               releaseYear: String(media.seasonYear || 2025),
               season: `${media.season || 'WINTER'} ${media.seasonYear || 2025}`,
               characters,
               related,
               relatedGraphVersion: 2,
+              catalogSchemaVersion: 3,
               jikanRecommendations,
               pictures: mediaPictures
             }
@@ -1587,7 +1676,7 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
               },
               posterUrl: m.coverImage?.extraLarge || m.coverImage?.large || '',
               score: m.averageScore ? Number((m.averageScore / 10).toFixed(1)) : 8.2,
-              episodes: m.episodes || (m.nextAiringEpisode?.episode ? Math.max(12, m.nextAiringEpisode.episode) : 12),
+              episodes: m.nextAiringEpisode?.episode ? Math.max(1, m.nextAiringEpisode.episode - 1) : 1,
               year: m.seasonYear || 2025,
               season: m.season ? m.season.toLowerCase() : 'fall',
               type: m.format || 'TV',
@@ -1854,6 +1943,7 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
       const bodyObj = parseRequestBody(options);
       const rawUrlOrId = String(bodyObj?.url || bodyObj?.animeId || '');
       const animeTitle = String(bodyObj?.animeTitle || '').trim();
+      const englishTitle = String(bodyObj?.englishTitle || '').trim();
       let epNum = String(bodyObj?.episodeNum || '');
       if (!epNum) {
         if (rawUrlOrId.includes('__ep__')) epNum = rawUrlOrId.split('__ep__')[1];
@@ -1888,6 +1978,9 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
       }
       if (bodyObj?.animeId && !/^\d+$/.test(String(bodyObj.animeId))) {
         addSlug(String(bodyObj.animeId));
+      }
+      if (englishTitle) {
+        addSlug(normalizeSlug(englishTitle));
       }
       if (animeTitle) {
         addSlug(normalizeSlug(animeTitle));
@@ -1974,9 +2067,10 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
       }
 
       // 2. البحث بالاسم إذا لم يطابق المسار المباشر
-      if (scrapedServers.length === 0 && animeTitle && typeof DOMParser !== 'undefined') {
+      const searchTitle = englishTitle || animeTitle;
+      if (scrapedServers.length === 0 && searchTitle && typeof DOMParser !== 'undefined') {
         try {
-          const searchHtml = await fetchHtmlDirectInClient(`https://ww3.okanime.xyz/search?q=${encodeURIComponent(animeTitle)}`);
+          const searchHtml = await fetchHtmlDirectInClient(`https://ww3.okanime.xyz/search?q=${encodeURIComponent(searchTitle)}`);
           if (searchHtml) {
             const sDoc = new DOMParser().parseFromString(searchHtml, 'text/html');
             const firstHref = sDoc.querySelector('.anime-card a[href*="/anime/"]')?.getAttribute('href') || '';

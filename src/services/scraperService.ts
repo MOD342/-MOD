@@ -1961,7 +1961,8 @@ export class ScraperService {
     animeId?: string,
     episodeNum?: string | number,
     seasonNumber?: number | string,
-    animeTitle?: string
+    animeTitle?: string,
+    englishTitle?: string
   ): Promise<EpisodeServer[]> {
     const rawInput = String(episodeId || '').trim();
     let jikanId = animeId ? String(animeId) : '';
@@ -1996,7 +1997,7 @@ export class ScraperService {
       }
     }
 
-    const cacheKey = `servers_v8_okanime_fast:${episodeId}:${jikanId}:${animeTitle || ''}:${explicitSeason || 1}:${epNum}`;
+    const cacheKey = `servers_v8_okanime_fast:${episodeId}:${jikanId}:${animeTitle || englishTitle || ''}:${explicitSeason || 1}:${epNum}`;
     const cachedServers = await this.getCached<EpisodeServer[]>(cacheKey);
     if (cachedServers && Array.isArray(cachedServers) && cachedServers.length > 0) {
       return cachedServers;
@@ -2015,7 +2016,10 @@ export class ScraperService {
       }
 
       const candidateTitles: string[] = [];
-      if (animeTitle && animeTitle.trim()) {
+      if (englishTitle && englishTitle.trim()) {
+        candidateTitles.push(englishTitle.trim());
+      }
+      if (animeTitle && animeTitle.trim() && !candidateTitles.includes(animeTitle.trim())) {
         candidateTitles.push(animeTitle.trim());
       }
       if (resolvedPrimarySlug) {

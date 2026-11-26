@@ -822,6 +822,7 @@ function sendVideoHeaders(
   );
   res.setHeader("Content-Type", contentType || "video/mp4");
   res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Expose-Headers", "Content-Length, Content-Range, Content-Disposition, Accept-Ranges");
   if (contentLength) {
     res.setHeader("Content-Length", String(contentLength));
   }

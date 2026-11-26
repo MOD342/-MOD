@@ -847,7 +847,7 @@ export default function ExploreView({
           {/* عرض النتائج حسب الوضع المختار */}
           <div className={isListMode ? 'p-2 md:p-4' : 'p-0 md:p-4'}>
             {loading ? (
-              <div className={getLayoutGridClasses(layoutMode)}>
+              <div className={getLayoutGridClasses(layoutMode, display.isCoverScreen)}>
                 {[...Array(21)].map((_, i) => (
                   <div
                     key={i}
@@ -859,7 +859,7 @@ export default function ExploreView({
               </div>
             ) : results.length > 0 ? (
               <>
-                <div className={getLayoutGridClasses(layoutMode)}>
+                <div className={getLayoutGridClasses(layoutMode, display.isCoverScreen)}>
                   {results.map((anime, idx) => {
                     const isManga = mediaKind === 'manga' || anime.mediaType === 'manga';
                     const cleanTitle = cleanAnimeTitle(anime.title || anime.titleAr || 'Anime');
@@ -906,6 +906,7 @@ export default function ExploreView({
                               src={anime.posterUrl || FALLBACK_POSTER_DATA_URL}
                               alt={cleanTitle}
                               loading="lazy"
+                              decoding="async"
                               referrerPolicy="no-referrer"
                               onError={(e) => {
                                 if (e.currentTarget.src !== FALLBACK_POSTER_DATA_URL) {
@@ -992,24 +993,25 @@ export default function ExploreView({
                           src={anime.posterUrl || FALLBACK_POSTER_DATA_URL}
                           alt={cleanTitle}
                           loading="lazy"
+                          decoding="async"
                           referrerPolicy="no-referrer"
                           onError={(e) => {
                             if (e.currentTarget.src !== FALLBACK_POSTER_DATA_URL) {
                               e.currentTarget.src = FALLBACK_POSTER_DATA_URL;
                             }
                           }}
-                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                         />
 
                         <div
                           className="absolute top-1.5 inset-x-1.5 z-10 flex items-center justify-between gap-1 pointer-events-none"
                           dir="ltr"
                         >
-                          <span className="bg-black/80 backdrop-blur-md text-white px-1.5 py-0.5 rounded text-[9px] sm:text-[10px] font-black border border-white/15 uppercase tracking-tight">
+                          <span className="bg-black/85 text-white px-1.5 py-0.5 rounded text-[9px] sm:text-[10px] font-black border border-white/15 uppercase tracking-tight">
                             {shortType}
                           </span>
                           {ratingVal && (
-                            <span className="bg-black/80 backdrop-blur-md text-yellow-400 px-1.5 py-0.5 rounded flex items-center gap-0.5 text-[9px] sm:text-[10px] font-black border border-white/15 shadow tabular-nums">
+                            <span className="bg-black/85 text-yellow-400 px-1.5 py-0.5 rounded flex items-center gap-0.5 text-[9px] sm:text-[10px] font-black border border-white/15 shadow tabular-nums">
                               <Star size={8} fill="currentColor" /> {ratingVal}
                             </span>
                           )}

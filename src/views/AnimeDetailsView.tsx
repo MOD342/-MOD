@@ -421,7 +421,7 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
 
     try {
       if (!forceBypass) {
-        const cached = clientCache.get<any>(`client_anime_details_v8_${id}`);
+        const cached = clientCache.get<any>(`client_anime_details_v9_${id}`);
         if (cached && cached.description && cached.description !== 'جاري تحديث قصة وتفاصيل هذا الأنمي قريباً.') {
           setAnime(cached);
           setLoading(false);
@@ -445,7 +445,7 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
         setAnime(data);
         setLoading(false);
         setLoadError(false);
-        clientCache.set(`client_anime_details_v8_${id}`, data, 12 * 60 * 60 * 1000);
+        clientCache.set(`client_anime_details_v9_${id}`, data, 12 * 60 * 60 * 1000);
         if (needsSynopsisArabicTranslation(data?.description)) {
           fetch('/api/anime/translate-synopsis', {
             method: 'POST',

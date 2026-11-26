@@ -63,14 +63,16 @@ export function useGlobalLayoutMode(): [GlobalViewLayoutMode, () => void] {
   return [mode, cycleLayoutMode];
 }
 
-export function getLayoutGridClasses(mode: GlobalViewLayoutMode): string {
+export function getLayoutGridClasses(mode: GlobalViewLayoutMode, isCoverScreen = false): string {
   if (mode === 'list') {
     return 'grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-1.5 sm:gap-2';
   }
   if (mode === 'grid2') {
-    return 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-0 border-t border-r border-white/10';
+    return 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-0 border-t border-r border-white/10';
   }
-  return 'grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7 gap-0 border-t border-r border-white/10';
+  return `${
+    isCoverScreen ? 'grid-cols-2' : 'grid-cols-3'
+  } grid sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7 2xl:grid-cols-8 gap-0 border-t border-r border-white/10`;
 }
 
 // Helper to format anime type into max 3 English characters
@@ -171,7 +173,7 @@ export function LayoutModeToggleButton({
       onClick={onToggle}
       title={getTitle()}
       aria-label={getTitle()}
-      className={`p-2 rounded-xl bg-neutral-900 border border-neutral-800 text-neutral-300 hover:text-white hover:border-neutral-700 transition active:scale-95 cursor-pointer flex items-center justify-center shrink-0 ${className}`}
+      className={`min-w-[40px] min-h-[40px] p-2 rounded-xl bg-neutral-900 border border-neutral-800 text-neutral-300 hover:text-white hover:border-neutral-700 transition active:scale-95 cursor-pointer flex items-center justify-center shrink-0 ${className}`}
     >
       {mode === 'grid3' && <Grid3x3 size={16} />}
       {mode === 'grid2' && <LayoutGrid size={16} />}
