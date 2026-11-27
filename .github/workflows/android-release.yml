@@ -43,14 +43,21 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      # ✅ تم استبدال الخطوة اليدوية بهذا الإجراء الموثوق لإعداد مسارات Android SDK تلقائياً
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android SDK Components
+      # ✅ الحل الجذري: العثور ديناميكياً على مسار cmdline-tools وتعيينه دون استخدام إجراءات معطوبة
+      - name: Setup Android SDK Environment
         run: |
-          # قبول التراخيص وتثبيت الأدوات المطلوبة (الإصدار 34 هو الأكثر استقراراً حالياً)
-          yes | sdkmanager --licenses > /dev/null || true
+          # البحث عن مجلد bin داخل cmdline-tools (سواء كان latest أو إصدار رقمي مثل 11.0)
+          CMDLINE_BIN=$(find "${ANDROID_HOME}/cmdline-tools" -maxdepth 2 -name "bin" -type d | sort -V | tail -n 1)
+          echo "✅ Found cmdline-tools at: $CMDLINE_BIN"
+          
+          # إضافة المسار إلى متغيرات البيئة
+          echo "$CMDLINE_BIN" >> $GITHUB_PATH
+          echo "${ANDROID_HOME}/platform-tools" >> $GITHUB_PATH
+          
+          # قبول التراخيص بصمت
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          
+          # تثبيت الحزم المطلوبة (الإصدار 34 هو الأكثر استقراراً)
           sdkmanager --install "platforms;android-34" "build-tools;34.0.0" "platform-tools"
 
       - name: Cache Gradle
@@ -168,7 +175,6 @@ jobs:
           
           [ -f "scripts/configure-android-permissions.mjs" ] && node scripts/configure-android-permissions.mjs
           
-          # إزالة إعدادات minify بشكل آمن من buildTypes إذا كانت موجودة
           if [ -f "android/app/build.gradle" ]; then
             sed -i '/buildTypes {/,/}/ { /minifyEnabled true/d; /shrinkResources true/d }' android/app/build.gradle || true
           fi
