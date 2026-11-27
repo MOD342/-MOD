@@ -39,7 +39,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
       - name: Setup Java 21 (Temurin)
         uses: actions/setup-java@v5
@@ -62,12 +61,12 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('package-lock.json', 'scripts/configure-android-permissions.mjs') }}
+          key: ${{ runner.os }}-gradle-${{ hashFiles('package.json', 'scripts/configure-android-permissions.mjs') }}
           restore-keys: |
             ${{ runner.os }}-gradle-
 
       - name: Install npm dependencies
-        run: npm ci
+        run: npm install
 
       - name: TypeScript check
         run: npm run lint
@@ -230,3 +229,4 @@ jobs:
           SHA-1 Fingerprint   : ${{ steps.signing.outputs.sha1 }}
           SHA-256 Fingerprint : ${{ steps.signing.outputs.sha256 }}
 
+          Firebase Console Setup (Google Sign-In on Android):
