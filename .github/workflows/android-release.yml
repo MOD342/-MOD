@@ -1,4 +1,4 @@
-name: Build & Sign Android Release (أنمي MOD)
+name: Build & Sign Android APK (أنمي MOD)
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ on:
         required: false
         type: string
       create_github_release:
-        description: 'نشر ملفات APK و AAB داخل GitHub Releases'
+        description: 'نشر ملف APK داخل GitHub Releases'
         required: false
         default: false
         type: boolean
@@ -28,7 +28,7 @@ permissions:
 
 jobs:
   build-android-release:
-    name: Build Signed APK & AAB (com.zoryx)
+    name: Build Signed APK (com.zoryx)
     runs-on: ubuntu-latest
 
     steps:
@@ -214,13 +214,13 @@ jobs:
             fs.writeFileSync(p, fixed.join("\n"));
           '
 
-      - name: Build Signed Release APK & AAB
+      - name: Build Signed Release APK
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleRelease bundleRelease --no-daemon --stacktrace
+          ./gradlew assembleRelease --no-daemon --stacktrace
 
-      - name: Verify Signatures & Package Release Outputs
+      - name: Verify Signature & Package Release APK
         id: package
         env:
           VER_NAME: ${{ steps.meta.outputs.version_name }}
@@ -231,3 +231,5 @@ jobs:
         run: |
           cat << 'PKG_EOF' > /tmp/pkg.cjs
           const fs = require("fs");
+          const { execFileSync } = require("child_process");
+          const sdkRoot = process.env.ANDROID_SDK_ROOT || process.env.ANDROID_HOME;
