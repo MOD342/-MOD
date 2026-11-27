@@ -43,14 +43,13 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
+      # ✅ تم استبدال الخطوة اليدوية بهذا الإجراء الموثوق لإعداد مسارات Android SDK تلقائياً
       - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK Components
         run: |
-          # استخدام المسار القياسي في GitHub Actions
-          CMDLINE_BIN="${ANDROID_HOME}/cmdline-tools/latest/bin"
-          echo "$CMDLINE_BIN" >> "$GITHUB_PATH"
-          echo "${ANDROID_HOME}/platform-tools" >> "$GITHUB_PATH"
-          
-          # قبول التراخيص وتثبيت الأدوات المطلوبة (يُفضل استخدام 34 أو 35 للاستقرار)
+          # قبول التراخيص وتثبيت الأدوات المطلوبة (الإصدار 34 هو الأكثر استقراراً حالياً)
           yes | sdkmanager --licenses > /dev/null || true
           sdkmanager --install "platforms;android-34" "build-tools;34.0.0" "platform-tools"
 
@@ -66,7 +65,7 @@ jobs:
       - name: Install & Lint
         run: |
           npm install
-          npm run lint || true # السماح بالاستمرار حتى لو كانت هناك تحذيرات lint
+          npm run lint || true
 
       - name: Resolve Version & Env
         id: meta
@@ -84,7 +83,6 @@ jobs:
           SECRET_FB_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
           SECRET_FB_DB_ID: ${{ secrets.VITE_FIREBASE_DATABASE_ID }}
         run: |
-          # استخدام jq لاستخراج الإصدار بشكل موثوق
           PKG_VERSION=$(jq -r '.version' package.json)
           [ "$PKG_VERSION" == "null" ] && PKG_VERSION="1.0.0"
           
@@ -170,7 +168,7 @@ jobs:
           
           [ -f "scripts/configure-android-permissions.mjs" ] && node scripts/configure-android-permissions.mjs
           
-          # إزالة إعدادات minify بشكل آمن من buildTypes إذا كانت موجودة (بدلاً من signingConfigs)
+          # إزالة إعدادات minify بشكل آمن من buildTypes إذا كانت موجودة
           if [ -f "android/app/build.gradle" ]; then
             sed -i '/buildTypes {/,/}/ { /minifyEnabled true/d; /shrinkResources true/d }' android/app/build.gradle || true
           fi
@@ -198,13 +196,10 @@ jobs:
           
           fs.mkdirSync(outputDir, { recursive: true });
           
-          // إذا كان Gradle قد وقّع التطبيق بالفعل
           if (fs.existsSync(signedApk)) {
             console.log("✅ تم العثور على APK موقع من Gradle");
             fs.copyFileSync(signedApk, path.join(outputDir, finalApkName));
-          } 
-          // إذا كان غير موقع، نقوم بمحاذاة وتوقيع يدوي
-          else if (fs.existsSync(unsignedApk)) {
+          } else if (fs.existsSync(unsignedApk)) {
             console.log("⚙️ جاري محاذاة وتوقيع APK يدوياً...");
             execFileSync(`${buildTools}/zipalign`, ["-v", "-p", "4", unsignedApk, alignedApk], { stdio: "inherit" });
             execFileSync(`${buildTools}/apksigner`, [
