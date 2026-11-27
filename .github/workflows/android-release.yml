@@ -88,7 +88,7 @@ jobs:
           echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
           echo "ANDROID_VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
           echo "ANDROID_VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
-          RESOLVED_API_URL="${INPUT_API_URL:-${SECRET_API_URL:-${VAR_API_URL:-https://workers.dev}}}"
+          RESOLVED_API_URL="${INPUT_API_URL:-${SECRET_API_URL:-${VAR_API_URL:-https://mod.z-mod342.workers.dev}}}"
           {
             echo "VITE_API_URL=${RESOLVED_API_URL}"
             [ -n "${SECRET_GOOGLE_CLIENT_ID:-}" ] && echo "VITE_GOOGLE_CLIENT_ID=${SECRET_GOOGLE_CLIENT_ID}"
@@ -194,7 +194,12 @@ jobs:
           if (!fs.existsSync(signedApk)) throw new Error("Missing final APK");
           execFileSync(`${buildTools}/apksigner`, ["verify", "--print-certs", signedApk], { stdio: "inherit" });
           fs.mkdirSync("release-output", { recursive: true });
-          
+          const finalApk = `release-output/AnimeMOD-v${process.env.VER_NAME}-com.zoryx-release.apk`;
+          fs.copyFileSync(signedApk, finalApk);
+          fs.writeFileSync("release-output/signing-fingerprint-report.txt", `Version: ${process.env.VER_NAME} (${process.env.VER_CODE})\nMode: ${process.env.SIGN_MODE}\nSHA-1: ${process.env.FP_SHA1}\nSHA-256: ${process.env.FP_SHA256}\n`);
+          PKG_EOF
+          node /tmp/pkg.cjs
+
       - name: Upload APK & Report
         uses: actions/upload-artifact@v4
         with:
@@ -213,4 +218,3 @@ jobs:
           files: |
             release-output/*.apk
             release-output/signing-fingerprint-report.txt
-
