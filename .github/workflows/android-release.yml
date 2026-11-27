@@ -43,21 +43,24 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      # ✅ الحل الجذري: العثور ديناميكياً على مسار cmdline-tools وتعيينه دون استخدام إجراءات معطوبة
+      # ✅ الخطوة المصححة جذرياً: تحديث المسار للخطوة الحالية والتالية
       - name: Setup Android SDK Environment
         run: |
-          # البحث عن مجلد bin داخل cmdline-tools (سواء كان latest أو إصدار رقمي مثل 11.0)
+          # العثور ديناميكياً على مسار cmdline-tools
           CMDLINE_BIN=$(find "${ANDROID_HOME}/cmdline-tools" -maxdepth 2 -name "bin" -type d | sort -V | tail -n 1)
           echo "✅ Found cmdline-tools at: $CMDLINE_BIN"
           
-          # إضافة المسار إلى متغيرات البيئة
+          # ✅ تصدير المسار للبيئة الحالية (مهم جداً لكي يعمل الأمر في نفس الخطوة)
+          export PATH="$CMDLINE_BIN:${ANDROID_HOME}/platform-tools:$PATH"
+          
+          # حفظ المسار للخطوات التالية في الـ Workflow
           echo "$CMDLINE_BIN" >> $GITHUB_PATH
           echo "${ANDROID_HOME}/platform-tools" >> $GITHUB_PATH
           
-          # قبول التراخيص بصمت
+          # قبول التراخيص بصمت (تجاهل خطأ Broken pipe لأنه طبيعي عند إغلاق sdkmanager)
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
           
-          # تثبيت الحزم المطلوبة (الإصدار 34 هو الأكثر استقراراً)
+          # تثبيت الحزم المطلوبة (الإصدار 34 مستقر ومضمون التوافق)
           sdkmanager --install "platforms;android-34" "build-tools;34.0.0" "platform-tools"
 
       - name: Cache Gradle
@@ -110,135 +113,4 @@ jobs:
             echo "VITE_API_URL=${RESOLVED_API_URL}"
             [ -n "${SECRET_GOOGLE_CLIENT_ID:-}" ] && echo "VITE_GOOGLE_CLIENT_ID=${SECRET_GOOGLE_CLIENT_ID}"
             [ -n "${SECRET_FB_API_KEY:-}" ] && echo "VITE_FIREBASE_API_KEY=${SECRET_FB_API_KEY}"
-            [ -n "${SECRET_FB_AUTH_DOMAIN:-}" ] && echo "VITE_FIREBASE_AUTH_DOMAIN=${SECRET_FB_AUTH_DOMAIN}"
-            [ -n "${SECRET_FB_PROJECT_ID:-}" ] && echo "VITE_FIREBASE_PROJECT_ID=${SECRET_FB_PROJECT_ID}"
-            [ -n "${SECRET_FB_STORAGE_BUCKET:-}" ] && echo "VITE_FIREBASE_STORAGE_BUCKET=${SECRET_FB_STORAGE_BUCKET}"
-            [ -n "${SECRET_FB_SENDER_ID:-}" ] && echo "VITE_FIREBASE_MESSAGING_SENDER_ID=${SECRET_FB_SENDER_ID}"
-            [ -n "${SECRET_FB_APP_ID:-}" ] && echo "VITE_FIREBASE_APP_ID=${SECRET_FB_APP_ID}"
-            [ -n "${SECRET_FB_DB_ID:-}" ] && echo "VITE_FIREBASE_DATABASE_ID=${SECRET_FB_DB_ID}"
-          } > .env
-
-      - name: Prepare Signing Keystore
-        id: signing
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: |
-          mkdir -p "${RUNNER_TEMP}/signing" "public/.well-known"
-          KEYSTORE_PATH="${RUNNER_TEMP}/signing/zoryx-release.keystore"
-          
-          if [ -n "${ANDROID_KEYSTORE_BASE64:-}" ] && [ -n "${ANDROID_KEYSTORE_PASSWORD:-}" ] && [ -n "${ANDROID_KEY_ALIAS:-}" ]; then
-            echo "$ANDROID_KEYSTORE_BASE64" | tr -d '\n\r ' | base64 -d > "$KEYSTORE_PATH"
-            STORE_PASS="$ANDROID_KEYSTORE_PASSWORD"
-            KEY_ALIAS="$ANDROID_KEY_ALIAS"
-            KEY_PASS="${ANDROID_KEY_PASSWORD:-$ANDROID_KEYSTORE_PASSWORD}"
-            SIGNING_MODE="persistent-secret"
-          else
-            echo "⚠️ لم يتم العثور على مفاتيح التوقيع، جاري إنشاء مفتاح مؤقت للتجربة فقط"
-            STORE_PASS=$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 24)
-            KEY_PASS="$STORE_PASS"
-            KEY_ALIAS="zoryx-release"
-            keytool -genkeypair -v -storetype PKCS12 -keystore "$KEYSTORE_PATH" -alias "$KEY_ALIAS" -keyalg RSA -keysize 2048 -validity 10000 -storepass "$STORE_PASS" -keypass "$KEY_PASS" -dname "CN=Anime MOD, OU=Mobile, O=Zoryx, L=Riyadh, S=Riyadh, C=SA"
-            SIGNING_MODE="ephemeral-ci"
-          fi
-          
-          CERT_INFO=$(keytool -list -v -keystore "$KEYSTORE_PATH" -storepass "$STORE_PASS")
-          SHA1_FP=$(echo "$CERT_INFO" | grep "SHA1:" | head -n1 | awk '{print $2}')
-          SHA256_FP=$(echo "$CERT_INFO" | grep "SHA256:" | head -n1 | awk '{print $2}')
-          
-          echo "::add-mask::$STORE_PASS"
-          echo "::add-mask::$KEY_PASS"
-          echo "signing_mode=$SIGNING_MODE" >> "$GITHUB_OUTPUT"
-          echo "sha1=$SHA1_FP" >> "$GITHUB_OUTPUT"
-          echo "sha256=$SHA256_FP" >> "$GITHUB_OUTPUT"
-          
-          {
-            echo "ANDROID_KEYSTORE_PATH=$KEYSTORE_PATH"
-            echo "ANDROID_KEYSTORE_PASSWORD=$STORE_PASS"
-            echo "ANDROID_KEY_ALIAS=$KEY_ALIAS"
-            echo "ANDROID_KEY_PASSWORD=$KEY_PASS"
-          } >> "$GITHUB_ENV"
-          
-          [ -f "scripts/generate-android-signing.mjs" ] && ANDROID_KEYSTORE_PASSWORD="$STORE_PASS" node scripts/generate-android-signing.mjs --inspect "$KEYSTORE_PATH" --write-assetlinks || true
-
-      - name: Build Web & Sync Android
-        env:
-          GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
-        run: |
-          npm run build
-          [ ! -d "android" ] && npx cap add android
-          npx cap sync android
-          
-          [ -n "${GOOGLE_SERVICES_JSON_BASE64:-}" ] && echo "$GOOGLE_SERVICES_JSON_BASE64" | tr -d '\n\r ' | base64 -d > android/app/google-services.json
-          
-          [ -f "scripts/configure-android-permissions.mjs" ] && node scripts/configure-android-permissions.mjs
-          
-          if [ -f "android/app/build.gradle" ]; then
-            sed -i '/buildTypes {/,/}/ { /minifyEnabled true/d; /shrinkResources true/d }' android/app/build.gradle || true
-          fi
-
-      - name: Build & Package Signed APK
-        env:
-          VER_NAME: ${{ steps.meta.outputs.version_name }}
-          VER_CODE: ${{ steps.meta.outputs.version_code }}
-          SIGN_MODE: ${{ steps.signing.outputs.signing_mode }}
-        run: |
-          chmod +x android/gradlew
-          (cd android && ./gradlew assembleRelease --no-daemon --stacktrace)
-          
-          cat << 'PKG_EOF' > /tmp/pkg.cjs
-          const fs = require("fs");
-          const path = require("path");
-          const { execFileSync } = require("child_process");
-          
-          const buildTools = `${process.env.ANDROID_HOME}/build-tools/34.0.0`;
-          const unsignedApk = "android/app/build/outputs/apk/release/app-release-unsigned.apk";
-          const signedApk = "android/app/build/outputs/apk/release/app-release.apk";
-          const alignedApk = "android/app/build/outputs/apk/release/app-release-aligned.apk";
-          const finalApkName = `app-release-v${process.env.VER_NAME}.apk`;
-          const outputDir = "release-output";
-          
-          fs.mkdirSync(outputDir, { recursive: true });
-          
-          if (fs.existsSync(signedApk)) {
-            console.log("✅ تم العثور على APK موقع من Gradle");
-            fs.copyFileSync(signedApk, path.join(outputDir, finalApkName));
-          } else if (fs.existsSync(unsignedApk)) {
-            console.log("⚙️ جاري محاذاة وتوقيع APK يدوياً...");
-            execFileSync(`${buildTools}/zipalign`, ["-v", "-p", "4", unsignedApk, alignedApk], { stdio: "inherit" });
-            execFileSync(`${buildTools}/apksigner`, [
-              "sign", "--ks", process.env.ANDROID_KEYSTORE_PATH,
-              "--ks-pass", `pass:${process.env.ANDROID_KEYSTORE_PASSWORD}`,
-              "--ks-key-alias", process.env.ANDROID_KEY_ALIAS,
-              "--key-pass", `pass:${process.env.ANDROID_KEY_PASSWORD}`,
-              "--out", signedApk, alignedApk
-            ], { stdio: "inherit" });
-            fs.copyFileSync(signedApk, path.join(outputDir, finalApkName));
-          } else {
-            throw new Error("❌ لم يتم العثور على ملف APK (موقع أو غير موقع)");
-          }
-          
-          console.log(`✅ تم حفظ التطبيق بنجاح: ${path.join(outputDir, finalApkName)}`);
-          PKG_EOF
-          
-          node /tmp/pkg.cjs
-
-      - name: Upload APK Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: anime-mod-apk
-          path: release-output/*.apk
-          retention-days: 30
-
-      - name: Create GitHub Release
-        if: github.event.inputs.create_github_release == 'true' || startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: release-output/*.apk
-          tag_name: ${{ steps.meta.outputs.version_name }}
-          name: Release v${{ steps.meta.outputs.version_name }}
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            [ -n "${SECRET_FB_AUTH_DOMAIN:-}" ] && echo "VITE_FIREBASE_AUTH_DOMAIN=${SECRET_FB_AUTH
