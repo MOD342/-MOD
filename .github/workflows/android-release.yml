@@ -4,24 +4,21 @@ on:
   workflow_dispatch:
     inputs:
       version_name:
-        description: 'إصدار التطبيق (اتركه فارغاً لاستخدام نسخة package.json)'
+        description: 'إصدار التطبيق'
         required: false
         type: string
       api_url:
-        description: 'رابط الخادم الخلفي VITE_API_URL (اختياري)'
+        description: 'رابط الخادم VITE_API_URL'
         required: false
         type: string
       create_github_release:
-        description: 'نشر ملف APK داخل GitHub Releases'
+        description: 'نشر في Releases'
         required: false
         default: false
         type: boolean
   push:
-    branches:
-      - main
-      - master
-    tags:
-      - 'v*'
+    branches: [main, master]
+    tags: ['v*']
 
 permissions:
   contents: write
@@ -32,21 +29,18 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Node.js 22
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '22'
 
-      - name: Setup Java 21 (Temurin)
-        uses: actions/setup-java@v5
+      - uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Install Android 36 SDK & Build Tools
+      - name: Install Android 36 SDK
         run: |
           SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
           CMDLINE_BIN="$(find "$SDK_ROOT/cmdline-tools" -maxdepth 2 -type d -name bin | sort -V | tail -n 1)"
@@ -55,23 +49,20 @@ jobs:
           yes | "$CMDLINE_BIN/sdkmanager" --licenses > /dev/null || true
           "$CMDLINE_BIN/sdkmanager" --install "platforms;android-36" "build-tools;36.0.0" "platform-tools"
 
-      - name: Cache Gradle packages
-        uses: actions/cache@v4
+      - uses: actions/cache@v4
         with:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
           key: ${{ runner.os }}-gradle-${{ hashFiles('package.json', 'scripts/configure-android-permissions.mjs') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
+          restore-keys: ${{ runner.os }}-gradle-
 
-      - name: Install npm dependencies
-        run: npm install
+      - name: Install & Lint
+        run: |
+          npm install
+          npm run lint
 
-      - name: TypeScript check
-        run: npm run lint
-
-      - name: Resolve version & build environment
+      - name: Resolve Version & Env
         id: meta
         env:
           INPUT_VERSION_NAME: ${{ github.event.inputs.version_name }}
@@ -88,37 +79,29 @@ jobs:
           SECRET_FB_DB_ID: ${{ secrets.VITE_FIREBASE_DATABASE_ID }}
         run: |
           PKG_VERSION=$(grep -m1 '"version"' package.json | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' || true)
-          if [ -z "$PKG_VERSION" ]; then
-            PKG_VERSION="1.0.0"
-          fi
-
+          [ -z "$PKG_VERSION" ] && PKG_VERSION="1.0.0"
           TAG_VERSION=""
-          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
-            TAG_VERSION="${GITHUB_REF_NAME#v}"
-          fi
-
+          [ "${GITHUB_REF_TYPE:-}" = "tag" ] && TAG_VERSION="${GITHUB_REF_NAME#v}"
           VERSION_NAME="${INPUT_VERSION_NAME:-${TAG_VERSION:-$PKG_VERSION}}"
           VERSION_CODE=$((100 + GITHUB_RUN_NUMBER))
-
           echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
           echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
           echo "ANDROID_VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
           echo "ANDROID_VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
-
           RESOLVED_API_URL="${INPUT_API_URL:-${SECRET_API_URL:-${VAR_API_URL:-https://workers.dev}}}"
           {
             echo "VITE_API_URL=${RESOLVED_API_URL}"
-            if [ -n "${SECRET_GOOGLE_CLIENT_ID:-}" ]; then echo "VITE_GOOGLE_CLIENT_ID=${SECRET_GOOGLE_CLIENT_ID}"; fi
-            if [ -n "${SECRET_FB_API_KEY:-}" ]; then echo "VITE_FIREBASE_API_KEY=${SECRET_FB_API_KEY}"; fi
-            if [ -n "${SECRET_FB_AUTH_DOMAIN:-}" ]; then echo "VITE_FIREBASE_AUTH_DOMAIN=${SECRET_FB_AUTH_DOMAIN}"; fi
-            if [ -n "${SECRET_FB_PROJECT_ID:-}" ]; then echo "VITE_FIREBASE_PROJECT_ID=${SECRET_FB_PROJECT_ID}"; fi
-            if [ -n "${SECRET_FB_STORAGE_BUCKET:-}" ]; then echo "VITE_FIREBASE_STORAGE_BUCKET=${SECRET_FB_STORAGE_BUCKET}"; fi
-            if [ -n "${SECRET_FB_SENDER_ID:-}" ]; then echo "VITE_FIREBASE_MESSAGING_SENDER_ID=${SECRET_FB_SENDER_ID}"; fi
-            if [ -n "${SECRET_FB_APP_ID:-}" ]; then echo "VITE_FIREBASE_APP_ID=${SECRET_FB_APP_ID}"; fi
-            if [ -n "${SECRET_FB_DB_ID:-}" ]; then echo "VITE_FIREBASE_DATABASE_ID=${SECRET_FB_DB_ID}"; fi
+            [ -n "${SECRET_GOOGLE_CLIENT_ID:-}" ] && echo "VITE_GOOGLE_CLIENT_ID=${SECRET_GOOGLE_CLIENT_ID}"
+            [ -n "${SECRET_FB_API_KEY:-}" ] && echo "VITE_FIREBASE_API_KEY=${SECRET_FB_API_KEY}"
+            [ -n "${SECRET_FB_AUTH_DOMAIN:-}" ] && echo "VITE_FIREBASE_AUTH_DOMAIN=${SECRET_FB_AUTH_DOMAIN}"
+            [ -n "${SECRET_FB_PROJECT_ID:-}" ] && echo "VITE_FIREBASE_PROJECT_ID=${SECRET_FB_PROJECT_ID}"
+            [ -n "${SECRET_FB_STORAGE_BUCKET:-}" ] && echo "VITE_FIREBASE_STORAGE_BUCKET=${SECRET_FB_STORAGE_BUCKET}"
+            [ -n "${SECRET_FB_SENDER_ID:-}" ] && echo "VITE_FIREBASE_MESSAGING_SENDER_ID=${SECRET_FB_SENDER_ID}"
+            [ -n "${SECRET_FB_APP_ID:-}" ] && echo "VITE_FIREBASE_APP_ID=${SECRET_FB_APP_ID}"
+            [ -n "${SECRET_FB_DB_ID:-}" ] && echo "VITE_FIREBASE_DATABASE_ID=${SECRET_FB_DB_ID}"
           } > .env
 
-      - name: Prepare Release Keystore & Certificate Fingerprints
+      - name: Prepare Signing Keystore
         id: signing
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -128,7 +111,6 @@ jobs:
         run: |
           mkdir -p "${RUNNER_TEMP}/signing" "public/.well-known"
           KEYSTORE_PATH="${RUNNER_TEMP}/signing/zoryx-release.keystore"
-
           if [ -n "${ANDROID_KEYSTORE_BASE64:-}" ] && [ -n "${ANDROID_KEYSTORE_PASSWORD:-}" ] && [ -n "${ANDROID_KEY_ALIAS:-}" ]; then
             echo "$ANDROID_KEYSTORE_BASE64" | tr -d '\n\r ' | base64 -d > "$KEYSTORE_PATH"
             STORE_PASS="$ANDROID_KEYSTORE_PASSWORD"
@@ -139,59 +121,34 @@ jobs:
             STORE_PASS=$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 24)
             KEY_PASS="$STORE_PASS"
             KEY_ALIAS="zoryx-release"
-            keytool -genkeypair -v \
-              -storetype PKCS12 \
-              -keystore "$KEYSTORE_PATH" \
-              -alias "$KEY_ALIAS" \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -storepass "$STORE_PASS" \
-              -keypass "$KEY_PASS" \
-              -dname "CN=Anime MOD, OU=Mobile, O=Zoryx, L=Riyadh, S=Riyadh, C=SA"
+            keytool -genkeypair -v -storetype PKCS12 -keystore "$KEYSTORE_PATH" -alias "$KEY_ALIAS" -keyalg RSA -keysize 2048 -validity 10000 -storepass "$STORE_PASS" -keypass "$KEY_PASS" -dname "CN=Anime MOD, OU=Mobile, O=Zoryx, L=Riyadh, S=Riyadh, C=SA"
             SIGNING_MODE="ephemeral-ci"
           fi
-
           CERT_INFO=$(keytool -list -v -keystore "$KEYSTORE_PATH" -storepass "$STORE_PASS")
           SHA1_FP=$(echo "$CERT_INFO" | grep -E "^\s*SHA1:" | head -n1 | sed -E 's/.*SHA1:\s*//')
           SHA256_FP=$(echo "$CERT_INFO" | grep -E "^\s*SHA256:" | head -n1 | sed -E 's/.*SHA256:\s*//')
-
           echo "::add-mask::$STORE_PASS"
           echo "::add-mask::$KEY_PASS"
-          echo "keystore_path=$KEYSTORE_PATH" >> "$GITHUB_OUTPUT"
-          echo "key_alias=$KEY_ALIAS" >> "$GITHUB_OUTPUT"
           echo "signing_mode=$SIGNING_MODE" >> "$GITHUB_OUTPUT"
           echo "sha1=$SHA1_FP" >> "$GITHUB_OUTPUT"
           echo "sha256=$SHA256_FP" >> "$GITHUB_OUTPUT"
-
           {
             echo "ANDROID_KEYSTORE_PATH=$KEYSTORE_PATH"
             echo "ANDROID_KEYSTORE_PASSWORD=$STORE_PASS"
             echo "ANDROID_KEY_ALIAS=$KEY_ALIAS"
             echo "ANDROID_KEY_PASSWORD=$KEY_PASS"
           } >> "$GITHUB_ENV"
+          [ -f "scripts/generate-android-signing.mjs" ] && ANDROID_KEYSTORE_PASSWORD="$STORE_PASS" node scripts/generate-android-signing.mjs --inspect "$KEYSTORE_PATH" --write-assetlinks || true
 
-          if [ -f "scripts/generate-android-signing.mjs" ]; then
-            ANDROID_KEYSTORE_PASSWORD="$STORE_PASS" node scripts/generate-android-signing.mjs --inspect "$KEYSTORE_PATH" --write-assetlinks || true
-          fi
-
-      - name: Build Production Web Bundle (dist)
-        run: npm run build
-
-      - name: Initialize & Sync Capacitor Android Project
+      - name: Build Web & Sync Android
         env:
           GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
         run: |
-          if [ ! -d "android" ]; then
-            npx cap add android
-          fi
+          npm run build
+          [ ! -d "android" ] && npx cap add android
           npx cap sync android
-          if [ -n "${GOOGLE_SERVICES_JSON_BASE64:-}" ]; then
-            echo "$GOOGLE_SERVICES_JSON_BASE64" | tr -d '\n\r ' | base64 -d > android/app/google-services.json
-          fi
-          if [ -f "scripts/configure-android-permissions.mjs" ]; then
-            node scripts/configure-android-permissions.mjs
-          fi
+          [ -n "${GOOGLE_SERVICES_JSON_BASE64:-}" ] && echo "$GOOGLE_SERVICES_JSON_BASE64" | tr -d '\n\r ' | base64 -d > android/app/google-services.json
+          [ -f "scripts/configure-android-permissions.mjs" ] && node scripts/configure-android-permissions.mjs
           node -e '
             const fs = require("fs");
             const p = "android/app/build.gradle";
@@ -214,14 +171,7 @@ jobs:
             fs.writeFileSync(p, fixed.join("\n"));
           '
 
-      - name: Build Signed Release APK
-        run: |
-          cd android
-          chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon --stacktrace
-
-      - name: Verify Signature & Package Release APK
-        id: package
+      - name: Build & Package Signed APK
         env:
           VER_NAME: ${{ steps.meta.outputs.version_name }}
           VER_CODE: ${{ steps.meta.outputs.version_code }}
@@ -229,7 +179,18 @@ jobs:
           FP_SHA1: ${{ steps.signing.outputs.sha1 }}
           FP_SHA256: ${{ steps.signing.outputs.sha256 }}
         run: |
+          (cd android && chmod +x gradlew && ./gradlew assembleRelease --no-daemon --stacktrace)
           cat << 'PKG_EOF' > /tmp/pkg.cjs
           const fs = require("fs");
           const { execFileSync } = require("child_process");
-          const sdkRoot = process.env.ANDROID_SDK_ROOT || process.env.ANDROID_HOME;
+          const buildTools = `${process.env.ANDROID_SDK_ROOT || process.env.ANDROID_HOME}/build-tools/36.0.0`;
+          const signedApk = "android/app/build/outputs/apk/release/app-release.apk";
+          const unsignedApk = "android/app/build/outputs/apk/release/app-release-unsigned.apk";
+          if (!fs.existsSync(signedApk) && fs.existsSync(unsignedApk)) {
+            const alignedApk = "android/app/build/outputs/apk/release/app-release-aligned.apk";
+            execFileSync(`${buildTools}/zipalign`, ["-v", "-p", "4", unsignedApk, alignedApk], { stdio: "inherit" });
+            execFileSync(`${buildTools}/apksigner`, ["sign", "--ks", process.env.ANDROID_KEYSTORE_PATH, "--ks-pass", "env:ANDROID_KEYSTORE_PASSWORD", "--ks-key-alias", process.env.ANDROID_KEY_ALIAS, "--key-pass", "env:ANDROID_KEY_PASSWORD", "--out", signedApk, alignedApk], { stdio: "inherit" });
+          }
+          if (!fs.existsSync(signedApk)) throw new Error("Missing final APK");
+          execFileSync(`${buildTools}/apksigner`, ["verify", "--print-certs", signedApk], { stdio: "inherit" });
+          fs.mkdirSync("release-output", { recursive: true });
