@@ -195,11 +195,23 @@ jobs:
           node -e '
             const fs = require("fs");
             const p = "android/app/build.gradle";
-            let g = fs.readFileSync(p, "utf8");
-            g = g.replace(/signingConfigs\s*\{[\s\S]*?\n\s*\}/, (block) =>
-              block.replace(/^\s*(minifyEnabled|shrinkResources|proguardFiles).*\n?/gm, "")
-            );
-            fs.writeFileSync(p, g);
+            const lines = fs.readFileSync(p, "utf8").split("\n");
+            let inSigning = false, depth = 0;
+            const fixed = lines.filter(line => {
+              if (!inSigning && /\bsigningConfigs\s*\{/.test(line)) {
+                inSigning = true;
+                depth = (line.match(/\{/g) || []).length - (line.match(/\}/g) || []).length;
+                return true;
+              }
+              if (inSigning) {
+                depth += (line.match(/\{/g) || []).length - (line.match(/\}/g) || []).length;
+                const bad = /^\s*(minifyEnabled|shrinkResources|proguardFiles)\b/.test(line);
+                if (depth <= 0) inSigning = false;
+                return !bad;
+              }
+              return true;
+            });
+            fs.writeFileSync(p, fixed.join("\n"));
           '
 
       - name: Build Signed Release APK & AAB
@@ -218,16 +230,3 @@ jobs:
           AAB_PATH="android/app/build/outputs/bundle/release/app-release.aab"
 
           if [ ! -f "$AAB_PATH" ]; then
-            echo "❌ لم يتم العثور على ملف app-release.aab."
-            exit 1
-          fi
-
-          if [ ! -f "$SIGNED_APK" ] && [ -f "$UNSIGNED_APK" ]; then
-            "$BUILD_TOOLS/zipalign" -v -p 4 "$UNSIGNED_APK" "android/app/build/outputs/apk/release/app-release-aligned.apk"
-            "$BUILD_TOOLS/apksigner" sign \
-              --ks "$ANDROID_KEYSTORE_PATH" \
-              --ks-pass "env:ANDROID_KEYSTORE_PASSWORD" \
-              --ks-key-alias "$ANDROID_KEY_ALIAS" \
-              --key-pass "env:ANDROID_KEY_PASSWORD" \
-              --out "$SIGNED_APK" \
-              "android/app/build/outputs/apk/release/app-release-aligned.apk"
