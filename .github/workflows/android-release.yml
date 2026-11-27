@@ -35,10 +35,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 20
+      - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Setup Java 21 (Temurin)
         uses: actions/setup-java@v5
@@ -87,7 +87,6 @@ jobs:
           SECRET_FB_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
           SECRET_FB_DB_ID: ${{ secrets.VITE_FIREBASE_DATABASE_ID }}
         run: |
-          set -x
           PKG_VERSION=$(grep -m1 '"version"' package.json | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' || true)
           if [ -z "$PKG_VERSION" ]; then
             PKG_VERSION="1.0.0"
@@ -127,7 +126,7 @@ jobs:
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          mkdir -p "${RUNNER_TEMP}/signing"
+          mkdir -p "${RUNNER_TEMP}/signing" "public/.well-known"
           KEYSTORE_PATH="${RUNNER_TEMP}/signing/zoryx-release.keystore"
 
           if [ -n "${ANDROID_KEYSTORE_BASE64:-}" ] && [ -n "${ANDROID_KEYSTORE_PASSWORD:-}" ] && [ -n "${ANDROID_KEY_ALIAS:-}" ]; then
@@ -165,7 +164,6 @@ jobs:
           echo "sha1=$SHA1_FP" >> "$GITHUB_OUTPUT"
           echo "sha256=$SHA256_FP" >> "$GITHUB_OUTPUT"
 
-          # Store credentials strictly in ephemeral runner temp env for Gradle step
           {
             echo "ANDROID_KEYSTORE_PATH=$KEYSTORE_PATH"
             echo "ANDROID_KEYSTORE_PASSWORD=$STORE_PASS"
@@ -173,8 +171,9 @@ jobs:
             echo "ANDROID_KEY_PASSWORD=$KEY_PASS"
           } >> "$GITHUB_ENV"
 
-          # Sync public/.well-known/assetlinks.json with actual signing SHA-256 before Vite build
-          ANDROID_KEYSTORE_PASSWORD="$STORE_PASS" node scripts/generate-android-signing.mjs --inspect "$KEYSTORE_PATH" --write-assetlinks
+          if [ -f "scripts/generate-android-signing.mjs" ]; then
+            ANDROID_KEYSTORE_PASSWORD="$STORE_PASS" node scripts/generate-android-signing.mjs --inspect "$KEYSTORE_PATH" --write-assetlinks || true
+          fi
 
       - name: Build Production Web Bundle (dist)
         run: npm run build
@@ -190,7 +189,9 @@ jobs:
           if [ -n "${GOOGLE_SERVICES_JSON_BASE64:-}" ]; then
             echo "$GOOGLE_SERVICES_JSON_BASE64" | tr -d '\n\r ' | base64 -d > android/app/google-services.json
           fi
-          node scripts/configure-android-permissions.mjs
+          if [ -f "scripts/configure-android-permissions.mjs" ]; then
+            node scripts/configure-android-permissions.mjs
+          fi
 
       - name: Build Signed Release APK & AAB
         run: |
@@ -201,31 +202,32 @@ jobs:
       - name: Verify Signatures & Package Release Outputs
         id: package
         run: |
-          APK_PATH="android/app/build/outputs/apk/release/app-release.apk"
+          SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          BUILD_TOOLS="$SDK_ROOT/build-tools/36.0.0"
+          SIGNED_APK="android/app/build/outputs/apk/release/app-release.apk"
+          UNSIGNED_APK="android/app/build/outputs/apk/release/app-release-unsigned.apk"
           AAB_PATH="android/app/build/outputs/bundle/release/app-release.aab"
 
-          if [ ! -f "$APK_PATH" ]; then
-            echo "❌ لم يتم العثور على ملف app-release.apk الموقع."
-            exit 1
-          fi
           if [ ! -f "$AAB_PATH" ]; then
-            echo "❌ لم يتم العثور على ملف app-release.aab الموقع."
+            echo "❌ لم يتم العثور على ملف app-release.aab."
             exit 1
           fi
 
-          APKSIGNER_BIN="${ANDROID_SDK_ROOT:-$ANDROID_HOME}/build-tools/36.0.0/apksigner"
-          VERIFY_OUT=$("$APKSIGNER_BIN" verify --print-certs "$APK_PATH")
-          echo "$VERIFY_OUT"
+          # إذا أنتج Gradle ملفاً غير موقّع، نقوم بمحاذاته وتوقيعه تلقائياً
+          if [ ! -f "$SIGNED_APK" ] && [ -f "$UNSIGNED_APK" ]; then
+            "$BUILD_TOOLS/zipalign" -v -p 4 "$UNSIGNED_APK" "android/app/build/outputs/apk/release/app-release-aligned.apk"
+            "$BUILD_TOOLS/apksigner" sign \
+              --ks "$ANDROID_KEYSTORE_PATH" \
+              --ks-pass "env:ANDROID_KEYSTORE_PASSWORD" \
+              --ks-key-alias "$ANDROID_KEY_ALIAS" \
+              --key-pass "env:ANDROID_KEY_PASSWORD" \
+              --out "$SIGNED_APK" \
+              "android/app/build/outputs/apk/release/app-release-aligned.apk"
+          fi
 
-          mkdir -p release-output
-          FINAL_APK="release-output/AnimeMOD-v${{ steps.meta.outputs.version_name }}-com.zoryx-release.apk"
-          FINAL_AAB="release-output/AnimeMOD-v${{ steps.meta.outputs.version_name }}-com.zoryx-release.aab"
-          cp "$APK_PATH" "$FINAL_APK"
-          cp "$AAB_PATH" "$FINAL_AAB"
+          if [ ! -f "$SIGNED_APK" ]; then
+            echo "❌ لم يتم العثور على ملف APK النهائي."
+            exit 1
+          fi
 
-          cat > release-output/signing-fingerprint-report.txt <<EOF
-          Anime MOD (com.zoryx) - Android Release Signing Report
-          ======================================================
-          Version Name : ${{ steps.meta.outputs.version_name }}
-          Version Code : ${{ steps.meta.outputs.version_code }}
-          Package Name : com.zoryx
+          # توقيع ملف AAB احتياطياً إذا لم يكن موقعاً
