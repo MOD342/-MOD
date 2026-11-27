@@ -35,7 +35,8 @@ import {
   Film,
   FolderDown,
   BookOpen,
-  Info
+  Info,
+  History
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAuth } from '../contexts/AuthContext';
@@ -45,6 +46,8 @@ import { getActiveNonOverlappingEvent } from '../services/arenaCalendarEngine';
 import { Swords } from 'lucide-react';
 import { useDeviceDisplay } from '../hooks/useDeviceDisplay';
 import { useDownloadQueue } from '../services/downloadManagerService';
+import { watchHistoryService } from '../services/listService';
+import { mangaListService } from '../services/mangaListService';
 
 interface MoreViewProps {
   onNavigate: (view: string, props?: any) => void;
@@ -115,6 +118,11 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
 
   const avatarImg = equipped.avatar?.img || user?.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user?.id || 'Felix'}`;
   const activeArenaEvent = useMemo(() => getActiveNonOverlappingEvent(), []);
+  const historyTotalCount = useMemo(() => {
+    const watchCount = watchHistoryService.getLocalHistory(user?.id, userData?.privacySettings).length;
+    const readCount = mangaListService.getReadingHistory(user?.id, userData?.privacySettings).length;
+    return watchCount + readCount;
+  }, [user?.id, userData?.privacySettings]);
 
   // تصنيفات مرتبة ومنسقة بتسميات موجزة من كلمة واحدة لتتسع بثلاثة أعمدة بوضوح
   const categories = [
@@ -122,6 +130,7 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
       title: 'حسابي',
       items: [
         { id: 'profile', label: 'ملفي', icon: UserCircle, color: 'text-sky-400', bg: 'bg-sky-500/10' },
+        { id: 'history', label: 'السجل', icon: History, color: 'text-amber-400', bg: 'bg-amber-500/10' },
         { id: 'account_settings', label: 'الإعدادات', icon: Settings, color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
         { id: 'profile_appearance', label: 'المظهر', icon: Paintbrush, color: 'text-pink-400', bg: 'bg-pink-500/10' },
         { id: 'favorites', label: 'المفضلة', icon: Heart, color: 'text-rose-400', bg: 'bg-rose-500/10' },
@@ -283,6 +292,32 @@ export default function MoreView({ onNavigate }: MoreViewProps) {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* اختصار استكمال المشاهدة والقراءة (يفتح صفحة السجل) */}
+      <button
+        type="button"
+        id="btn_more_continue_history"
+        onClick={() => onNavigate('history')}
+        className="w-full min-h-[60px] bg-[#111115] hover:bg-[#16161d] border border-white/10 hover:border-[#FF1744]/40 rounded-2xl px-4 py-3 flex items-center justify-between gap-3 text-right transition-colors active:scale-[0.99] cursor-pointer"
+      >
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="w-11 h-11 rounded-xl bg-[#FF1744]/10 border border-[#FF1744]/20 flex items-center justify-center text-[#FF1744] shrink-0">
+            <History size={20} />
+          </div>
+          <div className="min-w-0">
+            <h3 className="text-white font-bold text-sm truncate">استكمال المشاهدة أو القراءة</h3>
+            <p className="text-[11px] text-neutral-400 truncate tabular-nums">
+              {historyTotalCount > 0
+                ? `فتح السجل · ${historyTotalCount} عناصر محفوظة`
+                : 'فتح السجل لمتابعة الحلقات والفصول'}
+            </p>
+          </div>
+        </div>
+        <div className="shrink-0 text-neutral-300 flex items-center gap-1 text-xs font-bold">
+          <span>السجل</span>
+          <ChevronLeft size={16} />
+        </div>
+      </button>
 
       {/* بطاقة الحدث الحي وساحة الأوتاكو الموحدة */}
       <button

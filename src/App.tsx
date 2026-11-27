@@ -62,6 +62,7 @@ const MangaHubView = lazyWithRetry(() => import('./views/MangaHubView'), 'MangaH
 const MangaDetailsView = lazyWithRetry(() => import('./views/MangaDetailsView'), 'MangaDetailsView');
 const MangaReaderView = lazyWithRetry(() => import('./views/MangaReaderView'), 'MangaReaderView');
 const MoreView = lazyWithRetry(() => import('./views/MoreView'), 'MoreView');
+const HistoryView = lazyWithRetry(() => import('./views/HistoryView'), 'HistoryView');
 const DiagnosticsView = lazyWithRetry(() => import('./views/DiagnosticsView'), 'DiagnosticsView');
 const OnboardingView = lazyWithRetry(() => import('./components/OnboardingView'), 'OnboardingView');
 const PermissionPromptModal = lazyWithRetry(() => import('./components/PermissionPromptModal'), 'PermissionPromptModal');
@@ -1022,6 +1023,15 @@ export default function App() {
         return <RewardsView onBack={goBack} />;
       case 'favorites':
         return <FavoritesView onBack={goBack} onAnimeClick={(id) => navigateTo('anime_details', { id })} />;
+      case 'history':
+        return (
+          <HistoryView
+            onBack={goBack}
+            onResumeAnime={(id, epNum) => navigateTo('anime_details', { id, autoplayEpisode: epNum })}
+            onResumeMangaDetails={(id) => navigateTo('manga_details', { id })}
+            onReadMangaChapter={(params) => navigateTo('manga_reader', params)}
+          />
+        );
       case 'notifications':
         return <NotificationsView onBack={goBack} onNavigate={navigateTo} />;
       case 'suggestions_hub':
@@ -1088,7 +1098,7 @@ export default function App() {
   };
 
   // Do not show AppLayout (top/bottom navs) if we are in fullscreen views like profile, details or watch
-  const isFullScreenView = currentView.name === 'profile' || currentView.name === 'account_settings' || currentView.name === 'profile_appearance' || currentView.name === 'diagnostics' || currentView.name === 'suggestions_hub' || currentView.name === 'ai_chat' || currentView.name === 'level_perks' || currentView.name === 'anime_details' || currentView.name === 'anime_comments' || currentView.name === 'watch_episode' || currentView.name === 'manga_hub' || currentView.name === 'manga_details' || currentView.name === 'manga_reader' || currentView.name === 'admin' || currentView.name === 'games' || currentView.name === 'leaderboard' || currentView.name === 'store' || currentView.name === 'schedule' || currentView.name === 'tournaments' || currentView.name === 'recent_episodes' || currentView.name === 'current_season' || currentView.name === 'anime_movies' || currentView.name === 'top_anime' || currentView.name === 'downloads' || currentView.name === 'rewards' || currentView.name === 'other_profile' || currentView.name === 'favorites' || currentView.name === 'notifications' || currentView.name === 'ad_support' || currentView.name === 'support_help' || currentView.name === 'support_suggestions' || currentView.name === 'support_donate' || currentView.name === 'support_chat' || currentView.name === 'support_news' || currentView.name === 'legal_privacy' || currentView.name === 'legal_terms' || currentView.name === 'legal_about' || currentView.name === 'legal_safety' || currentView.name === 'legal_view';
+  const isFullScreenView = currentView.name === 'profile' || currentView.name === 'account_settings' || currentView.name === 'profile_appearance' || currentView.name === 'diagnostics' || currentView.name === 'suggestions_hub' || currentView.name === 'ai_chat' || currentView.name === 'level_perks' || currentView.name === 'anime_details' || currentView.name === 'anime_comments' || currentView.name === 'watch_episode' || currentView.name === 'manga_hub' || currentView.name === 'manga_details' || currentView.name === 'manga_reader' || currentView.name === 'admin' || currentView.name === 'games' || currentView.name === 'leaderboard' || currentView.name === 'store' || currentView.name === 'schedule' || currentView.name === 'tournaments' || currentView.name === 'recent_episodes' || currentView.name === 'current_season' || currentView.name === 'anime_movies' || currentView.name === 'top_anime' || currentView.name === 'downloads' || currentView.name === 'rewards' || currentView.name === 'other_profile' || currentView.name === 'favorites' || currentView.name === 'history' || currentView.name === 'notifications' || currentView.name === 'ad_support' || currentView.name === 'support_help' || currentView.name === 'support_suggestions' || currentView.name === 'support_donate' || currentView.name === 'support_chat' || currentView.name === 'support_news' || currentView.name === 'legal_privacy' || currentView.name === 'legal_terms' || currentView.name === 'legal_about' || currentView.name === 'legal_safety' || currentView.name === 'legal_view';
 
   return (
     <>

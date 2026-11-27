@@ -1,5 +1,5 @@
 import { cleanAnimeTitle } from './animeTitleCleaner';
-import { translateGenreToArabic } from './genreTaxonomy';
+import { GENRE_TAXONOMY, splitAniListGenresAndTags, translateGenreToArabic } from './genreTaxonomy';
 
 export interface EdgeRuntimeEnv {
   EDGE_TOKEN_SECRET?: string;
@@ -8,6 +8,7 @@ export interface EdgeRuntimeEnv {
 
 export const EDGE_STREAM_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+const EDGE_API_UA = 'OtakuModApp/1.0';
 
 export const EDGE_CORS_HEADERS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
@@ -1112,15 +1113,148 @@ async function queryAniListEdge(query: string, variables: Record<string, any> = 
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json',
-        'User-Agent': EDGE_STREAM_UA,
+        'User-Agent': EDGE_API_UA,
       },
       body: JSON.stringify({ query, variables }),
     },
-    5500,
+    5000,
   );
   if (!res.ok) throw new Error(`AniList HTTP ${res.status}`);
   const json: any = await res.json();
   return json?.data || null;
+}
+
+function mapJikanToEdgeMedia(j: any): any | null {
+  if (!j || !j.mal_id) return null;
+  const statusStr = String(j.status || '').toLowerCase();
+  const status = statusStr.includes('finish')
+    ? 'FINISHED'
+    : statusStr.includes('not yet')
+    ? 'NOT_YET_RELEASED'
+    : 'RELEASING';
+  return {
+    id: j.mal_id,
+    idMal: j.mal_id,
+    title: {
+      romaji: j.title || j.title_english || '',
+      english: j.title_english || j.title || '',
+      native: j.title_japanese || '',
+    },
+    coverImage: {
+      extraLarge: j.images?.jpg?.large_image_url || j.images?.jpg?.image_url || '',
+      large: j.images?.jpg?.image_url || '',
+    },
+    bannerImage: j.images?.jpg?.large_image_url || '',
+    description: j.synopsis || '',
+    episodes: j.episodes || null,
+    status,
+    season: j.season ? String(j.season).toUpperCase() : 'WINTER',
+    seasonYear: j.year || j.aired?.prop?.from?.year || new Date().getFullYear(),
+    averageScore: j.score ? Math.round(Number(j.score) * 10) : 84,
+    genres: Array.isArray(j.genres) ? j.genres.map((g: any) => g.name).filter(Boolean) : [],
+    format: j.type || 'TV',
+    duration: parseInt(String(j.duration || '24'), 10) || 24,
+    studios: { nodes: Array.isArray(j.studios) ? j.studios.map((s: any) => ({ name: s.name })) : [] },
+    synonyms: Array.isArray(j.title_synonyms) ? j.title_synonyms : [],
+    streamingEpisodes: [],
+    characters: { edges: [] },
+    recommendations: { nodes: [] },
+    relations: { edges: [] },
+  };
+}
+
+function mapKitsuToEdgeMedia(k: any, explicitMalId?: number): any | null {
+  const attr = k?.attributes;
+  if (!attr) return null;
+  const rawStatus = String(attr.status || '').toLowerCase();
+  const status = rawStatus === 'finished' ? 'FINISHED' : rawStatus === 'upcoming' ? 'NOT_YET_RELEASED' : 'RELEASING';
+  const year = attr.startDate ? Number(String(attr.startDate).slice(0, 4)) : new Date().getFullYear();
+  return {
+    id: explicitMalId || Number(k.id) || 0,
+    idMal: explicitMalId || undefined,
+    title: {
+      romaji: attr.titles?.en_jp || attr.canonicalTitle || '',
+      english: attr.titles?.en || attr.canonicalTitle || '',
+      native: attr.titles?.ja_jp || '',
+    },
+    coverImage: {
+      extraLarge: attr.posterImage?.original || attr.posterImage?.large || '',
+      large: attr.posterImage?.large || attr.posterImage?.medium || '',
+    },
+    bannerImage: attr.coverImage?.original || attr.coverImage?.large || '',
+    description: attr.synopsis || attr.description || '',
+    episodes: attr.episodeCount || null,
+    status,
+    season: 'WINTER',
+    seasonYear: Number.isFinite(year) ? year : new Date().getFullYear(),
+    averageScore: attr.averageRating ? Math.round(Number(attr.averageRating)) : 82,
+    genres: ['Action', 'Fantasy'],
+    format: String(attr.subtype || 'TV').toUpperCase(),
+    duration: attr.episodeLength || 24,
+    studios: { nodes: [] },
+    synonyms: Array.isArray(attr.abbreviatedTitles) ? attr.abbreviatedTitles : [],
+    streamingEpisodes: [],
+    characters: { edges: [] },
+    recommendations: { nodes: [] },
+    relations: { edges: [] },
+  };
+}
+
+async function fetchFallbackAnimeMetadataEdge(idOrQuery: string): Promise<any | null> {
+  const clean = String(idOrQuery || '').trim();
+  if (!clean) return null;
+  const isNum = /^\d+$/.test(clean);
+
+  try {
+    const jikanUrl = isNum
+      ? `https://api.jikan.moe/v4/anime/${clean}/full`
+      : `https://api.jikan.moe/v4/anime?q=${encodeURIComponent(clean)}&limit=1&sfw=true`;
+    const res = await fetchEdgeTimeout(
+      jikanUrl,
+      { headers: { 'User-Agent': EDGE_API_UA, Accept: 'application/json' } },
+      3800,
+    );
+    if (res.ok) {
+      const json: any = await res.json();
+      const raw = isNum ? json?.data : json?.data?.[0];
+      const mapped = mapJikanToEdgeMedia(raw);
+      if (mapped) return mapped;
+    }
+  } catch {}
+
+  if (!isNum) {
+    try {
+      const kitsuUrl = `https://kitsu.io/api/edge/anime?filter[text]=${encodeURIComponent(clean)}&page[limit]=1`;
+      const res = await fetchEdgeTimeout(
+        kitsuUrl,
+        { headers: { 'User-Agent': EDGE_API_UA, Accept: 'application/vnd.api+json' } },
+        3800,
+      );
+      if (res.ok) {
+        const json: any = await res.json();
+        const item = json?.data?.[0];
+        const mapped = mapKitsuToEdgeMedia(item);
+        if (mapped) return mapped;
+      }
+    } catch {}
+  } else {
+    try {
+      const kitMapUrl = `https://kitsu.io/api/edge/mappings?filter[externalSite]=myanimelist/anime&filter[externalId]=${clean}&include=item`;
+      const res = await fetchEdgeTimeout(
+        kitMapUrl,
+        { headers: { 'User-Agent': EDGE_API_UA, Accept: 'application/vnd.api+json' } },
+        3800,
+      );
+      if (res.ok) {
+        const json: any = await res.json();
+        const included = Array.isArray(json?.included) ? json.included : [];
+        const animeItem = included.find((x: any) => x?.type === 'anime') || included[0];
+        const mapped = mapKitsuToEdgeMedia(animeItem, Number(clean));
+        if (mapped) return mapped;
+      }
+    } catch {}
+  }
+  return null;
 }
 
 async function translateSynopsisEdge(text: string): Promise<string> {
@@ -1174,7 +1308,7 @@ export async function handleEdgeAnimeDetails(rawId: string): Promise<Response> {
       const randData = await queryAniListEdge(
         `query ($p: Int) { Page(page: $p, perPage: 20) { media(type: ANIME, sort: POPULARITY_DESC, isAdult: false) { ${EDGE_MEDIA_DETAILS_FRAGMENT} } } }`,
         { p: page },
-      );
+      ).catch(() => null);
       const list = randData?.Page?.media || [];
       if (list.length > 0) {
         media = list[Math.floor(Math.random() * list.length)];
@@ -1192,12 +1326,18 @@ export async function handleEdgeAnimeDetails(rawId: string): Promise<Response> {
         ).catch(() => null);
         media = dByAni?.Media || null;
       }
+      if (!media) {
+        media = await fetchFallbackAnimeMetadataEdge(cleanIdPart).catch(() => null);
+      }
     } else {
+      const cleanSearchTitle = cleanIdPart.replace(/^search-/i, '').replace(/-/g, ' ').trim();
       const [okHtmlRes, aniSearchRes] = await Promise.allSettled([
-        fetchSiteHtml(`${OKANIME_ORIGIN}/anime/${cleanIdPart}`, 5500),
+        cleanIdPart.startsWith('search-')
+          ? Promise.reject(new Error('search prefix'))
+          : fetchSiteHtml(`${OKANIME_ORIGIN}/anime/${cleanIdPart}`, 5000),
         queryAniListEdge(
           `query ($s: String) { Media(search: $s, type: ANIME, isAdult: false) { ${EDGE_MEDIA_DETAILS_FRAGMENT} } }`,
-          { s: cleanIdPart.replace(/^search-/i, '').replace(/-/g, ' ').trim() },
+          { s: cleanSearchTitle },
         ),
       ]);
       if (okHtmlRes.status === 'fulfilled') {
@@ -1206,16 +1346,22 @@ export async function handleEdgeAnimeDetails(rawId: string): Promise<Response> {
       if (aniSearchRes.status === 'fulfilled') {
         media = aniSearchRes.value?.Media || null;
       }
-      if (!media && okanimeData?.title) {
-        const d2 = await queryAniListEdge(
-          `query ($s: String) { Media(search: $s, type: ANIME, isAdult: false) { ${EDGE_MEDIA_DETAILS_FRAGMENT} } }`,
-          { s: okanimeData.title },
-        ).catch(() => null);
-        media = d2?.Media || null;
+      if (!media) {
+        const fallbackTitle = okanimeData?.title || cleanSearchTitle;
+        if (fallbackTitle) {
+          const d2 = await queryAniListEdge(
+            `query ($s: String) { Media(search: $s, type: ANIME, isAdult: false) { ${EDGE_MEDIA_DETAILS_FRAGMENT} } }`,
+            { s: fallbackTitle },
+          ).catch(() => null);
+          media = d2?.Media || null;
+          if (!media) {
+            media = await fetchFallbackAnimeMetadataEdge(fallbackTitle).catch(() => null);
+          }
+        }
       }
     }
 
-    // If we still don't have OkAnime scraped episodes, search OkAnime / AnimeDar by title
+    // If we still don't have OkAnime scraped episodes, search OkAnime / AnimeDar in parallel
     if (!okanimeData || okanimeData.episodes.length === 0) {
       const searchTitle =
         okanimeData?.title ||
@@ -1224,30 +1370,30 @@ export async function handleEdgeAnimeDetails(rawId: string): Promise<Response> {
         (!isPureNum ? cleanIdPart.replace(/^search-/i, '').replace(/-/g, ' ') : '');
 
       if (searchTitle) {
-        const candidateSlug = !isPureNum && !cleanIdPart.startsWith('search-')
-          ? cleanIdPart
-          : await searchEdgeOkanimeSlug(searchTitle);
+        const directSlug = !isPureNum && !cleanIdPart.startsWith('search-') ? cleanIdPart : '';
+        const [okSlugRes, darSlugRes] = await Promise.all([
+          directSlug ? Promise.resolve(directSlug) : searchEdgeOkanimeSlug(searchTitle).catch(() => null),
+          directSlug ? Promise.resolve(directSlug) : searchEdgeAnimedarSlug(searchTitle).catch(() => null),
+        ]);
 
-        if (candidateSlug) {
-          try {
-            const okHtml = await fetchSiteHtml(`${OKANIME_ORIGIN}/anime/${candidateSlug}`, 5000);
-            const parsedOk = parseOkanimeAnimeHtml(okHtml, candidateSlug);
-            if (parsedOk.episodes.length > 0 || !okanimeData) {
-              okanimeData = parsedOk;
-            }
-          } catch {}
+        const candidateOkSlug = okSlugRes || '';
+        const candidateDarSlug = darSlugRes || candidateOkSlug || '';
+
+        const [okPageRes, darPageRes] = await Promise.allSettled([
+          candidateOkSlug ? fetchSiteHtml(`${OKANIME_ORIGIN}/anime/${candidateOkSlug}`, 4500) : Promise.reject(new Error('no slug')),
+          candidateDarSlug ? fetchSiteHtml(`${ANIMEDAR_ORIGIN}/anime-p/${candidateDarSlug}/`, 4500) : Promise.reject(new Error('no slug')),
+        ]);
+
+        if (okPageRes.status === 'fulfilled') {
+          const parsedOk = parseOkanimeAnimeHtml(okPageRes.value, candidateOkSlug);
+          if (parsedOk.episodes.length > 0 || !okanimeData) {
+            okanimeData = parsedOk;
+          }
         }
-
-        if ((!okanimeData || okanimeData.episodes.length === 0)) {
-          const darSlug = candidateSlug || (await searchEdgeAnimedarSlug(searchTitle));
-          if (darSlug) {
-            try {
-              const darHtml = await fetchSiteHtml(`${ANIMEDAR_ORIGIN}/anime-p/${darSlug}/`, 5000);
-              const parsedDar = parseAnimedarServersAndEpisodes(darHtml, darSlug);
-              if (parsedDar.episodes.length > 0) {
-                animedarEps = parsedDar.episodes;
-              }
-            } catch {}
+        if ((!okanimeData || okanimeData.episodes.length === 0) && darPageRes.status === 'fulfilled') {
+          const parsedDar = parseAnimedarServersAndEpisodes(darPageRes.value, candidateDarSlug);
+          if (parsedDar.episodes.length > 0) {
+            animedarEps = parsedDar.episodes;
           }
         }
       }
@@ -1612,17 +1758,21 @@ export async function handleEdgeAnimeServers(body: any): Promise<Response> {
   }
 
   let epHtml = '';
-  for (const epPath of epPaths) {
-    try {
-      const html = await fetchSiteHtml(`${OKANIME_ORIGIN}${epPath}`, 4000);
-      if (html.includes('setServer(') || html.includes('data-server') || html.includes('ep-link')) {
-        epHtml = html;
-        break;
-      }
-    } catch {}
+  if (epPaths.length > 0) {
+    const probed = await Promise.allSettled(
+      epPaths.map(async (epPath) => {
+        const html = await fetchSiteHtml(`${OKANIME_ORIGIN}${epPath}`, 3500);
+        if (html.includes('setServer(') || html.includes('data-server') || html.includes('ep-link')) {
+          return html;
+        }
+        throw new Error('no servers');
+      }),
+    );
+    const hit = probed.find((r): r is PromiseFulfilledResult<string> => r.status === 'fulfilled' && Boolean(r.value));
+    if (hit) epHtml = hit.value;
   }
 
-  // If direct slug failed, resolve full AniList { romaji, english, synonyms } regardless of animeTitle presence!
+  // If direct slug failed, resolve full AniList (with Jikan/Kitsu fallback) to obtain Romaji/English/synonyms!
   if (!epHtml && (/^\d+$/.test(animeId) || candidateTitles.length > 0)) {
     try {
       const aniData = /^\d+$/.test(animeId)
@@ -1635,32 +1785,51 @@ export async function handleEdgeAnimeServers(body: any): Promise<Response> {
             { s: candidateTitles[0] },
           ).catch(() => null);
 
-      const mTitle = aniData?.Media?.title;
-      const syns: string[] = Array.isArray(aniData?.Media?.synonyms) ? aniData.Media.synonyms.slice(0, 3) : [];
+      let resolvedMedia = aniData?.Media || null;
+      if (!resolvedMedia) {
+        resolvedMedia = await fetchFallbackAnimeMetadataEdge(
+          /^\d+$/.test(animeId) ? animeId : candidateTitles[0] || '',
+        ).catch(() => null);
+      }
+
+      const mTitle = resolvedMedia?.title;
+      const syns: string[] = Array.isArray(resolvedMedia?.synonyms) ? resolvedMedia.synonyms.slice(0, 3) : [];
       for (const extraTitle of [mTitle?.romaji, mTitle?.english, ...syns]) {
         pushCandidateTitle(extraTitle);
       }
 
-      // Also try newly discovered Romaji/synonym slugs directly on OkAnime before searching
+      const extraSlugs: string[] = [];
       for (const extraTitle of [mTitle?.romaji, mTitle?.english, ...syns]) {
-        if (!extraTitle || epHtml) break;
+        if (!extraTitle) continue;
         const norm = String(extraTitle).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-        if (norm && !slugsToTry.includes(norm)) {
+        if (norm && !slugsToTry.includes(norm) && !extraSlugs.includes(norm)) {
           slugsToTry.push(norm);
-          const candidateHtml = await tryFetchOkanimeEpFromSlug(norm);
-          if (candidateHtml) {
-            epHtml = candidateHtml;
-            if (!resolvedPrimarySlug) resolvedPrimarySlug = norm;
-            break;
-          }
+          extraSlugs.push(norm);
+        }
+      }
+
+      if (extraSlugs.length > 0) {
+        const extraResults = await Promise.allSettled(
+          extraSlugs.slice(0, 4).map(async (slugVal) => {
+            const html = await tryFetchOkanimeEpFromSlug(slugVal);
+            if (!html) throw new Error('no ep html');
+            return { slugVal, html };
+          }),
+        );
+        const foundExtra = extraResults.find(
+          (r): r is PromiseFulfilledResult<{ slugVal: string; html: string }> => r.status === 'fulfilled',
+        );
+        if (foundExtra) {
+          epHtml = foundExtra.value.html;
+          if (!resolvedPrimarySlug) resolvedPrimarySlug = foundExtra.value.slugVal;
         }
       }
     } catch {}
   }
 
   if (!epHtml && candidateTitles.length > 0) {
-    for (const cand of candidateTitles.slice(0, 4)) {
-      const foundSlug = await searchEdgeOkanimeSlug(cand);
+    for (const cand of candidateTitles.slice(0, 3)) {
+      const foundSlug = await searchEdgeOkanimeSlug(cand).catch(() => null);
       if (!foundSlug) continue;
       if (!resolvedPrimarySlug) resolvedPrimarySlug = foundSlug;
       epHtml = await tryFetchOkanimeEpFromSlug(foundSlug);
@@ -1672,13 +1841,13 @@ export async function handleEdgeAnimeServers(body: any): Promise<Response> {
   const watchServers = [...parsedOk.watch];
   const downloadServers = [...parsedOk.download];
 
-  // Helper #2: AnimeDar when OkAnime returned nothing (fast 3000ms timeout + search fallback)
+  // Helper #2: AnimeDar when OkAnime returned nothing (fast parallel lookup)
   if (watchServers.length === 0 && downloadServers.length === 0) {
     let darTried = false;
     const pullDarFromSlug = async (slugToTry: string) => {
       if (!slugToTry) return false;
       try {
-        const darHtml = await fetchSiteHtml(`${ANIMEDAR_ORIGIN}/anime-p/${slugToTry}/`, 3000);
+        const darHtml = await fetchSiteHtml(`${ANIMEDAR_ORIGIN}/anime-p/${slugToTry}/`, 3200);
         const parsedDar = parseAnimedarServersAndEpisodes(darHtml, slugToTry);
         const list = parsedDar.episodeServersByNum.get(String(epNum)) || [];
         for (const srv of list) {
@@ -1749,10 +1918,60 @@ export async function handleEdgeAnimeServers(body: any): Promise<Response> {
     .filter((d) => !isAdShortenerUrl(d.url))
     .sort((a, b) => getServerReliabilityScore(b) - getServerReliabilityScore(a));
 
-  const finalServers: EdgeEpisodeServer[] = [...watchServers, ...cleanDownloads];
+  const isDirectMp4Host = (u: string) => {
+    const l = u.toLowerCase();
+    return (
+      l.includes('sendvid') ||
+      l.includes('videa') ||
+      l.includes('mp4upload') ||
+      l.includes('mega.nz') ||
+      l.includes('ok.ru') ||
+      l.includes('yourupload') ||
+      l.includes('uqload') ||
+      l.includes('4shared') ||
+      l.includes('drive.google') ||
+      l.includes('streamtape') ||
+      l.includes('dood') ||
+      l.includes('d000d') ||
+      l.includes('vidoza') ||
+      l.includes('sibnet') ||
+      l.includes('mixdrop')
+    );
+  };
+  const bestDirectWatch =
+    watchServers.find((s) => isDirectMp4Host(s.url))?.url ||
+    cleanDownloads.find((s) => isDirectMp4Host(s.url))?.url ||
+    watchServers[0]?.url ||
+    '';
+  const safeTitle = (animeTitle || candidateTitles[0] || 'Anime').replace(/["'<>]/g, '').trim();
+  const extraDownloads: EdgeEpisodeServer[] = bestDirectWatch
+    ? [
+        {
+          serverName: 'تحميل مباشر',
+          url: `/api/anime/download?url=${encodeURIComponent(bestDirectWatch)}&title=${encodeURIComponent(safeTitle)}&ep=${epNum}`,
+          type: 'direct',
+          quality: '1080p',
+          category: 'download',
+        },
+      ]
+    : [];
+
+  const finalServers: EdgeEpisodeServer[] = [...watchServers, ...extraDownloads, ...cleanDownloads];
+  if (finalServers.length === 0) {
+    return edgeJson(
+      {
+        success: false,
+        hybridFallback: true,
+        message: 'لا تتوفر خيارات مشاهدة لهذه الحلقة حالياً.',
+        data: [],
+      },
+      200,
+      { 'X-Hybrid-Fallback': '1' },
+    );
+  }
   return edgeJson({
-    success: finalServers.length > 0,
-    message: finalServers.length > 0 ? 'تم جلب سيرفرات المشاهدة بنجاح.' : 'لا تتوفر خيارات مشاهدة لهذه الحلقة حالياً.',
+    success: true,
+    message: 'تم جلب سيرفرات المشاهدة بنجاح.',
     data: finalServers,
   });
 }
@@ -3167,6 +3386,487 @@ export async function handleEdgeExtractPost(request: Request): Promise<Response>
       directUrl: extracted.directUrl,
       type: extracted.type,
       sources: extracted.sources || [],
+    },
+  });
+}
+
+// ============================================================================
+// Native Edge Catalog Routes (Dashboard, Recent, Search, Season, Top, Movies, Schedule)
+// ============================================================================
+const EDGE_CARD_FRAGMENT = `
+  id
+  idMal
+  title { romaji english }
+  coverImage { extraLarge large }
+  bannerImage
+  description(asHtml: false)
+  episodes
+  status
+  season
+  seasonYear
+  averageScore
+  genres
+  format
+  nextAiringEpisode { episode airingAt }
+`;
+
+function mapAniListCardEdge(m: any) {
+  const id = String(m.idMal || m.id || '');
+  const rawTitle = m.title?.english || m.title?.romaji || 'Anime';
+  const title = cleanAnimeTitle(rawTitle) || rawTitle;
+  const posterUrl = m.coverImage?.extraLarge || m.coverImage?.large || '';
+  const rating = m.averageScore ? Number((m.averageScore / 10).toFixed(1)) : 8.4;
+  const genres = Array.isArray(m.genres) ? m.genres.map((g: string) => translateGenreToArabic(g)) : ['أكشن'];
+  const status =
+    m.status === 'FINISHED' ? 'مكتمل' : m.status === 'NOT_YET_RELEASED' ? 'قادم' : 'مستمر';
+  const nextEp = Number(m.nextAiringEpisode?.episode || 0);
+  const episodesCount =
+    status === 'قادم'
+      ? 0
+      : status === 'مستمر'
+      ? nextEp > 1
+        ? nextEp - 1
+        : undefined
+      : m.episodes || undefined;
+  return {
+    _id: id,
+    id,
+    mal_id: Number(id) || undefined,
+    title,
+    title_english: rawTitle,
+    posterUrl,
+    imageUrl: posterUrl,
+    thumbnailUrl: posterUrl,
+    bannerUrl: m.bannerImage || '',
+    rating,
+    score: rating,
+    genres,
+    status,
+    type: m.format === 'MOVIE' ? 'فيلم' : m.format || 'TV',
+    episodesCount,
+    episodeNumber: nextEp > 1 ? String(nextEp - 1) : undefined,
+    season: m.season ? String(m.season).toLowerCase() : null,
+    releaseYear: m.seasonYear ? String(m.seasonYear) : null,
+    description: m.description ? String(m.description).replace(/<[^>]*>/g, ' ').trim().slice(0, 260) : '',
+  };
+}
+
+function getEdgeSeasonWindow(season?: string, year?: number): { season: string; year: number } {
+  const now = new Date();
+  const y = year && year > 1970 ? year : now.getFullYear();
+  const sUpper = (season || '').toUpperCase();
+  if (sUpper === 'WINTER' || sUpper === 'SPRING' || sUpper === 'SUMMER' || sUpper === 'FALL') {
+    return { season: sUpper, year: y };
+  }
+  const m = now.getMonth() + 1;
+  if (m >= 4 && m <= 6) return { season: 'SPRING', year: y };
+  if (m >= 7 && m <= 9) return { season: 'SUMMER', year: y };
+  if (m >= 10 && m <= 12) return { season: 'FALL', year: y };
+  return { season: 'WINTER', year: y };
+}
+
+function parseOkanimeRecentEpisodesHtml(html: string) {
+  const items: any[] = [];
+  if (!html) return items;
+  const epCardRe = /<a\b[^>]*href=["']([^"']*\/episode\/([^"'/?#]+)[^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = epCardRe.exec(html)) !== null) {
+    const href = decodeHtmlEntities(m[1]).trim();
+    const epSlugFull = decodeURIComponent(m[2] || '').trim();
+    if (!epSlugFull || items.length >= 36) continue;
+    const epMatch = epSlugFull.match(/^(.+?)-episode-(\d+)$/i);
+    if (!epMatch) continue;
+    const animeSlug = epMatch[1];
+    const epNum = String(parseInt(epMatch[2], 10));
+    const itemId = `${animeSlug}__ep__${epNum}`;
+    if (items.some((it) => it.id === itemId)) continue;
+
+    const surrounding = html.slice(Math.max(0, m.index - 500), Math.min(html.length, m.index + m[0].length + 500));
+    const imgMatch =
+      m[3].match(/<img[^>]+(?:data-src|src)=["']([^"']+)["']/i) ||
+      surrounding.match(/<img[^>]+(?:data-src|src)=["']([^"']+)["']/i);
+    let imageUrl = imgMatch?.[1] ? decodeHtmlEntities(imgMatch[1]).trim() : '';
+    if (imageUrl.startsWith('/')) imageUrl = `${OKANIME_ORIGIN}${imageUrl}`;
+
+    const rawAnchorTitle = stripTags(m[3]) || animeSlug.replace(/-/g, ' ');
+    const cleaned = cleanAnimeTitle(rawAnchorTitle) || cleanAnimeTitle(animeSlug.replace(/-/g, ' ')) || animeSlug;
+    const posterUrl = imageUrl.replace('-thumbnail.', '-poster.');
+
+    items.push({
+      _id: itemId,
+      id: itemId,
+      title: cleaned,
+      episode: epNum,
+      episodeNumber: epNum,
+      imageUrl: imageUrl || posterUrl,
+      posterUrl: posterUrl || imageUrl,
+      thumbnailUrl: imageUrl || posterUrl,
+      link: href.startsWith('http') ? href : `${OKANIME_ORIGIN}${href.startsWith('/') ? href : `/${href}`}`,
+      animeId: {
+        _id: animeSlug,
+        title: cleaned,
+        titleAr: cleaned,
+        posterUrl: posterUrl || imageUrl,
+        thumbnailUrl: imageUrl || posterUrl,
+        episodeLink: itemId,
+      },
+    });
+  }
+  return items;
+}
+
+async function fetchEdgeRecentEpisodesList(page = 1): Promise<any[]> {
+  try {
+    const url = page <= 1 ? `${OKANIME_ORIGIN}/` : `${OKANIME_ORIGIN}/?page=${page}`;
+    const html = await fetchSiteHtml(url, 4800);
+    const parsed = parseOkanimeRecentEpisodesHtml(html);
+    if (parsed.length > 0) return parsed;
+  } catch {}
+
+  try {
+    const aniData = await queryAniListEdge(
+      `query ($p: Int) { Page(page: $p, perPage: 24) { media(type: ANIME, status: RELEASING, sort: [UPDATED_AT_DESC, TRENDING_DESC], isAdult: false) { ${EDGE_CARD_FRAGMENT} } } }`,
+      { p: page },
+    );
+    const list: any[] = aniData?.Page?.media || [];
+    return list.map((m) => {
+      const card = mapAniListCardEdge(m);
+      const epNum = String(card.episodeNumber || Math.max(1, Number(m.nextAiringEpisode?.episode || 2) - 1));
+      return {
+        _id: `${card._id}-ep-${epNum}`,
+        id: `${card._id}-episode-${epNum}`,
+        title: card.title,
+        episode: epNum,
+        episodeNumber: epNum,
+        imageUrl: card.posterUrl,
+        posterUrl: card.posterUrl,
+        thumbnailUrl: card.posterUrl,
+        link: `/anime/${card._id}`,
+        animeId: {
+          _id: card._id,
+          title: card.title,
+          titleAr: card.title,
+          posterUrl: card.posterUrl,
+          thumbnailUrl: card.posterUrl,
+          episodeLink: `${card._id}-episode-${epNum}`,
+        },
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+export async function handleEdgeAnimeRecent(url: URL): Promise<Response> {
+  const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10) || 1);
+  const data = await fetchEdgeRecentEpisodesList(page);
+  if (data.length === 0) {
+    return edgeJson(
+      {
+        success: false,
+        hybridFallback: true,
+        page,
+        hasNext: false,
+        hasPrev: page > 1,
+        data: [],
+      },
+      200,
+      { 'X-Hybrid-Fallback': '1' },
+    );
+  }
+  return edgeJson({
+    success: true,
+    page,
+    hasNext: data.length >= 10,
+    hasPrev: page > 1,
+    data,
+  });
+}
+
+export async function handleEdgeAnimeGenres(): Promise<Response> {
+  return edgeJson({
+    success: true,
+    data: GENRE_TAXONOMY.map((g) => ({ mal_id: g.mal_id, name: g.name, nameAr: g.nameAr })),
+  });
+}
+
+export async function handleEdgeAnimeSearch(url: URL): Promise<Response> {
+  const q = (url.searchParams.get('q') || '').trim();
+  const genresParam = (url.searchParams.get('genres') || '').trim();
+  const minScoreRaw = parseFloat(url.searchParams.get('min_score') || '0');
+  const statusParam = (url.searchParams.get('status') || '').toLowerCase().trim();
+  const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10) || 1);
+  const orderBy = (url.searchParams.get('order_by') || '').toLowerCase();
+  const sort = (url.searchParams.get('sort') || 'desc').toLowerCase();
+  const yearNum = parseInt(url.searchParams.get('year') || '0', 10) || 0;
+
+  const genreTokens = genresParam ? genresParam.split(',').map((t) => t.trim()).filter(Boolean) : [];
+  const splitGenres = splitAniListGenresAndTags(genreTokens);
+
+  let aniSort = q ? 'SEARCH_MATCH' : 'POPULARITY_DESC';
+  if (orderBy === 'score') aniSort = sort === 'asc' ? 'SCORE' : 'SCORE_DESC';
+  else if (orderBy === 'popularity') aniSort = sort === 'asc' ? 'POPULARITY' : 'POPULARITY_DESC';
+  else if (orderBy === 'start_date') aniSort = sort === 'asc' ? 'START_DATE' : 'START_DATE_DESC';
+  else if (orderBy === 'title') aniSort = sort === 'asc' ? 'TITLE_ROMAJI' : 'TITLE_ROMAJI_DESC';
+
+  const statusMap: Record<string, string> = {
+    airing: 'RELEASING',
+    releasing: 'RELEASING',
+    complete: 'FINISHED',
+    finished: 'FINISHED',
+    upcoming: 'NOT_YET_RELEASED',
+  };
+
+  try {
+    const vars: Record<string, any> = { page, sort: [aniSort] };
+    if (q) vars.search = q;
+    if (splitGenres.genreIn.length > 0) vars.genre_in = splitGenres.genreIn;
+    if (splitGenres.tagIn.length > 0) vars.tag_in = splitGenres.tagIn;
+    if (minScoreRaw > 0) vars.averageScore_greater = Math.round(minScoreRaw * 10);
+    if (statusMap[statusParam]) vars.status = statusMap[statusParam];
+    if (yearNum > 1970) vars.seasonYear = yearNum;
+
+    const aniData = await queryAniListEdge(
+      `query ($page: Int, $search: String, $genre_in: [String], $tag_in: [String], $averageScore_greater: Int, $status: MediaStatus, $seasonYear: Int, $sort: [MediaSort]) {
+        Page(page: $page, perPage: 24) {
+          pageInfo { hasNextPage currentPage }
+          media(type: ANIME, isAdult: false, search: $search, genre_in: $genre_in, tag_in: $tag_in, averageScore_greater: $averageScore_greater, status: $status, seasonYear: $seasonYear, sort: $sort) {
+            ${EDGE_CARD_FRAGMENT}
+          }
+        }
+      }`,
+      vars,
+    );
+    const list: any[] = aniData?.Page?.media || [];
+    if (list.length > 0 || !q) {
+      return edgeJson({
+        success: true,
+        data: list.map(mapAniListCardEdge),
+        pagination: {
+          has_next_page: Boolean(aniData?.Page?.pageInfo?.hasNextPage),
+          current_page: aniData?.Page?.pageInfo?.currentPage || page,
+        },
+      });
+    }
+  } catch {}
+
+  if (q) {
+    try {
+      const kitRes = await fetchEdgeTimeout(
+        `https://kitsu.io/api/edge/anime?filter[text]=${encodeURIComponent(q)}&page[limit]=20`,
+        { headers: { 'User-Agent': EDGE_API_UA, Accept: 'application/vnd.api+json' } },
+        4000,
+      );
+      if (kitRes.ok) {
+        const kitJson: any = await kitRes.json();
+        const items: any[] = Array.isArray(kitJson?.data) ? kitJson.data : [];
+        if (items.length > 0) {
+          const mapped = items
+            .map((it) => mapKitsuToEdgeMedia(it))
+            .filter(Boolean)
+            .map((m) => mapAniListCardEdge(m));
+          return edgeJson({
+            success: true,
+            data: mapped,
+            pagination: { has_next_page: false, current_page: page },
+          });
+        }
+      }
+    } catch {}
+  }
+
+  return edgeJson(
+    {
+      success: false,
+      hybridFallback: true,
+      data: [],
+      pagination: { has_next_page: false, current_page: page },
+    },
+    200,
+    { 'X-Hybrid-Fallback': '1' },
+  );
+}
+
+export async function handleEdgeAnimeSeason(url: URL): Promise<Response> {
+  const rawSeason = (url.searchParams.get('season') || '').trim();
+  const rawYear = parseInt(url.searchParams.get('year') || '0', 10) || 0;
+  const win = getEdgeSeasonWindow(rawSeason === 'auto' || rawSeason === 'now' ? '' : rawSeason, rawYear);
+
+  try {
+    const aniData = await queryAniListEdge(
+      `query ($season: MediaSeason, $year: Int) {
+        Page(page: 1, perPage: 30) {
+          media(type: ANIME, season: $season, seasonYear: $year, sort: [POPULARITY_DESC, SCORE_DESC], isAdult: false) {
+            ${EDGE_CARD_FRAGMENT}
+          }
+        }
+      }`,
+      { season: win.season, year: win.year },
+    );
+    const list: any[] = aniData?.Page?.media || [];
+    if (list.length > 0) {
+      return edgeJson({ success: true, data: list.map(mapAniListCardEdge) });
+    }
+  } catch {}
+
+  return edgeJson({ success: false, hybridFallback: true, data: [] }, 200, { 'X-Hybrid-Fallback': '1' });
+}
+
+export async function handleEdgeAnimeCollection(kind: 'top' | 'movies', url: URL): Promise<Response> {
+  const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10) || 1);
+  try {
+    const aniData = await queryAniListEdge(
+      kind === 'movies'
+        ? `query ($p: Int) { Page(page: $p, perPage: 28) { pageInfo { hasNextPage } media(type: ANIME, format: MOVIE, sort: [SCORE_DESC, POPULARITY_DESC], isAdult: false) { ${EDGE_CARD_FRAGMENT} } } }`
+        : `query ($p: Int) { Page(page: $p, perPage: 28) { pageInfo { hasNextPage } media(type: ANIME, sort: [SCORE_DESC, POPULARITY_DESC], isAdult: false) { ${EDGE_CARD_FRAGMENT} } } }`,
+      { p: page },
+    );
+    const list: any[] = aniData?.Page?.media || [];
+    if (list.length > 0) {
+      return edgeJson({
+        success: true,
+        page,
+        hasNext: Boolean(aniData?.Page?.pageInfo?.hasNextPage),
+        hasPrev: page > 1,
+        data: list.map(mapAniListCardEdge),
+      });
+    }
+  } catch {}
+
+  return edgeJson(
+    { success: false, hybridFallback: true, page, hasNext: false, hasPrev: page > 1, data: [] },
+    200,
+    { 'X-Hybrid-Fallback': '1' },
+  );
+}
+
+async function fetchEdgeScheduleForDay(dayParam: string): Promise<any[]> {
+  const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  const day = days.includes(dayParam.toLowerCase()) ? dayParam.toLowerCase() : days[new Date().getDay()];
+  try {
+    const aniData = await queryAniListEdge(
+      `query {
+        Page(page: 1, perPage: 45) {
+          airingSchedules(notYetAired: true, sort: TIME) {
+            airingAt
+            episode
+            media {
+              ${EDGE_CARD_FRAGMENT}
+            }
+          }
+        }
+      }`,
+      {},
+    );
+    const schedules: any[] = aniData?.Page?.airingSchedules || [];
+    const matched = schedules
+      .filter((s) => s?.media && !s.media.isAdult)
+      .filter((s) => {
+        const d = new Date(Number(s.airingAt || 0) * 1000);
+        return days[d.getUTCDay()] === day;
+      })
+      .map((s) => {
+        const card = mapAniListCardEdge(s.media);
+        const dt = new Date(Number(s.airingAt || 0) * 1000);
+        const jstDt = new Date(dt.getTime() + 9 * 3600 * 1000);
+        const hh = String(jstDt.getUTCHours()).padStart(2, '0');
+        const mm = String(jstDt.getUTCMinutes()).padStart(2, '0');
+        return {
+          ...card,
+          images: { jpg: { large_image_url: card.posterUrl, image_url: card.posterUrl } },
+          score: card.rating,
+          episodes: card.episodesCount || s.episode || undefined,
+          year: Number(card.releaseYear) || new Date().getFullYear(),
+          broadcast: { time: `${hh}:${mm}`, day },
+          genres: card.genres.map((g: string) => ({ name: g })),
+        };
+      });
+    if (matched.length > 0) return matched;
+  } catch {}
+  return [];
+}
+
+export async function handleEdgeAnimeSchedule(url: URL): Promise<Response> {
+  const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  const day = (url.searchParams.get('day') || days[new Date().getDay()]).toLowerCase();
+  const data = await fetchEdgeScheduleForDay(day);
+  if (data.length === 0) {
+    return edgeJson({ success: false, hybridFallback: true, data: [] }, 200, { 'X-Hybrid-Fallback': '1' });
+  }
+  return edgeJson({ success: true, data });
+}
+
+export async function handleEdgeDashboard(url: URL): Promise<Response> {
+  const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  const userDay = (url.searchParams.get('day') || '').toLowerCase();
+  const currentDay = days.includes(userDay) ? userDay : days[new Date().getDay()];
+  const excludeRecent = url.searchParams.get('excludeRecent') === '1' || url.searchParams.get('excludeRecent') === 'true';
+  const requestedSeason = (url.searchParams.get('season') || 'auto').toLowerCase();
+  const sliderMode = (url.searchParams.get('sliderMode') || 'best_season').toLowerCase();
+  const win = getEdgeSeasonWindow(
+    ['winter', 'spring', 'summer', 'fall'].includes(requestedSeason) ? requestedSeason : '',
+    new Date().getFullYear(),
+  );
+
+  const sliderSort =
+    sliderMode === 'all_time_best' || sliderMode === 'classic_historical'
+      ? '[SCORE_DESC, POPULARITY_DESC]'
+      : sliderMode === 'trending_season'
+      ? '[TRENDING_DESC, POPULARITY_DESC]'
+      : '[SCORE_DESC, POPULARITY_DESC]';
+  const sliderFilter =
+    sliderMode === 'all_time_best' || sliderMode === 'classic_historical'
+      ? 'type: ANIME, isAdult: false'
+      : `type: ANIME, season: ${win.season}, seasonYear: ${win.year}, isAdult: false`;
+
+  const [aniBundle, recentEpisodes, schedule] = await Promise.all([
+    queryAniListEdge(
+      `query ($season: MediaSeason, $year: Int) {
+        slider: Page(page: 1, perPage: 14) {
+          media(${sliderFilter}, sort: ${sliderSort}) { ${EDGE_CARD_FRAGMENT} }
+        }
+        trending: Page(page: 1, perPage: 20) {
+          media(type: ANIME, status: RELEASING, sort: [TRENDING_DESC, POPULARITY_DESC], isAdult: false) { ${EDGE_CARD_FRAGMENT} }
+        }
+        season: Page(page: 1, perPage: 24) {
+          media(type: ANIME, season: $season, seasonYear: $year, sort: [POPULARITY_DESC, SCORE_DESC], isAdult: false) { ${EDGE_CARD_FRAGMENT} }
+        }
+        movies: Page(page: 1, perPage: 18) {
+          media(type: ANIME, format: MOVIE, sort: [SCORE_DESC, POPULARITY_DESC], isAdult: false) { ${EDGE_CARD_FRAGMENT} }
+        }
+        topAnime: Page(page: 1, perPage: 18) {
+          media(type: ANIME, sort: [SCORE_DESC, POPULARITY_DESC], isAdult: false) { ${EDGE_CARD_FRAGMENT} }
+        }
+      }`,
+      { season: win.season, year: win.year },
+    ).catch(() => null),
+    excludeRecent ? Promise.resolve([]) : fetchEdgeRecentEpisodesList(1).catch(() => []),
+    fetchEdgeScheduleForDay(currentDay).catch(() => []),
+  ]);
+
+  if (!aniBundle && recentEpisodes.length === 0) {
+    return edgeJson({ success: false, hybridFallback: true }, 200, { 'X-Hybrid-Fallback': '1' });
+  }
+
+  const top5 = (aniBundle?.slider?.media || []).slice(0, 12).map(mapAniListCardEdge);
+  const popular = (aniBundle?.trending?.media || []).slice(0, 14).map((m: any) => ({
+    ...mapAniListCardEdge(m),
+    isDailyTrending: true,
+  }));
+  const currentSeason = (aniBundle?.season?.media || []).map(mapAniListCardEdge);
+  const movies = (aniBundle?.movies?.media || []).map(mapAniListCardEdge);
+  const topAnime = (aniBundle?.topAnime?.media || []).map(mapAniListCardEdge);
+
+  return edgeJson({
+    success: true,
+    data: {
+      top5: top5.length > 0 ? top5 : currentSeason.slice(0, 10),
+      recentEpisodes: excludeRecent ? [] : recentEpisodes,
+      popular: popular.length > 0 ? popular : currentSeason.slice(0, 12),
+      currentSeason,
+      schedule: schedule.length > 0 ? schedule : popular.slice(0, 10),
+      movies,
+      topAnime,
     },
   });
 }

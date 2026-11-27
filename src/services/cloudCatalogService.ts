@@ -443,6 +443,23 @@ async function safeCloudGet(collectionName: string, docId: string): Promise<any 
   }
 }
 
+async function safeCloudGetFast(
+  collectionName: string,
+  docId: string,
+  timeoutMs = 800,
+): Promise<any | null> {
+  if (isQuotaTripped()) return null;
+  if (!/^[a-zA-Z0-9_\-]+$/.test(docId) || docId.length > 128) return null;
+  try {
+    return await Promise.race([
+      safeCloudGet(collectionName, docId),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+    ]);
+  } catch {
+    return null;
+  }
+}
+
 async function safeCloudGetSegment(animeKey: string, segId: string): Promise<any | null> {
   if (isQuotaTripped()) return null;
   const path = `catalog_anime/${animeKey}/segments/${segId}`;
@@ -452,6 +469,21 @@ async function safeCloudGetSegment(animeKey: string, segId: string): Promise<any
     return snap.data();
   } catch (err) {
     reportCloudErrorSilently(err, OperationType.GET, path);
+    return null;
+  }
+}
+
+async function safeCloudGetSegmentFast(
+  animeKey: string,
+  segId: string,
+  timeoutMs = 900,
+): Promise<any | null> {
+  try {
+    return await Promise.race([
+      safeCloudGetSegment(animeKey, segId),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+    ]);
+  } catch {
     return null;
   }
 }
@@ -827,7 +859,7 @@ export async function getAnimeDetailsWithCloud(
   const run = (async (): Promise<any | null> => {
     let cloudDoc: any = null;
     if (!force) {
-      cloudDoc = await safeCloudGet('catalog_anime', docId);
+      cloudDoc = await safeCloudGetFast('catalog_anime', docId, 800);
       if (cloudDoc && cloudDoc.data && (cloudDoc.data.title || cloudDoc.data._id)) {
         const assembled = await reassembleAnimeFromCloudDoc(docId, cloudDoc);
         if (assembled) {
@@ -880,7 +912,7 @@ async function reassembleAnimeFromCloudDoc(animeKey: string, cloudDoc: any): Pro
   if (segmentsCount > 0) {
     const segPromises: Promise<any>[] = [];
     for (let i = 0; i < Math.min(segmentsCount, 40); i++) {
-      segPromises.push(safeCloudGetSegment(animeKey, `seg_${i}`));
+      segPromises.push(safeCloudGetSegmentFast(animeKey, `seg_${i}`, 950));
     }
     const segDocs = await Promise.all(segPromises);
     const mergedEps: any[] = [];
@@ -891,6 +923,8 @@ async function reassembleAnimeFromCloudDoc(animeKey: string, cloudDoc: any): Pro
     }
     if (mergedEps.length > 0) {
       baseData.episodes = mergedEps;
+    } else {
+      return null;
     }
   }
   return baseData;
@@ -1182,7 +1216,7 @@ export async function getMangaWithCloud(
 
   let cloudDoc: any = null;
   if (!force) {
-    cloudDoc = await safeCloudGet('catalog_manga', docId);
+    cloudDoc = await safeCloudGetFast('catalog_manga', docId, 800);
     if (cloudDoc?.data?.details) {
       const details = cloudDoc.data.details;
       const chapters = Array.isArray(cloudDoc.data.chapters) ? cloudDoc.data.chapters : [];
@@ -1352,7 +1386,7 @@ export async function getMangaChaptersOnlyWithCloud(
     return localHit.data.chapters;
   }
 
-  const cloudDoc = await safeCloudGet('catalog_manga', docId);
+  const cloudDoc = await safeCloudGetFast('catalog_manga', docId, 800);
   if (
     cloudDoc?.data?.chapters?.length &&
     !isMangaCacheIncomplete(cloudDoc.data.details || manga, cloudDoc.data.chapters, cloudDoc.data)
@@ -1403,7 +1437,7 @@ export async function getChapterPagesWithCloud(
       return localHit.data;
     }
 
-    const cloudDoc = await safeCloudGet('catalog_chapter_pages', chapterKey);
+    const cloudDoc = await safeCloudGetFast('catalog_chapter_pages', chapterKey, 750);
     if (
       cloudDoc &&
       Array.isArray(cloudDoc.pages) &&
@@ -1485,7 +1519,7 @@ export async function tryReadChapterPagesCacheOrCloud(
     return localHit.data;
   }
 
-  const cloudDoc = await safeCloudGet('catalog_chapter_pages', chapterKey);
+  const cloudDoc = await safeCloudGetFast('catalog_chapter_pages', chapterKey, 750);
   if (
     cloudDoc &&
     Array.isArray(cloudDoc.pages) &&
@@ -1666,17 +1700,18 @@ export async function getEpisodeServersWithCloud(
 ): Promise<any[]> {
   const rawEpKey = `${params.animeId || 'unknown'}_s${params.seasonNumber || 1}_ep${params.episodeNum || params.url || '1'}`;
   const epKey = toCanonicalKey('ep', rawEpKey);
-  const localKey = `servers_v2:${epKey}`;
+  const localKey = `servers_v3:${epKey}`;
   const force = options?.forceRefresh === true;
 
   if (!force) {
     const localHit = ramGet<any[]>(localKey) || (await idbGet<any[]>(localKey));
-    if (localHit?.data?.length) {
+    const localHasWatch = Array.isArray(localHit?.data) && localHit.data.some((s: any) => s && s.category !== 'download');
+    if (localHit?.data?.length && localHasWatch) {
       options?.onData?.(localHit.data, ramCatalog.has(localKey) ? 'ram' : 'idb');
       if (Date.now() < localHit.freshUntil) return localHit.data;
     }
 
-    const cloudDoc = await safeCloudGet('server_intelligence', epKey);
+    const cloudDoc = await safeCloudGetFast('server_intelligence', epKey, 650);
     if (
       cloudDoc &&
       Array.isArray(cloudDoc.servers) &&
@@ -1687,17 +1722,20 @@ export async function getEpisodeServersWithCloud(
       const freshUntil = Number(cloudDoc.freshUntil) || now + 4 * 3600 * 1000;
       const staleUntil = Number(cloudDoc.staleUntil) || now + 24 * 3600 * 1000;
       const ranked = rankServersByIntelligence(cloudDoc.servers, cloudDoc.scores || {});
-      await idbSet({
-        key: localKey,
-        data: ranked,
-        freshUntil,
-        staleUntil,
-        contentHash: String(cloudDoc.contentHash || ''),
-        updatedAt: now,
-      });
-      options?.onData?.(ranked, 'cloud');
-      if (now < freshUntil && Number(cloudDoc.failReports || 0) === 0) {
-        return ranked;
+      const cloudHasWatch = ranked.some((s: any) => s && s.category !== 'download');
+      if (cloudHasWatch) {
+        await idbSet({
+          key: localKey,
+          data: ranked,
+          freshUntil,
+          staleUntil,
+          contentHash: String(cloudDoc.contentHash || ''),
+          updatedAt: now,
+        });
+        options?.onData?.(ranked, 'cloud');
+        if (now < freshUntil && Number(cloudDoc.failReports || 0) === 0) {
+          return ranked;
+        }
       }
     }
   }
@@ -1749,14 +1787,18 @@ export async function tryReadEpisodeServersCacheOrCloud(
 ): Promise<any[] | null> {
   const rawEpKey = `${params.animeId || 'unknown'}_s${params.seasonNumber || 1}_ep${params.episodeNum || params.url || '1'}`;
   const epKey = toCanonicalKey('ep', rawEpKey);
-  const localKey = `servers_v2:${epKey}`;
+  const localKey = `servers_v3:${epKey}`;
 
   const localHit = ramGet<any[]>(localKey) || (await idbGet<any[]>(localKey));
-  if (localHit?.data?.length && Date.now() < localHit.freshUntil) {
+  if (
+    localHit?.data?.length &&
+    localHit.data.some((s: any) => s && s.category !== 'download') &&
+    Date.now() < localHit.freshUntil
+  ) {
     return localHit.data;
   }
 
-  const cloudDoc = await safeCloudGet('server_intelligence', epKey);
+  const cloudDoc = await safeCloudGetFast('server_intelligence', epKey, 650);
   if (
     cloudDoc &&
     Array.isArray(cloudDoc.servers) &&
@@ -1767,6 +1809,9 @@ export async function tryReadEpisodeServersCacheOrCloud(
     const freshUntil = Number(cloudDoc.freshUntil) || now + 4 * 3600 * 1000;
     const staleUntil = Number(cloudDoc.staleUntil) || now + 24 * 3600 * 1000;
     const ranked = rankServersByIntelligence(cloudDoc.servers, cloudDoc.scores || {});
+    if (!ranked.some((s: any) => s && s.category !== 'download')) {
+      return null;
+    }
     await idbSet({
       key: localKey,
       data: ranked,
@@ -1790,7 +1835,7 @@ export async function cacheResolvedEpisodeServers(
   if (!Array.isArray(servers) || servers.length === 0) return;
   const rawEpKey = `${params.animeId || 'unknown'}_s${params.seasonNumber || 1}_ep${params.episodeNum || params.url || '1'}`;
   const epKey = toCanonicalKey('ep', rawEpKey);
-  const localKey = `servers_v2:${epKey}`;
+  const localKey = `servers_v3:${epKey}`;
 
   const sanitizedServers = sanitizeFirestoreData(servers.slice(0, 40));
   const now = Date.now();
@@ -1827,7 +1872,7 @@ export async function invalidateEpisodeServersCache(
 ): Promise<void> {
   const rawEpKey = `${params.animeId || 'unknown'}_s${params.seasonNumber || 1}_ep${params.episodeNum || params.url || '1'}`;
   const epKey = toCanonicalKey('ep', rawEpKey);
-  const localKey = `servers_v2:${epKey}`;
+  const localKey = `servers_v3:${epKey}`;
   ramCatalog.delete(localKey);
   const database = await openCatalogDb();
   if (database) {

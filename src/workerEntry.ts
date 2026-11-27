@@ -17,6 +17,13 @@ import {
   handleEdgeStreamProxy,
   handleEdgeDirectDownloadGet,
   handleEdgeExtractPost,
+  handleEdgeDashboard,
+  handleEdgeAnimeRecent,
+  handleEdgeAnimeSearch,
+  handleEdgeAnimeGenres,
+  handleEdgeAnimeSeason,
+  handleEdgeAnimeCollection,
+  handleEdgeAnimeSchedule,
 } from './utils/edgeAnimeEngine';
 
 export interface WorkerEnv {
@@ -784,6 +791,30 @@ async function handleEdgeAnimeRoutes(
   const pathname = url.pathname;
   const method = request.method.toUpperCase();
 
+  if (pathname === '/api/dashboard' && method === 'GET') {
+    return handleEdgeDashboard(url);
+  }
+  if (pathname === '/api/anime/recent' && method === 'GET') {
+    return handleEdgeAnimeRecent(url);
+  }
+  if (pathname === '/api/anime/search' && method === 'GET') {
+    return handleEdgeAnimeSearch(url);
+  }
+  if (pathname === '/api/anime/genres' && method === 'GET') {
+    return handleEdgeAnimeGenres();
+  }
+  if (pathname === '/api/anime/season' && method === 'GET') {
+    return handleEdgeAnimeSeason(url);
+  }
+  if (pathname === '/api/anime/top' && method === 'GET') {
+    return handleEdgeAnimeCollection('top', url);
+  }
+  if (pathname === '/api/anime/movies' && method === 'GET') {
+    return handleEdgeAnimeCollection('movies', url);
+  }
+  if ((pathname === '/api/anime/schedule' || pathname === '/api/anime/jikan-schedule') && method === 'GET') {
+    return handleEdgeAnimeSchedule(url);
+  }
   if (pathname.startsWith('/api/anime/details/') && method === 'GET') {
     const rawId = pathname.slice('/api/anime/details/'.length);
     return handleEdgeAnimeDetails(rawId);

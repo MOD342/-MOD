@@ -100,9 +100,9 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
   const [newChatText, setNewChatText] = useState('');
   const [sendingChat, setSendingChat] = useState(false);
   const [episodeSearchQuery, setEpisodeSearchQuery] = useState('');
-  const [watchSeasonNum] = useState<number>(() => {
-    return Number(initialEpisode?.seasonNumber || anime?.activeSeason || anime?.seasonsList?.[0]?.seasonNumber || 1);
-  });
+  const watchSeasonNum = Number(
+    episode?.seasonNumber || anime?.activeSeason || anime?.seasonsList?.[0]?.seasonNumber || 1,
+  );
 
   const currentSeasonEpisodes = React.useMemo(() => {
     if (Array.isArray(anime?.seasonsList) && anime.seasonsList.length > 0) {
@@ -150,11 +150,15 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
     if (episode) {
       window.scrollTo({ top: 0, behavior: 'smooth' });
       const activeSeasonNumber = episode?.seasonNumber || watchSeasonNum || 1;
-      const serversCacheKey = `servers_v14_${anime?._id || 'unknown'}_s_${activeSeasonNumber}_ep_${episode?.num || episode?.id || '1'}`;
+      const serversCacheKey = `servers_v15_${anime?._id || 'unknown'}_s_${activeSeasonNumber}_ep_${episode?.num || episode?.id || '1'}`;
       const cachedServers = clientCache.get<any[]>(serversCacheKey);
       let initialized = false;
 
-      if (cachedServers && Array.isArray(cachedServers) && cachedServers.length > 0) {
+      if (
+        cachedServers &&
+        Array.isArray(cachedServers) &&
+        cachedServers.some((s: any) => s && s.category !== 'download')
+      ) {
         const normalized = normalizeWatchServersList(cachedServers);
         initialized = true;
         setServers(normalized);
@@ -517,7 +521,7 @@ export default function WatchView({ onBack, episode: initialEpisode, anime, onEp
   const handleRefreshServers = () => {
     if (!episode || loadingServers) return;
     const activeSeasonNumber = episode?.seasonNumber || watchSeasonNum || 1;
-    const serversCacheKey = `servers_v14_${anime?._id || 'unknown'}_s_${activeSeasonNumber}_ep_${episode?.num || episode?.id || '1'}`;
+    const serversCacheKey = `servers_v15_${anime?._id || 'unknown'}_s_${activeSeasonNumber}_ep_${episode?.num || episode?.id || '1'}`;
     setLoadingServers(true);
     setActionNotice(null);
     void cloudCatalogService
