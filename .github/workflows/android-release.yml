@@ -47,9 +47,6 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Install Android 36 SDK & Build Tools
         run: |
           yes | sdkmanager --licenses > /dev/null || true
@@ -100,7 +97,7 @@ jobs:
           echo "ANDROID_VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
           echo "ANDROID_VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
 
-          RESOLVED_API_URL="${INPUT_API_URL:-${SECRET_API_URL:-${VAR_API_URL:-https://mod.z-mod342.workers.dev}}}"
+          RESOLVED_API_URL="${INPUT_API_URL:-${SECRET_API_URL:-${VAR_API_URL:-https://workers.dev}}}"
           {
             echo "VITE_API_URL=${RESOLVED_API_URL}"
             [ -n "${SECRET_GOOGLE_CLIENT_ID:-}" ] && echo "VITE_GOOGLE_CLIENT_ID=${SECRET_GOOGLE_CLIENT_ID}"
@@ -233,62 +230,3 @@ jobs:
           1. Open Firebase Console -> Project Settings -> Your apps -> Android (com.zoryx)
           2. Add both SHA-1 and SHA-256 fingerprints above.
           3. For persistent release updates across builds, set GitHub Repository Secrets:
-             ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
-          EOF
-
-          echo "apk_file=$FINAL_APK" >> "$GITHUB_OUTPUT"
-          echo "aab_file=$FINAL_AAB" >> "$GITHUB_OUTPUT"
-
-      - name: Write GitHub Step Summary
-        run: |
-          {
-            echo "## ✅ تم بناء وتوقيع النسخة النهائية بنجاح (أنمي MOD)"
-            echo ""
-            echo "| البند | القيمة |"
-            echo "| --- | --- |"
-            echo "| اسم الحزمة (Package ID) | \`com.zoryx\` |"
-            echo "| الإصدار (Version) | \`${{ steps.meta.outputs.version_name }}\` (Build \`${{ steps.meta.outputs.version_code }}\`) |"
-            echo "| وضع التوقيع | \`${{ steps.signing.outputs.signing_mode }}\` |"
-            echo "| بصمة **SHA-1** | \`${{ steps.signing.outputs.sha1 }}\` |"
-            echo "| بصمة **SHA-256** | \`${{ steps.signing.outputs.sha256 }}\` |"
-            echo ""
-            if [ "${{ steps.signing.outputs.signing_mode }}" = "ephemeral-ci" ]; then
-              echo "> ℹ️ **ملاحظة التوقيع الدائم:** تم توقيع هذا الإصدار بشهادة تلقائية مؤقتة لأن أسرار \`ANDROID_KEYSTORE_BASE64\` غير مضافة بعد في إعدادات المستودع. لتثبيت البصمة لجميع التحديثات المستقبلية ومتجر Play، شغّل \`npm run apk:keystore\` محلياً وأضف الأسرار الأربعة في **Settings > Secrets > Actions** ثم أضف بصمة **SHA-1** في **Firebase Console**."
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload Signed Release APK Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: AnimeMOD-Release-APK
-          path: ${{ steps.package.outputs.apk_file }}
-          retention-days: 30
-
-      - name: Upload Signed Release AAB Artifact (Play Store)
-        uses: actions/upload-artifact@v4
-        with:
-          name: AnimeMOD-Release-AAB
-          path: ${{ steps.package.outputs.aab_file }}
-          retention-days: 30
-
-      - name: Upload Signing Fingerprint Report
-        uses: actions/upload-artifact@v4
-        with:
-          name: Signing-Fingerprint-Report
-          path: release-output/signing-fingerprint-report.txt
-          retention-days: 30
-
-      - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v') || inputs.create_github_release == true
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v{0}-build.{1}', steps.meta.outputs.version_name, github.run_number) }}
-          name: "أنمي MOD v${{ steps.meta.outputs.version_name }} (Build ${{ steps.meta.outputs.version_code }})"
-          body: |
-            ### النسخة النهائية الموقّعة الجاهزة للنشر — حزمة `com.zoryx`
-            - **SHA-1:** `${{ steps.signing.outputs.sha1 }}`
-            - **SHA-256:** `${{ steps.signing.outputs.sha256 }}`
-          files: |
-            ${{ steps.package.outputs.apk_file }}
-            ${{ steps.package.outputs.aab_file }}
-            release-output/signing-fingerprint-report.txt
