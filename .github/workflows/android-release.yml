@@ -229,5 +229,5 @@ jobs:
           FP_SHA1: ${{ steps.signing.outputs.sha1 }}
           FP_SHA256: ${{ steps.signing.outputs.sha256 }}
         run: |
-          node -e '
-            const fs = require("fs");
+          cat << 'PKG_EOF' > /tmp/pkg.cjs
+          const fs = require("fs");
