@@ -194,3 +194,23 @@ jobs:
           if (!fs.existsSync(signedApk)) throw new Error("Missing final APK");
           execFileSync(`${buildTools}/apksigner`, ["verify", "--print-certs", signedApk], { stdio: "inherit" });
           fs.mkdirSync("release-output", { recursive: true });
+          
+      - name: Upload APK & Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnimeMOD-Release-APK
+          path: |
+            release-output/*.apk
+            release-output/signing-fingerprint-report.txt
+          retention-days: 30
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.create_github_release == true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v{0}-build.{1}', steps.meta.outputs.version_name, github.run_number) }}
+          name: "أنمي MOD v${{ steps.meta.outputs.version_name }}"
+          files: |
+            release-output/*.apk
+            release-output/signing-fingerprint-report.txt
+
