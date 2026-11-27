@@ -55,6 +55,111 @@ const GENRE_MAP_AR: Record<string, string> = {
 };
 
 let isBackendUnreachable = false;
+let clientAnimedarCooldownUntil = 0;
+
+function extractTargetSeasonNumberClient(title: string): number {
+  const s = (title || '').trim();
+  if (!s) return 1;
+  const numMatch = s.match(/(?:season|part|cour|s)\s*(\d+)/i);
+  if (numMatch?.[1]) return Math.max(1, parseInt(numMatch[1], 10) || 1);
+  if (/\b(?:2nd|second)\s+season\b|\bii\b$/i.test(s)) return 2;
+  if (/\b(?:3rd|third)\s+season\b|\biii\b$/i.test(s)) return 3;
+  if (/\b(?:4th|fourth)\s+season\b|\biv\b$/i.test(s)) return 4;
+  return 1;
+}
+
+function scoreSearchCandidatesClient(
+  candidates: Array<{ slug?: string; url?: string; title?: string }>,
+  candidateTitles: string[],
+  targetSeasonNum = 1,
+): { slug: string; url: string; score: number } | null {
+  if (!Array.isArray(candidates) || candidates.length === 0) return null;
+  const cleanRefs = candidateTitles
+    .map((t) =>
+      String(t || '')
+        .toLowerCase()
+        .replace(/[:'".,!?()\-–]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim(),
+    )
+    .filter((t) => t.length >= 2);
+  if (cleanRefs.length === 0) return null;
+
+  const stopWords = new Set(['the', 'an', 'of', 'in', 'to', 'and', 'no', 'wa', 'ni', 'ga', 'anime', 'tv', 'sub', 'مترجم', 'انمي']);
+  const sequelMarkers = [
+    'shippuuden',
+    'shippuden',
+    'boruto',
+    'brotherhood',
+    'final season',
+    'the final',
+    'next generations',
+    'after story',
+    'kai',
+    'super',
+    'gt',
+    'zero',
+    're:',
+    'movie',
+    'film',
+    'ova',
+    'special',
+  ];
+
+  let best: { slug: string; url: string; score: number } | null = null;
+
+  for (const cand of candidates) {
+    const rawSlug = (cand.slug || extractPrimarySlugClient(cand.url || '') || '').toLowerCase();
+    const rawTitle = (cand.title || '').toLowerCase();
+    const hay = `${rawSlug.replace(/-/g, ' ')} ${rawTitle.replace(/[:'".,!?()\-–]/g, ' ')}`
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!hay) continue;
+
+    let candBest = -9999;
+    const candSeason = extractTargetSeasonNumberClient(hay);
+
+    for (const ref of cleanRefs) {
+      let sc = 0;
+      const refSlug = ref.replace(/\s+/g, '-');
+      const candNorm = rawTitle.replace(/[:'".,!?()\-–]/g, ' ').replace(/\s+/g, ' ').trim();
+
+      if (rawSlug === refSlug || candNorm === ref) sc += 500;
+      else if (rawSlug.startsWith(`${refSlug}-`) || candNorm.startsWith(`${ref} `)) sc += 260;
+
+      const refTokens = ref.split(' ').filter((w) => w.length >= 2 && !stopWords.has(w));
+      if (refTokens.length > 0) {
+        let matched = 0;
+        for (const tok of refTokens) {
+          if (hay.includes(tok)) matched += 1;
+        }
+        const ratio = matched / refTokens.length;
+        sc += Math.round(ratio * 240);
+        if (ratio < 0.5) sc -= 1800;
+      }
+
+      if (targetSeasonNum === 1 && candSeason > 1) sc -= 1200;
+      else if (targetSeasonNum > 1 && candSeason === targetSeasonNum) sc += 180;
+      else if (targetSeasonNum > 1 && candSeason !== targetSeasonNum) sc -= 500;
+
+      for (const marker of sequelMarkers) {
+        if (hay.includes(marker) && !ref.includes(marker)) {
+          sc -= 5000;
+        }
+      }
+      if (/\b(?:ii|iii|iv|v|vi|z)\s*$/.test(hay) && !/\b(?:ii|iii|iv|v|vi|z)\s*$/.test(ref)) {
+        sc -= 5000;
+      }
+      if (sc > candBest) candBest = sc;
+    }
+
+    if (candBest >= 120 && (!best || candBest > best.score)) {
+      best = { slug: rawSlug, url: cand.url || '', score: candBest };
+    }
+  }
+
+  return best;
+}
 
 export function isFallbackActive(): boolean {
   return isBackendUnreachable;
@@ -125,6 +230,7 @@ const ANILIST_CARD_FRAGMENT = `
     romaji
     english
   }
+  synonyms
   coverImage {
     extraLarge
     large
@@ -1274,11 +1380,29 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
         const media = data?.Media;
         if (media) {
           const resolvedMalId = media.idMal || media.id || numId || 1;
-          const title = media.title?.english || media.title?.romaji || 'Anime';
+          const romajiTitleVal = String(media.title?.romaji || '').trim();
+          const englishTitleVal = String(media.title?.english || '').trim();
+          const title = englishTitleVal || romajiTitleVal || 'Anime';
           const posterUrl = media.coverImage?.extraLarge || media.coverImage?.large || '';
           const isUpcoming = media.status === 'NOT_YET_RELEASED';
           const isReleasing = media.status === 'RELEASING';
           const statusAr = isUpcoming ? 'قادم' : isReleasing ? 'مستمر' : 'مكتمل';
+
+          const detailsTitleCandidates: string[] = [];
+          const pushCandTitle = (raw: unknown) => {
+            const s = typeof raw === 'string' ? raw.trim() : '';
+            if (!s) return;
+            if (!detailsTitleCandidates.includes(s)) detailsTitleCandidates.push(s);
+            for (const part of s.split(/[:\-–]/).map((p) => p.trim()).filter((p) => p.length >= 3)) {
+              if (!detailsTitleCandidates.includes(part)) detailsTitleCandidates.push(part);
+            }
+          };
+          pushCandTitle(romajiTitleVal);
+          pushCandTitle(englishTitleVal);
+          if (Array.isArray(media.synonyms)) {
+            for (const syn of media.synonyms.slice(0, 4)) pushCandTitle(syn);
+          }
+          const targetSeasonNum = extractTargetSeasonNumberClient(romajiTitleVal || englishTitleVal || title);
 
           let scrapedSlug = !isPureNum && !cleanIdPart.startsWith('search-') ? cleanIdPart : '';
           const realScrapedEps: any[] = [];
@@ -1288,13 +1412,17 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
               const tryParseOkAnimePage = (html: string, slugVal: string) => {
                 if (!html || !html.includes('/episode/')) return;
                 const doc = new DOMParser().parseFromString(html, 'text/html');
+                const mainCol = doc.querySelector('.animepage-main-col') || doc;
                 const seenNums = new Set<string>();
-                doc.querySelectorAll('a[href*="/episode/"]').forEach((aEl) => {
+                mainCol.querySelectorAll('a[href*="/episode/"]').forEach((aEl) => {
+                  if (aEl.closest('aside')) return;
                   const href = (aEl.getAttribute('href') || '').trim();
                   const m = href.match(/-episode-(\d+)/i);
                   if (!m || !m[1]) return;
-                  const epNum = String(parseInt(m[1], 10));
-                  if (!epNum || seenNums.has(epNum)) return;
+                  const parsedN = parseInt(m[1], 10);
+                  if (!Number.isFinite(parsedN) || parsedN <= 0) return;
+                  const epNum = String(parsedN);
+                  if (seenNums.has(epNum)) return;
                   seenNums.add(epNum);
                   const epSlug = extractPrimarySlugClient(href) || slugVal;
                   realScrapedEps.push({
@@ -1312,19 +1440,112 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
                 const okHtml = await fetchHtmlDirectInClient(`https://ww3.okanime.xyz/anime/${scrapedSlug}`).catch(() => '');
                 tryParseOkAnimePage(okHtml, scrapedSlug);
               } else {
-                const sQuery = media.title?.english || media.title?.romaji || '';
-                if (sQuery) {
+                for (const sQuery of detailsTitleCandidates.slice(0, 4)) {
+                  if (realScrapedEps.length > 0) break;
                   const searchHtml = await fetchHtmlDirectInClient(
                     `https://ww3.okanime.xyz/search?q=${encodeURIComponent(sQuery)}`
                   ).catch(() => '');
-                  if (searchHtml) {
-                    const sDoc = new DOMParser().parseFromString(searchHtml, 'text/html');
-                    const firstHref = sDoc.querySelector('.anime-card a[href*="/anime/"]')?.getAttribute('href') || '';
-                    const foundSlug = extractPrimarySlugClient(firstHref);
-                    if (foundSlug) {
-                      scrapedSlug = foundSlug;
-                      const okHtml = await fetchHtmlDirectInClient(`https://ww3.okanime.xyz/anime/${foundSlug}`).catch(() => '');
-                      tryParseOkAnimePage(okHtml, foundSlug);
+                  if (!searchHtml) continue;
+                  const sDoc = new DOMParser().parseFromString(searchHtml, 'text/html');
+                  const cands: Array<{ slug: string; url: string; title: string }> = [];
+                  sDoc.querySelectorAll('.anime-card').forEach((card) => {
+                    if (card.closest('aside')) return;
+                    const aEl = card.querySelector('a[href*="/anime/"]');
+                    const href = aEl?.getAttribute('href') || '';
+                    const sl = extractPrimarySlugClient(href);
+                    if (!sl) return;
+                    const tText = (card.querySelector('.anime-title h4, h4, .anime-title')?.textContent || aEl?.getAttribute('title') || '').trim();
+                    if (!cands.some((c) => c.slug === sl)) {
+                      cands.push({ slug: sl, url: href, title: tText });
+                    }
+                  });
+                  const bestCand = scoreSearchCandidatesClient(cands, detailsTitleCandidates, targetSeasonNum);
+                  const clientIsMovie = String(media.format || '').toUpperCase() === 'MOVIE';
+                  if (bestCand?.slug && !(!clientIsMovie && /(?:^|-)movie(?:$|-)|(?:^|-)film(?:$|-)/i.test(bestCand.slug))) {
+                    const okHtml = await fetchHtmlDirectInClient(`https://ww3.okanime.xyz/anime/${bestCand.slug}`).catch(() => '');
+                    tryParseOkAnimePage(okHtml, bestCand.slug);
+                    if (realScrapedEps.length > 0) {
+                      scrapedSlug = bestCand.slug;
+                      break;
+                    }
+                  }
+                }
+              }
+
+              // Fallback #3: Animerco episodes extraction (e.g. Naruto Part 1 or classics absent on OkAnime)
+              if (realScrapedEps.length === 0) {
+                for (const qCand of detailsTitleCandidates.slice(0, 3)) {
+                  if (realScrapedEps.length > 0) break;
+                  const qClean = qCand.replace(/[:\-–]/g, ' ').replace(/\s+/g, ' ').trim();
+                  if (qClean.length < 2) continue;
+                  const sHtml = await fetchHtmlDirectInClient(`https://animerco.org/?s=${encodeURIComponent(qClean)}`).catch(() => '');
+                  if (!sHtml) continue;
+                  const sDoc = new DOMParser().parseFromString(sHtml, 'text/html');
+                  const anCands: Array<{ slug: string; url: string; title: string }> = [];
+                  sDoc.querySelectorAll('a[href*="/animes/"], a[href*="/movies/"]').forEach((aEl) => {
+                    const href = (aEl.getAttribute('href') || '').trim();
+                    if (!href.includes('animerco.org')) return;
+                    const card = aEl.closest('article, .card, .movie-item, .anime-item, li') || aEl.parentElement;
+                    const cTitle = (card?.querySelector('h2, h3, h4, .title, .name')?.textContent || aEl.getAttribute('title') || aEl.textContent || '').trim();
+                    let dec = href;
+                    try { dec = decodeURIComponent(href); } catch {}
+                    const sl = dec.split('/').filter(Boolean).pop()?.replace(/^(?:انمي|فيلم)-/i, '') || '';
+                    if (sl && !anCands.some((c) => c.url === href)) {
+                      anCands.push({ slug: sl, url: href, title: cTitle });
+                    }
+                  });
+                  const matched = scoreSearchCandidatesClient(anCands, detailsTitleCandidates, targetSeasonNum);
+                  if (matched?.url) {
+                    if (matched.url.includes('/movies/')) {
+                      realScrapedEps.push({
+                        id: `${matched.slug || resolvedMalId}__ep__1`,
+                        num: '1',
+                        title: 'الفيلم الكامل',
+                        seasonNumber: 1,
+                        link: matched.url,
+                      });
+                      break;
+                    }
+                    const animeHtml = await fetchHtmlDirectInClient(matched.url).catch(() => '');
+                    if (animeHtml) {
+                      const aDoc = new DOMParser().parseFromString(animeHtml, 'text/html');
+                      const seenEp = new Set<string>();
+                      const pushEpUrl = (epHref: string) => {
+                        let decoded = epHref;
+                        try { decoded = decodeURIComponent(epHref); } catch {}
+                        const m = decoded.match(/(?:الحلقة|episode)-0*(\d+)/i) || decoded.match(/-(\d+)\/?$/);
+                        if (!m?.[1]) return;
+                        const epNum = String(parseInt(m[1], 10));
+                        if (!epNum || epNum === '0' || seenEp.has(epNum)) return;
+                        seenEp.add(epNum);
+                        realScrapedEps.push({
+                          id: `${resolvedMalId}__ep__${epNum}`,
+                          num: epNum,
+                          title: `الحلقة ${epNum}`,
+                          seasonNumber: 1,
+                          link: epHref,
+                        });
+                      };
+                      aDoc.querySelectorAll('a[href*="/episodes/"]').forEach((el) => pushEpUrl(el.getAttribute('href') || ''));
+                      if (realScrapedEps.length === 0) {
+                        const seasonUrls: string[] = [];
+                        aDoc.querySelectorAll('a[href*="/seasons/"]').forEach((sEl) => {
+                          const h = (sEl.getAttribute('href') || '').trim();
+                          if (h && !seasonUrls.includes(h)) seasonUrls.push(h);
+                        });
+                        if (seasonUrls.length > 0) {
+                          const targetSeasonUrl =
+                            seasonUrls.find((u) => new RegExp(`(?:-|season-|s)${targetSeasonNum}(?:\\/|$)`, 'i').test(u)) ||
+                            seasonUrls[targetSeasonNum - 1] ||
+                            seasonUrls[0];
+                          const seHtml = await fetchHtmlDirectInClient(targetSeasonUrl).catch(() => '');
+                          if (seHtml) {
+                            const seDoc = new DOMParser().parseFromString(seHtml, 'text/html');
+                            seDoc.querySelectorAll('a[href*="/episodes/"]').forEach((el) => pushEpUrl(el.getAttribute('href') || ''));
+                          }
+                        }
+                      }
+                      realScrapedEps.sort((a, b) => (parseInt(a.num, 10) || 0) - (parseInt(b.num, 10) || 0));
                     }
                   }
                 }
@@ -1340,32 +1561,59 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
             episodesList = [];
             totalEps = 0;
           } else if (realScrapedEps.length > 0) {
-            episodesList = realScrapedEps;
-            totalEps = realScrapedEps.length;
+            const maxScrapedEpNum = Math.max(
+              ...realScrapedEps.map((e) => parseInt(String(e.num), 10) || 0),
+              realScrapedEps.length,
+            );
+            const nextAir = Number(media.nextAiringEpisode?.episode || 0);
+            const aniKnownMax = isReleasing
+              ? (nextAir > 1 ? nextAir - 1 : maxScrapedEpNum)
+              : Number(media.episodes || 0);
+            const targetMax = Math.min(Math.max(maxScrapedEpNum, aniKnownMax), 1500);
+            if (targetMax > realScrapedEps.length && targetMax <= 1500) {
+              const byNum = new Map<number, any>();
+              for (const ep of realScrapedEps) {
+                const n = parseInt(String(ep.num), 10);
+                if (Number.isFinite(n) && n > 0 && !byNum.has(n)) byNum.set(n, ep);
+              }
+              const completed: any[] = [];
+              for (let i = 1; i <= targetMax; i++) {
+                const existing = byNum.get(i);
+                completed.push(
+                  existing || {
+                    id: `${slugPrefix}__ep__${i}`,
+                    num: String(i),
+                    title: `الحلقة ${i}`,
+                    seasonNumber: 1,
+                    link: `/anime/${slugPrefix}/episode/${i}`,
+                  },
+                );
+              }
+              episodesList = completed;
+              totalEps = completed.length;
+            } else {
+              episodesList = realScrapedEps;
+              totalEps = realScrapedEps.length;
+            }
           } else if (isReleasing) {
-            // Strictly aired count for ongoing anime (never planned 12/25 total!)
             const nextEp = Number(media.nextAiringEpisode?.episode || 0);
             const streamedLen = Array.isArray(media.streamingEpisodes) ? media.streamingEpisodes.length : 0;
-            totalEps = Math.min(nextEp > 1 ? nextEp - 1 : Math.max(1, streamedLen), 1200);
+            totalEps = Math.min(nextEp > 1 ? nextEp - 1 : Math.max(1, streamedLen), 1500);
             episodesList = Array.from({ length: totalEps }, (_, i) => ({
-              id: !isPureNum && !cleanIdPart.startsWith('search-')
-                ? `${slugPrefix}__ep__${i + 1}`
-                : `${resolvedMalId}-episode-${i + 1}`,
+              id: `${slugPrefix}__ep__${i + 1}`,
               num: String(i + 1),
               title: `الحلقة ${i + 1}`,
               seasonNumber: 1,
-              link: `/anime/${slugPrefix}/episode/${i + 1}`
+              link: `/anime/${slugPrefix}/episode/${i + 1}`,
             }));
           } else {
-            totalEps = Math.min(Math.max(Number(media.episodes || 0), 1), 1200);
+            totalEps = Math.min(Math.max(Number(media.episodes || 0), 1), 1500);
             episodesList = Array.from({ length: totalEps }, (_, i) => ({
-              id: !isPureNum && !cleanIdPart.startsWith('search-')
-                ? `${slugPrefix}__ep__${i + 1}`
-                : `${resolvedMalId}-episode-${i + 1}`,
+              id: `${slugPrefix}__ep__${i + 1}`,
               num: String(i + 1),
               title: `الحلقة ${i + 1}`,
               seasonNumber: 1,
-              link: `/anime/${slugPrefix}/episode/${i + 1}`
+              link: `/anime/${slugPrefix}/episode/${i + 1}`,
             }));
           }
 
@@ -1536,13 +1784,13 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
           return createSimulatedResponse({
             success: true,
             data: {
-              _id: slugPrefix,
+              _id: isPureNum ? String(resolvedMalId) : slugPrefix,
               malId: resolvedMalId,
               anilistId: media.id,
               okanimeSlug: scrapedSlug || undefined,
               title,
               englishTitle: title,
-              romajiTitle: media.title?.romaji || undefined,
+              romajiTitle: romajiTitleVal || undefined,
               posterUrl,
               bannerUrl: media.bannerImage || posterUrl,
               description: arabicDesc || 'قصة هذا الأنمي متوفرة ومحدثة.',
@@ -1570,7 +1818,7 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
               characters,
               related,
               relatedGraphVersion: 2,
-              catalogSchemaVersion: 3,
+              catalogSchemaVersion: 4,
               jikanRecommendations,
               pictures: mediaPictures
             }
@@ -2096,44 +2344,59 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
         });
       };
 
-      const tryOkAnimeBySlug = async (slugVal: string) => {
-        if (!slugVal) return;
+      let okSeriesExistsMissingEp = false;
+
+      const tryOkAnimeBySlug = async (slugVal: string): Promise<{ ok: boolean; seriesExistsMissingEp: boolean }> => {
+        if (!slugVal) return { ok: false, seriesExistsMissingEp: false };
         const paths = [`/episode/${slugVal}-episode-${epNum}`];
         if (paddedEp !== epNum) paths.push(`/episode/${slugVal}-episode-${paddedEp}`);
         for (const p of paths) {
           try {
             const okHtml = await fetchHtmlDirectInClient(`https://ww3.okanime.xyz${p}`);
             parseOkanimeEpisodeHtml(okHtml);
-            if (scrapedServers.length > 0) return;
+            if (scrapedServers.length > 0) return { ok: true, seriesExistsMissingEp: false };
           } catch {}
         }
         try {
           const animeHtml = await fetchHtmlDirectInClient(`https://ww3.okanime.xyz/anime/${slugVal}`);
           if (animeHtml && typeof DOMParser !== 'undefined') {
             const aDoc = new DOMParser().parseFromString(animeHtml, 'text/html');
+            const mainCol = aDoc.querySelector('.animepage-main-col') || aDoc;
+            const epLinks = Array.from(mainCol.querySelectorAll('a[href*="/episode/"]')).filter((a) => !a.closest('aside'));
             const epMatchRe = new RegExp(`-episode-0*${epNum}(?:$|\\?|#|/)`, 'i');
             let matchedHref = '';
-            aDoc.querySelectorAll('a[href*="/episode/"]').forEach((aEl) => {
-              if (matchedHref) return;
+            for (const aEl of epLinks) {
               const h = (aEl.getAttribute('href') || '').trim();
-              if (epMatchRe.test(h)) matchedHref = h;
-            });
+              if (epMatchRe.test(h)) {
+                matchedHref = h;
+                break;
+              }
+            }
             if (matchedHref) {
               const target = matchedHref.startsWith('http') ? matchedHref : `https://ww3.okanime.xyz${matchedHref}`;
               const epHtml = await fetchHtmlDirectInClient(target);
               parseOkanimeEpisodeHtml(epHtml);
+              if (scrapedServers.length > 0) return { ok: true, seriesExistsMissingEp: false };
+            }
+            if (epLinks.length > 0 && !matchedHref) {
+              return { ok: false, seriesExistsMissingEp: true };
             }
           }
         } catch {}
+        return { ok: false, seriesExistsMissingEp: false };
       };
 
       // 1. المحاولة المباشرة على OkAnime
       for (const sCandidate of slugCandidates.slice(0, 4)) {
-        await tryOkAnimeBySlug(sCandidate);
-        if (scrapedServers.length > 0) break;
+        const res = await tryOkAnimeBySlug(sCandidate);
+        if (res.ok || scrapedServers.length > 0) break;
+        if (res.seriesExistsMissingEp) {
+          okSeriesExistsMissingEp = true;
+          break;
+        }
       }
 
-      // 2. جلب Romaji و Synonyms من AniList مباشرةً إذا لم ينجح المسار المباشر
+      // 2. جلب Romaji و Synonyms من AniList مباشرةً عند عدم توفر السيرفرات بعد
       if (scrapedServers.length === 0 && (/^\d+$/.test(animeIdRaw) || candidateTitles.length > 0)) {
         try {
           const aniData = /^\d+$/.test(animeIdRaw)
@@ -2147,45 +2410,70 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
               ).catch(() => null);
 
           const mTitle = aniData?.Media?.title;
-          const syns: string[] = Array.isArray(aniData?.Media?.synonyms) ? aniData.Media.synonyms.slice(0, 3) : [];
+          const syns: string[] = Array.isArray(aniData?.Media?.synonyms) ? aniData.Media.synonyms.slice(0, 4) : [];
           for (const extraT of [mTitle?.romaji, mTitle?.english, ...syns]) {
             pushTitleCandidate(extraT);
           }
 
-          for (const extraSlugSource of [mTitle?.romaji, mTitle?.english, ...syns]) {
-            if (!extraSlugSource || scrapedServers.length > 0) break;
-            const norm = normalizeSlug(String(extraSlugSource));
-            if (norm) await tryOkAnimeBySlug(norm);
+          if (!okSeriesExistsMissingEp) {
+            for (const extraSlugSource of [mTitle?.romaji, mTitle?.english, ...syns]) {
+              if (!extraSlugSource || scrapedServers.length > 0) break;
+              const norm = normalizeSlug(String(extraSlugSource));
+              if (norm) {
+                const res = await tryOkAnimeBySlug(norm);
+                if (res.seriesExistsMissingEp) {
+                  okSeriesExistsMissingEp = true;
+                  break;
+                }
+              }
+            }
           }
         } catch {}
       }
 
-      // 3. البحث بالاسم (بما فيها Romaji والأجزاء قبل النقطتين) داخل OkAnime
-      if (scrapedServers.length === 0 && candidateTitles.length > 0 && typeof DOMParser !== 'undefined') {
+      const targetSeasonNum = extractTargetSeasonNumberClient(romajiTitleInput || englishTitle || animeTitle);
+
+      // 3. البحث بالاسم (بما فيها Romaji والجزء الأساسي) داخل OkAnime مع حارس التطابق الدقيق
+      if (scrapedServers.length === 0 && !okSeriesExistsMissingEp && candidateTitles.length > 0 && typeof DOMParser !== 'undefined') {
         for (const searchCand of candidateTitles.slice(0, 4)) {
           try {
             const searchHtml = await fetchHtmlDirectInClient(`https://ww3.okanime.xyz/search?q=${encodeURIComponent(searchCand)}`);
             if (!searchHtml) continue;
             const sDoc = new DOMParser().parseFromString(searchHtml, 'text/html');
-            const firstHref = sDoc.querySelector('.anime-card a[href*="/anime/"]')?.getAttribute('href') || '';
-            const foundSlug = extractPrimarySlugClient(firstHref);
-            if (foundSlug) {
-              if (!slugCandidates.includes(foundSlug)) slugCandidates.unshift(foundSlug);
-              await tryOkAnimeBySlug(foundSlug);
+            const cands: Array<{ slug: string; url: string; title: string }> = [];
+            sDoc.querySelectorAll('.anime-card').forEach((card) => {
+              if (card.closest('aside')) return;
+              const aEl = card.querySelector('a[href*="/anime/"]');
+              const href = aEl?.getAttribute('href') || '';
+              const sl = extractPrimarySlugClient(href);
+              if (!sl) return;
+              const cTitle = (card.querySelector('.anime-title h4, h4, .anime-title')?.textContent || aEl?.getAttribute('title') || '').trim();
+              if (!cands.some((c) => c.slug === sl)) {
+                cands.push({ slug: sl, url: href, title: cTitle });
+              }
+            });
+            const best = scoreSearchCandidatesClient(cands, candidateTitles, targetSeasonNum);
+            if (best?.slug) {
+              if (!slugCandidates.includes(best.slug)) slugCandidates.unshift(best.slug);
+              const res = await tryOkAnimeBySlug(best.slug);
+              if (res.seriesExistsMissingEp) {
+                okSeriesExistsMissingEp = true;
+                break;
+              }
               if (scrapedServers.length > 0) break;
             }
           } catch {}
         }
       }
 
-      // 4. الدمج التكميلي السريع من animedar عند عدم توفر سيرفرات من OkAnime
-      if (scrapedServers.length === 0 && slugCandidates.length > 0) {
+      // 4. الدمج التكميلي السريع من animedar مع قاطع دائرة لمدة 10 دقائق عند التعثر
+      if (scrapedServers.length === 0 && slugCandidates.length > 0 && Date.now() >= clientAnimedarCooldownUntil) {
         const cleanSlug = slugCandidates[0];
         const targetAnimeUrl = `https://animedar.net/anime-p/${cleanSlug}/`;
         try {
           const html = await Promise.race([
             fetchHtmlDirectInClient(targetAnimeUrl),
-            new Promise<string>((resolve) => setTimeout(() => resolve(''), 3500))
+            new Promise<string>((resolve) => setTimeout(() => resolve(''), 2000))
           ]);
           if (html && html.includes('ServerList1') && typeof DOMParser !== 'undefined') {
             const doc = new DOMParser().parseFromString(html, 'text/html');
@@ -2235,26 +2523,45 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
                 }
               });
             }
+          } else {
+            clientAnimedarCooldownUntil = Date.now() + 10 * 60 * 1000;
           }
-        } catch {}
+        } catch {
+          clientAnimedarCooldownUntil = Date.now() + 10 * 60 * 1000;
+        }
       }
 
-      // 5. المصدر الثالث #3: animerco.org / jet.animerco.org عند فشل OkAnime و AnimeDar
-      if (scrapedServers.length === 0 && candidateTitles.length > 0 && typeof DOMParser !== 'undefined') {
+      // 5. المصدر الثالث #3: animerco.org عند فشل OkAnime و AnimeDar أو اقتصارها على سيرفرات قديمة متعطلة
+      const hasReliableModernClientHost = scrapedServers.some((s) =>
+        /vk\.com|vkvideo|vk video|ok\.ru|videa|dailymotion|megamax|share4max|sendvid|drive\.google/i.test(
+          `${s.serverName || ''} ${s.url || ''}`,
+        ),
+      );
+      if ((scrapedServers.length === 0 || !hasReliableModernClientHost) && candidateTitles.length > 0 && typeof DOMParser !== 'undefined') {
         try {
           let matchedAnimeUrl = '';
-          for (const qCand of candidateTitles.slice(0, 3)) {
+          for (const qCand of candidateTitles.slice(0, 4)) {
             const qClean = qCand.replace(/[:\-–]/g, ' ').replace(/\s+/g, ' ').trim();
             if (qClean.length < 2) continue;
             const searchHtml = await fetchHtmlDirectInClient(`https://animerco.org/?s=${encodeURIComponent(qClean)}`).catch(() => '');
             if (!searchHtml) continue;
             const sDoc = new DOMParser().parseFromString(searchHtml, 'text/html');
-            const firstLink =
-              sDoc.querySelector('a[href*="/animes/"]')?.getAttribute('href') ||
-              sDoc.querySelector('a[href*="/movies/"]')?.getAttribute('href') ||
-              '';
-            if (firstLink && firstLink.includes('animerco.org')) {
-              matchedAnimeUrl = firstLink;
+            const anCands: Array<{ slug: string; url: string; title: string }> = [];
+            sDoc.querySelectorAll('a[href*="/animes/"], a[href*="/movies/"]').forEach((aEl) => {
+              const href = (aEl.getAttribute('href') || '').trim();
+              if (!href.includes('animerco.org')) return;
+              const card = aEl.closest('article, .card, .movie-item, .anime-item, li') || aEl.parentElement;
+              const cTitle = (card?.querySelector('h2, h3, h4, .title, .name')?.textContent || aEl.getAttribute('title') || aEl.textContent || '').trim();
+              let dec = href;
+              try { dec = decodeURIComponent(href); } catch {}
+              const sl = dec.split('/').filter(Boolean).pop()?.replace(/^(?:انمي|فيلم)-/i, '') || '';
+              if (sl && !anCands.some((c) => c.url === href)) {
+                anCands.push({ slug: sl, url: href, title: cTitle });
+              }
+            });
+            const bestAn = scoreSearchCandidatesClient(anCands, candidateTitles, targetSeasonNum);
+            if (bestAn?.url) {
+              matchedAnimeUrl = bestAn.url;
               break;
             }
           }
@@ -2394,6 +2701,131 @@ export async function handleFrontendFallback(path: string, options?: any): Promi
       return createSimulatedResponse({
         success: false,
         message: 'تعذر تجهيز البث المباشر لهذا الخيار.'
+      });
+    }
+
+    if (cleanPath === '/api/anime/resolve-download' || cleanPath === '/api/anime/resolve-play') {
+      const bodyObj = parseRequestBody(options);
+      const prefQuality = String(bodyObj?.preferredQuality || 'auto').toUpperCase();
+      const rawTitle = String(bodyObj?.title || 'Anime').replace(/[^\w\u0600-\u06FF\s\-]/g, '').trim() || 'Anime';
+      const rawEp = String(bodyObj?.ep || '1').trim();
+      const candidatesRaw: Array<{ url: string; quality?: string; serverName?: string }> = [];
+      if (Array.isArray(bodyObj?.serverCandidates)) {
+        for (const c of bodyObj.serverCandidates) {
+          if (c?.url) candidatesRaw.push({ url: String(c.url), quality: c.quality, serverName: c.serverName });
+        }
+      }
+      if (bodyObj?.url && !candidatesRaw.some((c) => c.url === bodyObj.url)) {
+        candidatesRaw.unshift({ url: String(bodyObj.url), quality: prefQuality });
+      }
+      if (Array.isArray(bodyObj?.fallbackUrls)) {
+        for (const u of bodyObj.fallbackUrls) {
+          if (typeof u === 'string' && u && !candidatesRaw.some((c) => c.url === u)) {
+            candidatesRaw.push({ url: u, quality: 'HD' });
+          }
+        }
+      }
+
+      const normTier = (q?: string) => {
+        const up = String(q || '').toUpperCase();
+        if (up.includes('1080') || up.includes('FHD')) return 'FHD';
+        if (up.includes('480') || up.includes('SD')) return 'SD';
+        if (up.includes('720') || up.includes('HD')) return 'HD';
+        return 'AUTO';
+      };
+
+      const scoreCandQuality = (q?: string) => {
+        if (prefQuality === 'AUTO') return 1;
+        return normTier(q) === normTier(prefQuality) ? 10 : 0;
+      };
+
+      const sortedCands = [...candidatesRaw].sort((a, b) => scoreCandQuality(b.quality) - scoreCandQuality(a.quality));
+
+      const tryExtractDirectClient = async (targetUrl: string): Promise<{ directUrl: string; mode: string; mime: string } | null> => {
+        if (!targetUrl || !targetUrl.startsWith('http')) return null;
+        const lower = targetUrl.toLowerCase();
+        if (/\.(mp4|m3u8)(\?|$)/i.test(lower)) {
+          return {
+            directUrl: targetUrl,
+            mode: lower.includes('.m3u8') ? 'hls' : 'mp4',
+            mime: lower.includes('.m3u8') ? 'application/x-mpegURL' : 'video/mp4',
+          };
+        }
+        const gDriveMatch = targetUrl.match(/drive\.google\.com\/file\/d\/([^/]+)/i) || targetUrl.match(/drive\.google\.com\/open\?id=([^&]+)/i);
+        if (gDriveMatch?.[1]) {
+          return {
+            directUrl: `https://drive.usercontent.google.com/download?id=${gDriveMatch[1]}&export=download&confirm=t`,
+            mode: 'mp4',
+            mime: 'video/mp4',
+          };
+        }
+        try {
+          if (lower.includes('ok.ru')) {
+            const html = await fetchTextDirectInClient(targetUrl, 200);
+            const jsonMatch = html.match(/data-options="([^"]+)"/i);
+            if (jsonMatch?.[1]) {
+              const decoded = jsonMatch[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+              const parsed = JSON.parse(decoded);
+              const meta = parsed?.flashvars?.metadata ? JSON.parse(parsed.flashvars.metadata) : parsed;
+              const videos: any[] = Array.isArray(meta?.videos) ? meta.videos : [];
+              const target =
+                videos.find((v) => prefQuality === 'FHD' && /1080|full/i.test(String(v.name || ''))) ||
+                videos.find((v) => /720|hd/i.test(String(v.name || ''))) ||
+                videos[videos.length - 1] ||
+                videos[0];
+              if (target?.url) {
+                return { directUrl: String(target.url), mode: 'mp4', mime: 'video/mp4' };
+              }
+            }
+          }
+          if (lower.includes('videa.hu')) {
+            const vidMatch = targetUrl.match(/[?&]v=([^&]+)/i) || targetUrl.match(/player\/([a-zA-Z0-9_-]+)/);
+            if (vidMatch?.[1]) {
+              const xmlText = await fetchTextDirectInClient(`https://videa.hu/videaplayer_get_xml.php?v=${encodeURIComponent(vidMatch[1])}`, 100);
+              const srcs = Array.from(xmlText.matchAll(/<video_source[^>]*>(https?:\/\/[^<]+)<\/video_source>/gi)).map((m) => m[1]);
+              if (srcs.length > 0) {
+                const picked = srcs[0].replace(/&amp;/g, '&');
+                return { directUrl: picked, mode: 'mp4', mime: 'video/mp4' };
+              }
+            }
+          }
+          const html = await fetchTextDirectInClient(targetUrl, 120);
+          if (html) {
+            const m3u8Match = html.match(/(https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*)/i);
+            if (m3u8Match?.[1]) {
+              return { directUrl: m3u8Match[1].replace(/\\u0026/g, '&'), mode: 'hls', mime: 'application/x-mpegURL' };
+            }
+            const mp4Match = html.match(/(https?:\/\/[^"'\s\\]+\.mp4[^"'\s\\]*)/i);
+            if (mp4Match?.[1]) {
+              return { directUrl: mp4Match[1].replace(/\\u0026/g, '&'), mode: 'mp4', mime: 'video/mp4' };
+            }
+          }
+        } catch {}
+        return null;
+      };
+
+      for (const cand of sortedCands.slice(0, 8)) {
+        const extracted = await tryExtractDirectClient(cand.url);
+        if (extracted?.directUrl) {
+          const reqTier = normTier(prefQuality);
+          const actualTier = normTier(cand.quality || 'HD');
+          return createSimulatedResponse({
+            success: true,
+            downloadUrl: extracted.directUrl,
+            externalDirectUrl: extracted.directUrl,
+            externalDirectMime: extracted.mime,
+            mode: extracted.mode,
+            resolvedQuality: actualTier === 'AUTO' ? '720p' : actualTier,
+            usedFallbackQuality: reqTier !== 'AUTO' && reqTier !== actualTier,
+            serverName: cand.serverName || 'Direct',
+            filename: `${rawTitle} - EP ${rawEp}.mp4`,
+          });
+        }
+      }
+
+      return createSimulatedResponse({
+        success: false,
+        message: 'تعذر تجهيز رابط تحميل مباشر لهذه الحلقة حالياً.',
       });
     }
 

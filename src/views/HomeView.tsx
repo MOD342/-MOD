@@ -563,7 +563,7 @@ export default function HomeView({
 
       {/* Global alert banner if configured by admins */}
       {sliderSettings.globalAnnouncement && (
-        <div className="pt-[calc(var(--safe-top,0px)+4.1rem)] md:pt-3 px-3 sm:px-4 md:px-8 max-w-7xl mx-auto">
+        <div className="pt-[calc(var(--cutout-band-top,calc(var(--safe-top,0px)+3.5rem))+0.35rem)] md:pt-3 px-3 sm:px-4 md:px-8 max-w-7xl mx-auto">
           <motion.div
             initial={{ opacity: 0, y: -12 }}
             animate={{ opacity: 1, y: 0 }}
@@ -600,7 +600,7 @@ export default function HomeView({
           />
         </div>
       ) : initialLoading ? (
-        <div className="pt-[calc(var(--safe-top,0px)+4.35rem)] md:pt-4 px-4 md:px-8 max-w-7xl mx-auto">
+        <div className="pt-[calc(var(--cutout-band-top,calc(var(--safe-top,0px)+3.5rem))+0.5rem)] md:pt-4 px-4 md:px-8 max-w-7xl mx-auto">
           <div className="h-[260px] sm:h-[340px] md:h-[400px] rounded-[24px] sm:rounded-[28px] bg-neutral-900 animate-pulse border border-white/10 w-full"></div>
         </div>
       ) : (

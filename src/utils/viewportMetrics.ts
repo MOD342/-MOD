@@ -383,29 +383,7 @@ export function applyViewportAndCutoutMetrics(): SafeViewportMetrics {
       ? Math.max(0, viewportWidth - cutoutRect.left + 10)
       : 0;
 
-  root.style.setProperty('--cutout-left', `${cutoutRect.left}px`);
-  root.style.setProperty('--cutout-top', `${cutoutRect.top}px`);
-  root.style.setProperty('--cutout-width', `${cutoutRect.width}px`);
-  root.style.setProperty('--cutout-height', `${cutoutRect.height}px`);
-  root.style.setProperty('--cutout-radius', `${cutoutRect.radius}px`);
-  root.style.setProperty('--cutout-clear-left', `${clearLeft}px`);
-  root.style.setProperty('--cutout-clear-right', `${clearRight}px`);
-
-  if (viewportHeight > 0) {
-    root.style.setProperty('--vv-height', `${viewportHeight}px`);
-  }
-  if (viewportWidth > 0) {
-    root.style.setProperty('--vv-width', `${viewportWidth}px`);
-  }
-
-  root.dataset.device = formFactor;
-  root.dataset.posture = posture;
-  root.dataset.orientation = orientation;
-  root.dataset.pointer = isTouchDevice ? 'touch' : 'fine';
-  root.dataset.cutoutShape = cutoutRect.shape;
-  root.dataset.cutoutPos = cutoutRect.position;
-
-  const metrics: SafeViewportMetrics = {
+  const provisionalMetrics: SafeViewportMetrics = {
     safeTop: Math.round(safeTop),
     safeBottom: Math.round(safeBottom),
     safeLeft: Math.round(safeLeft),
@@ -426,6 +404,33 @@ export function applyViewportAndCutoutMetrics(): SafeViewportMetrics {
     cutoutRect,
   };
 
+  const cutoutBarGeo = computeCutoutBarGeometry(provisionalMetrics);
+
+  root.style.setProperty('--cutout-left', `${cutoutRect.left}px`);
+  root.style.setProperty('--cutout-top', `${cutoutRect.top}px`);
+  root.style.setProperty('--cutout-width', `${cutoutRect.width}px`);
+  root.style.setProperty('--cutout-height', `${cutoutRect.height}px`);
+  root.style.setProperty('--cutout-radius', `${cutoutRect.radius}px`);
+  root.style.setProperty('--cutout-clear-left', `${clearLeft}px`);
+  root.style.setProperty('--cutout-clear-right', `${clearRight}px`);
+  root.style.setProperty('--cutout-band-top', `${cutoutBarGeo.bandBottomPx}px`);
+
+  if (viewportHeight > 0) {
+    root.style.setProperty('--vv-height', `${viewportHeight}px`);
+  }
+  if (viewportWidth > 0) {
+    root.style.setProperty('--vv-width', `${viewportWidth}px`);
+  }
+
+  root.dataset.device = formFactor;
+  root.dataset.posture = posture;
+  root.dataset.orientation = orientation;
+  root.dataset.pointer = isTouchDevice ? 'touch' : 'fine';
+  root.dataset.cutoutShape = cutoutRect.shape;
+  root.dataset.cutoutPos = cutoutRect.position;
+
+  const metrics = provisionalMetrics;
+
   const sig = `${formFactor}|${posture}|${orientation}|${viewportWidth}x${viewportHeight}|${metrics.hingeGap}|${metrics.safeTop}|${cutoutRect.visible ? `${cutoutRect.shape}:${cutoutRect.position}:${cutoutRect.left}:${cutoutRect.top}:${cutoutRect.width}x${cutoutRect.height}` : 'no-cutout'}`;
   if (sig !== lastBroadcastSignature) {
     lastBroadcastSignature = sig;
@@ -435,6 +440,133 @@ export function applyViewportAndCutoutMetrics(): SafeViewportMetrics {
   }
 
   return metrics;
+}
+
+export interface CutoutBarGeometry {
+  mode: 'flank-center' | 'offset-left' | 'offset-right' | 'below-safe-top';
+  hasCutout: boolean;
+  headerTopPx: number;
+  bandBottomPx: number;
+  paddingLeftPx: number;
+  paddingRightPx: number;
+  leftZoneWidth: number;
+  cutoutSpacerWidth: number;
+  rightZoneWidth: number;
+  cutoutBorderRadius: string;
+}
+
+export function computeCutoutBarGeometry(display: SafeViewportMetrics): CutoutBarGeometry {
+  const cutout = display.cutoutRect;
+  const vw = Math.max(0, Number(display.viewportWidth || 0));
+  const safeTop = Math.max(0, Number(display.safeTop || 0));
+  const safeLeft = Math.max(0, Number(display.safeLeft || 0));
+  const safeRight = Math.max(0, Number(display.safeRight || 0));
+  const hasCutout = Boolean(cutout?.visible && cutout.width > 0 && cutout.height > 0);
+
+  const rowHeight = 44;
+  const cutoutBorderRadius =
+    cutout?.shape === 'notch'
+      ? '0 0 12px 12px'
+      : `${Math.max(4, cutout?.radius || Math.ceil((cutout?.height || 22) / 2))}px`;
+
+  if (hasCutout && vw > 0) {
+    const cutoutCenterY = cutout.top + cutout.height / 2;
+    const alignedTop = Math.max(2, Math.round(cutoutCenterY - rowHeight / 2));
+
+    if (cutout.position === 'center') {
+      const basePadL = Math.max(8, safeLeft + 8);
+      const basePadR = Math.max(8, safeRight + 8);
+      const guardGap = 6;
+      const leftZone = cutout.left - guardGap - basePadL;
+      const rightZone = vw - basePadR - (cutout.left + cutout.width + guardGap);
+
+      // Flank center cutout horizontally whenever both sides have room for compact touch controls
+      if (vw >= 320 && leftZone >= 96 && rightZone >= 96) {
+        const bandBottom = Math.max(
+          alignedTop + rowHeight + 6,
+          cutout.top + cutout.height + 6,
+          safeTop + 6,
+        );
+        return {
+          mode: 'flank-center',
+          hasCutout: true,
+          headerTopPx: alignedTop,
+          bandBottomPx: Math.round(bandBottom),
+          paddingLeftPx: basePadL,
+          paddingRightPx: basePadR,
+          leftZoneWidth: Math.round(leftZone),
+          cutoutSpacerWidth: Math.round(cutout.width + guardGap * 2),
+          rightZoneWidth: Math.round(rightZone),
+          cutoutBorderRadius,
+        };
+      }
+
+      // Ultra-wide notch or ultra-narrow viewport: place controls immediately below notch
+      const belowTop = Math.max(safeTop + 4, cutout.top + cutout.height + 4);
+      return {
+        mode: 'below-safe-top',
+        hasCutout: true,
+        headerTopPx: Math.round(belowTop),
+        bandBottomPx: Math.round(belowTop + rowHeight + 6),
+        paddingLeftPx: basePadL,
+        paddingRightPx: basePadR,
+        leftZoneWidth: 0,
+        cutoutSpacerWidth: 0,
+        rightZoneWidth: 0,
+        cutoutBorderRadius,
+      };
+    }
+
+    if (cutout.position === 'left') {
+      const padL = Math.max(safeLeft + 10, cutout.left + cutout.width + 8);
+      const padR = Math.max(safeRight + 10, 10);
+      const bandBottom = Math.max(alignedTop + rowHeight + 6, cutout.top + cutout.height + 6, safeTop + 6);
+      return {
+        mode: 'offset-left',
+        hasCutout: true,
+        headerTopPx: alignedTop,
+        bandBottomPx: Math.round(bandBottom),
+        paddingLeftPx: Math.round(padL),
+        paddingRightPx: Math.round(padR),
+        leftZoneWidth: 0,
+        cutoutSpacerWidth: 0,
+        rightZoneWidth: 0,
+        cutoutBorderRadius,
+      };
+    }
+
+    if (cutout.position === 'right') {
+      const padL = Math.max(safeLeft + 10, 10);
+      const padR = Math.max(safeRight + 10, vw - cutout.left + 8);
+      const bandBottom = Math.max(alignedTop + rowHeight + 6, cutout.top + cutout.height + 6, safeTop + 6);
+      return {
+        mode: 'offset-right',
+        hasCutout: true,
+        headerTopPx: alignedTop,
+        bandBottomPx: Math.round(bandBottom),
+        paddingLeftPx: Math.round(padL),
+        paddingRightPx: Math.round(padR),
+        leftZoneWidth: 0,
+        cutoutSpacerWidth: 0,
+        rightZoneWidth: 0,
+        cutoutBorderRadius,
+      };
+    }
+  }
+
+  const fallbackTop = Math.max(4, safeTop + 4);
+  return {
+    mode: 'below-safe-top',
+    hasCutout,
+    headerTopPx: Math.round(fallbackTop),
+    bandBottomPx: Math.round(fallbackTop + rowHeight + 6),
+    paddingLeftPx: Math.round(Math.max(12, safeLeft + 12)),
+    paddingRightPx: Math.round(Math.max(12, safeRight + 12)),
+    leftZoneWidth: 0,
+    cutoutSpacerWidth: 0,
+    rightZoneWidth: 0,
+    cutoutBorderRadius,
+  };
 }
 
 export function initViewportAndCutoutTracking(): void {

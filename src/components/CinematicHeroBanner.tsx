@@ -543,7 +543,7 @@ export default function CinematicHeroBanner({
   // Generous clean spacing below floating mobile header bar when on Home without announcement banner
   const framedContainerSpacing =
     isHomeMode && !useSideRail
-      ? 'pt-[calc(var(--safe-top,0px)+4.85rem)]'
+      ? 'pt-[calc(var(--cutout-band-top,calc(var(--safe-top,0px)+3.5rem))+0.5rem)]'
       : 'pt-3 md:pt-4';
 
   // ===========================================================================

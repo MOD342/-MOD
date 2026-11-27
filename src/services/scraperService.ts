@@ -10,6 +10,7 @@ import { isSafePublicHttpUrl, validateSafePublicHttpUrl } from '../api/helpers/u
 export const IS_EXTERNAL_FETCH_DISABLED = false; // محرك الجلب المزدوج: ww3.okanime.xyz (أساسي #1) + animedar.net (مساعد #2)
 
 const activeScraperJikanLocks = new Map<string, Promise<any>>();
+let animedarCooldownUntil = 0;
 
 export interface AnimeItem {
   id: string;
@@ -370,31 +371,43 @@ export class ScraperService {
   }
 
   /**
-   * جلب HTML من الموقع المساعد #2: AnimeDar (animedar.net)
+   * جلب HTML من الموقع المساعد #2: AnimeDar (animedar.net) مع Circuit Breaker لتجنب البطء
    */
-  private async fetchAnimedarHtml(path: string, timeoutMs = 8000): Promise<string> {
+  private async fetchAnimedarHtml(path: string, timeoutMs = 2200): Promise<string> {
     if (IS_EXTERNAL_FETCH_DISABLED) {
       throw new Error('External web scraping is paused.');
+    }
+    if (Date.now() < animedarCooldownUntil) {
+      throw new Error('Animedar temporarily in cooldown');
     }
     let cleanPath = path.startsWith('/') ? path : '/' + path;
     if (cleanPath.startsWith('/anime/')) {
       cleanPath = cleanPath.replace(/^\/anime\//, '/anime-p/');
     }
 
-    const res = await fetch(`${this.helperOrigin}${cleanPath}`, {
-      headers: this.defaultHeaders,
-      signal: AbortSignal.timeout(timeoutMs)
-    });
+    try {
+      const effectiveTimeout = Math.min(Math.max(1200, timeoutMs), 2500);
+      const res = await fetch(`${this.helperOrigin}${cleanPath}`, {
+        headers: this.defaultHeaders,
+        signal: AbortSignal.timeout(effectiveTimeout)
+      });
 
-    if (!res.ok) {
-      throw new Error(`Animedar HTTP ${res.status}`);
-    }
+      if (!res.ok) {
+        if (res.status >= 500 || res.status === 403 || res.status === 429) {
+          animedarCooldownUntil = Date.now() + 10 * 60 * 1000;
+        }
+        throw new Error(`Animedar HTTP ${res.status}`);
+      }
 
-    const text = await res.text();
-    if (text.length < 5000) {
-      throw new Error('Animedar response too short');
+      const text = await res.text();
+      if (text.length < 5000) {
+        throw new Error('Animedar response too short');
+      }
+      return text;
+    } catch (err) {
+      animedarCooldownUntil = Date.now() + 10 * 60 * 1000;
+      throw err;
     }
-    return text;
   }
 
   private mapOkanimeQuality(raw: string): '1080p' | '720p' | '480p' | 'auto' {
@@ -447,32 +460,51 @@ export class ScraperService {
     const cleanQ = (query || '').trim();
     if (!cleanQ) return null;
     return serverCache.getOrFetch<string | null>(
-      `okanime_search_v1:${cleanQ.toLowerCase()}`,
+      `okanime_search_v3:${cleanQ.toLowerCase()}`,
       async () => {
         try {
-          const html = await this.fetchOkanimeHtml(`/search?q=${encodeURIComponent(cleanQ)}`, 4000);
+          const html = await this.fetchOkanimeHtml(`/search?q=${encodeURIComponent(cleanQ)}`, 4200);
           const $ = cheerio.load(html);
-          const qTokens = cleanQ.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(t => t.length > 2);
-          let bestSlug: string | null = null;
-          let bestScore = -1;
+          const results: { slug: string; title: string; href: string; isUpcoming?: boolean }[] = [];
 
-          $('a[href*="/anime/"]').each((_, el) => {
-            const href = ($(el).attr('href') || '').trim();
-            const m = href.match(/\/anime\/([^/?#]+)/i);
-            if (!m) return;
-            const slug = m[1];
-            const slugLower = slug.toLowerCase();
-            let score = 0;
-            for (const tok of qTokens) {
-              if (slugLower.includes(tok)) score += 10;
-            }
-            if (slugLower === cleanQ.toLowerCase().replace(/[^a-z0-9]+/g, '-')) score += 50;
-            if (score > bestScore) {
-              bestScore = score;
-              bestSlug = slug;
+          $('.anime-card').each((_, el) => {
+            if ($(el).closest('aside').length > 0) return;
+            const href = ($(el).find('a[href*="/anime/"]').first().attr('href') || '').trim();
+            if (!href || href.includes('${')) return;
+            const slug = this.extractAnimeSlugFromUrl(href);
+            if (!slug) return;
+            const title = (
+              $(el).find('.anime-title h4 a, .anime-title h4, h4 a, h4').first().text() ||
+              $(el).find('img').attr('alt') ||
+              slug.replace(/-/g, ' ')
+            ).replace(/\s+/g, ' ').trim();
+            const badge = $(el).text();
+            const isUpcoming = badge.includes('قادم') || badge.toLowerCase().includes('upcoming');
+            if (!results.some(r => r.slug === slug)) {
+              results.push({ slug, title, href, isUpcoming });
             }
           });
-          return bestSlug;
+
+          if (results.length === 0) {
+            $('a[href*="/anime/"]').each((_, el) => {
+              if ($(el).closest('aside').length > 0) return;
+              const href = ($(el).attr('href') || '').trim();
+              if (!href || href.includes('${')) return;
+              const slug = this.extractAnimeSlugFromUrl(href);
+              if (!slug) return;
+              const rawText = ($(el).text() || $(el).find('img').attr('alt') || '').replace(/\s+/g, ' ').trim();
+              const isNoise = !rawText || /^\d+\s*حلقة|^عدد الحلقات|^مشاهدة/i.test(rawText);
+              const title = isNoise ? slug.replace(/-/g, ' ') : rawText;
+              const existing = results.find(r => r.slug === slug);
+              if (!existing) {
+                results.push({ slug, title, href });
+              } else if (!isNoise && existing.title === slug.replace(/-/g, ' ')) {
+                existing.title = title;
+              }
+            });
+          }
+
+          return this.scoreSearchCandidates(cleanQ, results).slug;
         } catch {
           return null;
         }
@@ -485,33 +517,38 @@ export class ScraperService {
     animeSlug: string,
     epNum: string | number,
     candidateTitles: string[],
-    directEpisodePath?: string
-  ): Promise<{ watch: EpisodeServer[]; download: EpisodeServer[] }> {
+    directEpisodePath?: string,
+    alreadyTriedSlugs?: Set<string>
+  ): Promise<{ watch: EpisodeServer[]; download: EpisodeServer[]; seriesExistsMissingEp: boolean }> {
     const watch: EpisodeServer[] = [];
     const download: EpisodeServer[] = [];
-    if (IS_EXTERNAL_FETCH_DISABLED) return { watch, download };
+    let seriesExistsMissingEp = false;
+    if (IS_EXTERNAL_FETCH_DISABLED) return { watch, download, seriesExistsMissingEp };
 
-    const epStr = String(epNum).trim();
+    const epStr = String(parseInt(String(epNum), 10) || epNum).trim();
+    const triedSlugs = alreadyTriedSlugs || new Set<string>();
     let html = '';
 
-    // 1. بناء قائمة مسارات الحلقة المباشرة والمحاولة بالتوازي السريع
+    // 1. بناء قائمة مسارات الحلقة المباشرة والمحاولة السريعة
     const epPaths: string[] = [];
     if (directEpisodePath && directEpisodePath.includes('/episode/')) {
       epPaths.push(directEpisodePath);
     }
 
     const slugsToTry: string[] = [];
-    if (animeSlug) {
-      slugsToTry.push(animeSlug);
-    }
+    const pushSlug = (s: string) => {
+      if (s && !triedSlugs.has(s) && !slugsToTry.includes(s)) {
+        slugsToTry.push(s);
+      }
+    };
+    if (animeSlug) pushSlug(animeSlug);
     for (const t of candidateTitles) {
       const normalized = t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-      if (normalized && !slugsToTry.includes(normalized)) {
-        slugsToTry.push(normalized);
-      }
+      if (normalized) pushSlug(normalized);
     }
 
     for (const slug of slugsToTry.slice(0, 4)) {
+      triedSlugs.add(slug);
       const p = `/episode/${slug}-episode-${epStr}`;
       if (!epPaths.includes(p)) epPaths.push(p);
       const padded = epStr.padStart(2, '0');
@@ -523,7 +560,7 @@ export class ScraperService {
 
     for (const epPath of epPaths) {
       try {
-        const fetched = await this.fetchOkanimeHtml(epPath, 4000);
+        const fetched = await this.fetchOkanimeHtml(epPath, 3500);
         if (fetched && (fetched.includes('setServer(') || fetched.includes('data-server') || fetched.includes('ep-link'))) {
           html = fetched;
           break;
@@ -531,15 +568,39 @@ export class ScraperService {
       } catch {}
     }
 
-    // 2. إن لم ينجح المسار المباشر، نبحث عن الأنمي داخل ww3.okanime.xyz ونجلب رابط الحلقة الفعلي
-    if (!html) {
+    // If primary animeSlug exists on OkAnime (e.g. One Piece 821..1180) check its page to confirm if episode simply isn't archived there
+    if (!html && animeSlug) {
+      try {
+        const animePageHtml = await this.fetchOkanimeHtml(`/anime/${animeSlug}`, 3500);
+        if (animePageHtml && animePageHtml.includes('animepage-main-col')) {
+          const $a = cheerio.load(animePageHtml);
+          let matchedEpHref = '';
+          $a('.animepage-main-col a[href*="/episode/"], a[href*="/episode/"]').each((_, el) => {
+            if (matchedEpHref || $a(el).closest('aside').length > 0) return;
+            const href = ($a(el).attr('href') || '').trim();
+            if (new RegExp(`-episode-0*${epStr}(?:$|\\?|#|/)`, 'i').test(href)) {
+              matchedEpHref = href;
+            }
+          });
+          if (matchedEpHref) {
+            html = await this.fetchOkanimeHtml(matchedEpHref, 3500).catch(() => '');
+          } else {
+            seriesExistsMissingEp = true;
+          }
+        }
+      } catch {}
+    }
+
+    // 2. إن لم ينجح المسار المباشر ولم يؤكد غياب الحلقة فقط في السلسلة الصحيحة، نبحث في ww3.okanime.xyz
+    if (!html && !seriesExistsMissingEp) {
       const padded = epStr.padStart(2, '0');
       for (const titleCand of candidateTitles.slice(0, 4)) {
         const foundSlug = await this.searchOkanimeSlug(titleCand);
-        if (!foundSlug) continue;
+        if (!foundSlug || triedSlugs.has(foundSlug)) continue;
+        triedSlugs.add(foundSlug);
         for (const candNum of (padded !== epStr ? [epStr, padded] : [epStr])) {
           try {
-            const fetched = await this.fetchOkanimeHtml(`/episode/${foundSlug}-episode-${candNum}`, 4000);
+            const fetched = await this.fetchOkanimeHtml(`/episode/${foundSlug}-episode-${candNum}`, 3500);
             if (fetched && (fetched.includes('setServer(') || fetched.includes('data-server') || fetched.includes('ep-link'))) {
               html = fetched;
               break;
@@ -548,25 +609,25 @@ export class ScraperService {
         }
         if (html) break;
         try {
-          const animePageHtml = await this.fetchOkanimeHtml(`/anime/${foundSlug}`, 4000);
+          const animePageHtml = await this.fetchOkanimeHtml(`/anime/${foundSlug}`, 3500);
           const $a = cheerio.load(animePageHtml);
           let matchedEpHref = '';
-          $a('a[href*="/episode/"]').each((_, el) => {
-            if (matchedEpHref) return;
+          $a('.animepage-main-col a[href*="/episode/"], a[href*="/episode/"]').each((_, el) => {
+            if (matchedEpHref || $a(el).closest('aside').length > 0) return;
             const href = ($a(el).attr('href') || '').trim();
             if (new RegExp(`-episode-0*${epStr}(?:$|\\?|#|/)`, 'i').test(href)) {
               matchedEpHref = href;
             }
           });
           if (matchedEpHref) {
-            html = await this.fetchOkanimeHtml(matchedEpHref, 4000);
+            html = await this.fetchOkanimeHtml(matchedEpHref, 3500);
             if (html) break;
           }
         } catch {}
       }
     }
 
-    if (!html) return { watch, download };
+    if (!html) return { watch, download, seriesExistsMissingEp };
 
     const $ = cheerio.load(html);
 
@@ -657,7 +718,7 @@ export class ScraperService {
       }
     });
 
-    return { watch, download };
+    return { watch, download, seriesExistsMissingEp };
   }
 
   private jikanQueuePromise: Promise<void> = Promise.resolve();
@@ -873,7 +934,9 @@ export class ScraperService {
       const numMatch = href.match(/-episode-(\d+)(?:$|\/|\?|#)/i) || $(el).text().match(/(\d+)/);
       if (!numMatch || !numMatch[1]) return;
 
-      const epNum = numMatch[1];
+      const parsedNum = parseInt(numMatch[1], 10);
+      if (!parsedNum || isNaN(parsedNum)) return;
+      const epNum = String(parsedNum);
       const fullLink = href.startsWith('http')
         ? href
         : `${this.primaryOrigin}${href.startsWith('/') ? href : '/' + href}`;
@@ -1634,12 +1697,26 @@ export class ScraperService {
         .toLowerCase()
         .replace(/[^a-z0-9\s\u0600-\u06FF]/g, '')
         .trim() || query.toLowerCase().trim();
-    const queryWords = cleanQuery.split(' ').filter(w => w.length >= 2);
+    const queryWords = cleanQuery.split(/\s+/).filter(w => w.length >= 2);
     const querySlug = cleanQuery.replace(/\s+/g, '-');
     const targetSeason = this.extractTargetSeasonNumber(query);
+    const fullQueryNorm = `${cleanQuery} ${query.toLowerCase()}`;
 
     const specialKeywords = ['movie', 'special', 'ova', 'ona', 'film', 'heroines', 'episode of', 'heart of gold', 'فيلم', 'فلم', 'خاصة', 'أوفا'];
     const queryHasSpecial = specialKeywords.some(kw => query.toLowerCase().includes(kw));
+
+    const sequelMarkers = [
+      'shippuuden', 'shippuden', 'boruto', 'next generations', 'brotherhood',
+      'final season', 'the final', 'part 2', 'part ii', 'part 3', 'part iii',
+      '2nd season', 'second season', '3rd season', 'third season',
+      '4th season', 'fourth season', '5th season', 'fifth season',
+      'kai', 'super', 'gt', 'reborn', 'zero', 'prequel', 'sequel', 'remake',
+      'rebuild', 'evolution', 'revolution', 'shin', 'chronicles', 'gaiden',
+    ];
+    const hasWordOrPhrase = (haystack: string, needle: string) => {
+      if (needle.includes(' ')) return haystack.includes(needle);
+      return new RegExp(`(?:^|[^a-z0-9])${needle}(?:[^a-z0-9]|$)`, 'i').test(haystack);
+    };
 
     let bestSlug: string | null = null;
     let highestScore = -999999;
@@ -1647,30 +1724,47 @@ export class ScraperService {
     for (const item of results) {
       const cleanTitle = this.cleanQueryForSearch(item.title).toLowerCase().replace(/[^a-z0-9\s\u0600-\u06FF]/g, '').trim();
       const englishOnlyTitle = this.cleanQueryForSearch(item.title).toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
-      const titleWords = cleanTitle.split(' ').filter(Boolean);
+      const titleWords = cleanTitle.split(/\s+/).filter(Boolean);
       const decodedSlug = (() => {
         try { return decodeURIComponent(item.slug).toLowerCase(); } catch { return item.slug.toLowerCase(); }
-      })();
+      })().replace(/^(?:انمي|فيلم)[_-]+/i, '');
+      const slugClean = decodedSlug.replace(/[-_]+/g, ' ').trim();
+      const fullItemNorm = `${cleanTitle} ${slugClean} ${item.title.toLowerCase()}`;
 
-      const overlapCount = queryWords.filter(w => titleWords.includes(w) || decodedSlug.includes(w)).length;
+      const overlapCount = queryWords.filter(w => titleWords.includes(w) || slugClean.split(' ').includes(w)).length;
       const hasSubstring =
-        (cleanQuery.length >= 3 && (cleanTitle.includes(cleanQuery) || decodedSlug.includes(querySlug))) ||
+        (cleanQuery.length >= 3 && (cleanTitle.includes(cleanQuery) || slugClean.includes(cleanQuery) || decodedSlug.includes(querySlug))) ||
         (cleanTitle.length >= 3 && cleanQuery.includes(cleanTitle));
 
       if (overlapCount === 0 && !hasSubstring) continue;
 
       let score = 0;
-      if (cleanTitle === cleanQuery || (englishOnlyTitle && englishOnlyTitle === cleanQuery)) {
-        score += 1200;
+      if (cleanTitle === cleanQuery || (englishOnlyTitle && englishOnlyTitle === cleanQuery) || slugClean === cleanQuery) {
+        score += 1400;
       }
       if (hasSubstring) {
         const refLen = englishOnlyTitle ? englishOnlyTitle.length : cleanTitle.length;
-        score += 500 - Math.abs(refLen - cleanQuery.length) * 4;
+        score += 550 - Math.abs(refLen - cleanQuery.length) * 6;
       }
 
       const overlapRatio = queryWords.length > 0 ? overlapCount / queryWords.length : 0;
       if (overlapRatio > 0.35) score += overlapRatio * 450;
+      if (queryWords.length > 0 && overlapCount < Math.ceil(queryWords.length * 0.6) && !hasSubstring) {
+        score -= 1800;
+      }
       if (decodedSlug.includes(querySlug)) score += 450;
+
+      // Reject unrequested sequels / spinoffs / remakes (e.g. "Naruto" must never pick "Naruto: Shippuuden" or "Boruto")
+      for (const kw of sequelMarkers) {
+        if (hasWordOrPhrase(fullItemNorm, kw) && !hasWordOrPhrase(fullQueryNorm, kw)) {
+          score -= 5000;
+        }
+      }
+      const trailingRomanRe = /(?:^|[^a-z0-9])(ii|iii|iv|v|z)(?:[^a-z0-9]|$)/i;
+      const itemTrailing = fullItemNorm.match(trailingRomanRe)?.[1]?.toLowerCase();
+      if (itemTrailing && !hasWordOrPhrase(fullQueryNorm, itemTrailing)) {
+        score -= 5000;
+      }
 
       if (item.isUpcoming) {
         score -= 800;
@@ -1680,12 +1774,12 @@ export class ScraperService {
       if (itemSeason === targetSeason) {
         score += 450;
       } else {
-        score -= 250;
+        score -= 1200;
       }
 
       const itemHasSpecial = specialKeywords.some(kw => item.title.toLowerCase().includes(kw) || decodedSlug.includes(kw));
       if (itemHasSpecial && !queryHasSpecial) {
-        score -= 900;
+        score -= 5000;
       }
 
       if (score > highestScore) {
@@ -1694,8 +1788,8 @@ export class ScraperService {
       }
     }
 
-    if (!bestSlug && results.length > 0) {
-      bestSlug = results[0].slug;
+    if (highestScore < 120) {
+      return { slug: null, score: highestScore };
     }
 
     return { slug: bestSlug, score: highestScore };
@@ -1716,7 +1810,7 @@ export class ScraperService {
     }
 
     const normalizedKey = query.toLowerCase().trim();
-    const cacheKey = `search_okanime_primary_v1:${normalizedKey}`;
+    const cacheKey = `search_okanime_primary_v3:${normalizedKey}`;
     const cached = await this.getCached<string | null>(cacheKey);
     if (cached !== null) return cached;
 
@@ -1977,6 +2071,161 @@ export class ScraperService {
     }
   }
 
+  public async getAnimercoAnimeDetails(
+    candidateTitles: string[],
+    preferredSeasonNum?: number
+  ): Promise<any | null> {
+    if (IS_EXTERNAL_FETCH_DISABLED || !candidateTitles.length) return null;
+    const queries: string[] = [];
+    for (const t of candidateTitles) {
+      const cleaned = this.cleanQueryForSearch(t);
+      if (cleaned && cleaned.length >= 2 && !queries.includes(cleaned)) {
+        queries.push(cleaned);
+      }
+    }
+    if (queries.length === 0) return null;
+
+    const fetchAnimercoText = async (targetUrl: string, timeoutMs = 4500): Promise<string> => {
+      const safe = await validateSafePublicHttpUrl(targetUrl);
+      if (!safe) throw new Error('Unsafe Animerco URL');
+      const res = await fetch(safe.toString(), {
+        headers: this.defaultHeaders,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!res.ok) throw new Error(`Animerco HTTP ${res.status}`);
+      return await res.text();
+    };
+
+    let matched: { slug: string; title: string; href: string } | null = null;
+    for (const q of queries.slice(0, 3)) {
+      try {
+        const html = await fetchAnimercoText(`https://animerco.org/?s=${encodeURIComponent(q)}`, 4500);
+        const $s = cheerio.load(html);
+        const results: { slug: string; title: string; href: string }[] = [];
+        $s('a[href*="/animes/"], a[href*="/movies/"]').each((_, el) => {
+          const href = ($s(el).attr('href') || '').trim();
+          if (!isSafePublicHttpUrl(href) || !href.includes('animerco.org')) return;
+          let decodedSlug = this.extractAnimeSlugFromUrl(href);
+          try { decodedSlug = decodeURIComponent(decodedSlug); } catch {}
+          decodedSlug = decodedSlug.replace(/^(?:انمي|فيلم)[_-]+/i, '').trim();
+          if (!decodedSlug || results.some(r => r.href === href)) return;
+          const cardTitle =
+            ($s(el).text() ||
+              $s(el).attr('title') ||
+              $s(el).find('img').attr('alt') ||
+              $s(el).closest('article, .poster, .item, .data').find('h2, h3, .title').first().text() ||
+              '').replace(/\s+/g, ' ').trim();
+          results.push({ slug: decodedSlug, title: cardTitle || decodedSlug.replace(/[-_]/g, ' '), href });
+        });
+        if (results.length > 0) {
+          const scored = this.scoreSearchCandidates(q, results);
+          const chosen = scored.slug ? results.find(r => r.slug === scored.slug) : undefined;
+          if (chosen?.href) {
+            matched = chosen;
+            break;
+          }
+        }
+      } catch {}
+    }
+
+    if (!matched) return null;
+
+    try {
+      const animeHtml = await fetchAnimercoText(matched.href, 5000);
+      const $a = cheerio.load(animeHtml);
+      const rawTitle =
+        ($a('h1').first().text() || matched.title || '')
+          .replace(/^(?:انمي|فيلم)\s+/i, '')
+          .replace(/مترجم.*/i, '')
+          .trim();
+      const title = cleanAnimeTitle(rawTitle) || rawTitle;
+      const posterUrl =
+        $a('meta[property="og:image"]').attr('content') ||
+        $a('.poster img, img').first().attr('src') ||
+        '';
+      const description =
+        $a('.synopsis, .description, p').first().text().trim() ||
+        $a('meta[property="og:description"]').attr('content') ||
+        '';
+
+      const targetSeason = Math.max(1, Number(preferredSeasonNum) || 1);
+      const episodes: { id: string; num: string; title: string; link: string; seasonNumber: number }[] = [];
+
+      const collectEpLinks = ($doc: cheerio.CheerioAPI) => {
+        $doc('a[href*="/episodes/"]').each((_, el) => {
+          const href = ($doc(el).attr('href') || '').trim();
+          if (!href || !isSafePublicHttpUrl(href)) return;
+          let decoded = href;
+          try { decoded = decodeURIComponent(href); } catch {}
+          const numMatch =
+            decoded.match(/-(?:الحلقة|episode)-0*(\d+)(?:\/|\?|#|$)/i) ||
+            href.match(/-(?:%d8%a7%d9%84%d8%ad%d9%84%d9%82%d8%a9|episode)-0*(\d+)(?:\/|\?|#|$)/i) ||
+            $doc(el).text().match(/(\d+)/);
+          if (!numMatch || !numMatch[1]) return;
+          const parsedNum = parseInt(numMatch[1], 10);
+          if (!parsedNum || isNaN(parsedNum)) return;
+          const epNum = String(parsedNum);
+          if (!episodes.some(e => e.num === epNum)) {
+            episodes.push({
+              id: `${matched!.slug}__ep__${epNum}`,
+              num: epNum,
+              title: `الحلقة ${epNum}`,
+              link: href,
+              seasonNumber: targetSeason,
+            });
+          }
+        });
+      };
+
+      const seasonLinks: string[] = [];
+      $a('a[href*="/seasons/"]').each((_, el) => {
+        const href = ($a(el).attr('href') || '').trim();
+        if (href && isSafePublicHttpUrl(href) && !seasonLinks.includes(href)) {
+          seasonLinks.push(href);
+        }
+      });
+
+      if (seasonLinks.length > 0) {
+        const targetSeasonUrl =
+          seasonLinks.find(u => new RegExp(`(?:-|season-|s)${targetSeason}(?:\\/|$)`, 'i').test(u)) ||
+          seasonLinks[targetSeason - 1] ||
+          seasonLinks[0];
+        const seasonHtml = await fetchAnimercoText(targetSeasonUrl, 5000).catch(() => '');
+        if (seasonHtml) {
+          collectEpLinks(cheerio.load(seasonHtml));
+        }
+      }
+
+      if (episodes.length === 0) {
+        collectEpLinks($a);
+      }
+
+      episodes.sort((a, b) => (parseInt(a.num, 10) || 0) - (parseInt(b.num, 10) || 0));
+
+      return {
+        _id: matched.slug,
+        title,
+        posterUrl,
+        description,
+        episodes,
+        seasonsList: episodes.length > 0 ? [{
+          seasonId: matched.slug,
+          seasonTitle: `الموسم ${targetSeason}`,
+          title: `الموسم ${targetSeason}`,
+          seasonNumber: targetSeason,
+          episodes,
+        }] : [],
+        genres: ['أكشن', 'مغامرات'],
+        rating: 8.5,
+        status: 'مكتمل',
+        type: matched.href.includes('/movies/') ? 'Movie' : 'TV',
+        episodesCount: String(episodes.length),
+      };
+    } catch {
+      return null;
+    }
+  }
+
   private async extractAnimercoEpisodeServers(
     candidateTitles: string[],
     epNum: string | number,
@@ -2016,14 +2265,22 @@ export class ScraperService {
         $s('a[href*="/animes/"], a[href*="/movies/"]').each((_, el) => {
           const href = ($s(el).attr('href') || '').trim();
           if (!isSafePublicHttpUrl(href) || !href.includes('animerco.org')) return;
-          const slug = this.extractAnimeSlugFromUrl(href);
+          let slug = this.extractAnimeSlugFromUrl(href);
+          try { slug = decodeURIComponent(slug); } catch {}
+          slug = slug.replace(/^(?:انمي|فيلم)[_-]+/i, '').trim();
           if (!slug || results.some(r => r.href === href)) return;
-          const title = ($s(el).text() || $s(el).attr('title') || $s(el).find('img').attr('alt') || '').replace(/\s+/g, ' ').trim();
-          results.push({ slug, title: title || slug, href });
+          const title = (
+            $s(el).text() ||
+            $s(el).attr('title') ||
+            $s(el).find('img').attr('alt') ||
+            $s(el).closest('article, .poster, .item, .data').find('h2, h3, .title').first().text() ||
+            ''
+          ).replace(/\s+/g, ' ').trim();
+          results.push({ slug, title: title || slug.replace(/[-_]/g, ' '), href });
         });
         if (results.length > 0) {
           const scored = this.scoreSearchCandidates(q, results);
-          const chosen = results.find(r => r.slug === scored.slug) || results[0];
+          const chosen = scored.slug ? results.find(r => r.slug === scored.slug) : undefined;
           if (chosen?.href) {
             matchedAnimeUrl = chosen.href;
             break;
@@ -2135,7 +2392,7 @@ export class ScraperService {
   /**
    * 5. استخراج سيرفرات المشاهدة والتحميل للحلقة:
    * - أولاً (الأساسي #1): من ww3.okanime.xyz (سيرفرات المشاهدة [data-server] + روابط التحميل الحقيقية FHD/HD/SD)
-   * - ثانياً (المساعد #2): الدمج التكميلي من animedar.net (فك تشفير #ServerList1 لضمان توفر أكبر قدر من المرايا البديلة)
+   * - ثانياً (المساعد #2): الدمج التكميلي من animedar.net (مع circuit breaker)
    * - ثالثاً (البديل #3): animerco.org / jet.animerco.org عند تعذر المصدرين السابقين
    */
   public async getEpisodeServers(
@@ -2181,7 +2438,7 @@ export class ScraperService {
       }
     }
 
-    const cacheKey = `servers_v9_okanime_fast:${episodeId}:${jikanId}:${okanimeSlug || ''}:${romajiTitle || animeTitle || englishTitle || ''}:${explicitSeason}:${epNum}`;
+    const cacheKey = `servers_v11_okanime_fast:${episodeId}:${jikanId}:${okanimeSlug || ''}:${romajiTitle || animeTitle || englishTitle || ''}:${explicitSeason}:${epNum}`;
     const cachedServers = await this.getCached<EpisodeServer[]>(cacheKey);
     if (cachedServers && Array.isArray(cachedServers) && cachedServers.length > 0) {
       return cachedServers;
@@ -2221,17 +2478,19 @@ export class ScraperService {
 
       const watchServers: EpisodeServer[] = [];
       const downloadServers: EpisodeServer[] = [];
+      const triedOkanimeSlugs = new Set<string>();
 
-      // 1. الجلب السريع والفوري من ww3.okanime.xyz (بدون انتظار AniList إذا توفر slug أو عنوان أو رابط مباشر)
+      // 1. الجلب السريع والفوري من ww3.okanime.xyz
       const [okanimeDirectResult, animedarCached] = await Promise.all([
         (resolvedPrimarySlug || directEpPath || candidateTitles.length > 0)
           ? this.extractOkanimeEpisodeServers(
               resolvedPrimarySlug,
               epNum,
               candidateTitles,
-              directEpPath
-            ).catch(() => ({ watch: [], download: [] }))
-          : Promise.resolve({ watch: [] as EpisodeServer[], download: [] as EpisodeServer[] }),
+              directEpPath,
+              triedOkanimeSlugs
+            ).catch(() => ({ watch: [], download: [], seriesExistsMissingEp: false }))
+          : Promise.resolve({ watch: [] as EpisodeServer[], download: [] as EpisodeServer[], seriesExistsMissingEp: false }),
         resolvedPrimarySlug
           ? this.getCached<EpisodeServer[]>(`animedar_ep_servers_v2:${resolvedPrimarySlug}__ep__${epNum}`)
               .then(res => res || this.getCached<EpisodeServer[]>(`animedar_ep_servers_v2:${resolvedPrimarySlug}:${epNum}`))
@@ -2246,7 +2505,7 @@ export class ScraperService {
         if (!downloadServers.some(s => s.url === d.url && s.quality === d.quality)) downloadServers.push(d);
       }
 
-      // 2. إذا لم نعثر على سيرفرات مشاهدة بعد، نحسم Romaji / Synonyms عبر AniList ثم نبحث في المصدر الأساسي
+      // 2. إذا لم نعثر على سيرفرات مشاهدة بعد، نحسم Romaji / Synonyms عبر AniList ثم نبحث في المصدر الأساسي (إلا إذا تأكد أن السلسلة الصحيحة على OkAnime لا تحتوي هذه الحلقة تحديداً)
       if (watchServers.length === 0 && (jikanId || animeTitle || englishTitle)) {
         try {
           const { anilistService } = await import('./anilistService');
@@ -2256,7 +2515,7 @@ export class ScraperService {
               : (englishTitle || animeTitle)
               ? anilistService.getAnimeFullDetails(String(englishTitle || animeTitle)).catch(() => null)
               : Promise.resolve(null),
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), 3500))
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000))
           ]);
 
           if (aniDetails?.anime?.mal_id && (!jikanId || !/^\d+$/.test(jikanId))) {
@@ -2270,39 +2529,42 @@ export class ScraperService {
             pushCandidateTitle(t);
           }
 
-          if (!resolvedPrimarySlug) {
-            for (const cand of candidateTitles.slice(0, 4)) {
-              const foundSlug = await this.searchOkanimeSlug(cand).catch(() => null);
-              if (foundSlug) {
-                resolvedPrimarySlug = foundSlug;
-                break;
+          if (!okanimeDirectResult.seriesExistsMissingEp) {
+            if (!resolvedPrimarySlug) {
+              for (const cand of candidateTitles.slice(0, 4)) {
+                const foundSlug = await this.searchOkanimeSlug(cand).catch(() => null);
+                if (foundSlug) {
+                  resolvedPrimarySlug = foundSlug;
+                  break;
+                }
               }
             }
-          }
 
-          const secondTry = await this.extractOkanimeEpisodeServers(
-            resolvedPrimarySlug,
-            epNum,
-            candidateTitles,
-            directEpPath
-          ).catch(() => ({ watch: [], download: [] }));
+            const secondTry = await this.extractOkanimeEpisodeServers(
+              resolvedPrimarySlug,
+              epNum,
+              candidateTitles,
+              directEpPath,
+              triedOkanimeSlugs
+            ).catch(() => ({ watch: [], download: [], seriesExistsMissingEp: false }));
 
-          for (const w of secondTry.watch) {
-            if (!watchServers.some(s => s.url === w.url)) watchServers.push(w);
-          }
-          for (const d of secondTry.download) {
-            if (!downloadServers.some(s => s.url === d.url && s.quality === d.quality)) downloadServers.push(d);
+            for (const w of secondTry.watch) {
+              if (!watchServers.some(s => s.url === w.url)) watchServers.push(w);
+            }
+            for (const d of secondTry.download) {
+              if (!downloadServers.some(s => s.url === d.url && s.quality === d.quality)) downloadServers.push(d);
+            }
           }
         } catch {}
       }
 
-      // 3. دمج كاش animedar السريع إذا توفر، أو جلبه (بمهلة قصيرة 3 ثوانٍ) فقط عند غياب سيرفرات المشاهدة من الأساسي
+      // 3. دمج كاش animedar السريع إذا توفر، أو جلبه فقط إذا لم يكن في وضع التبريد
       let darServers = animedarCached;
-      if ((!darServers || darServers.length === 0) && watchServers.length === 0) {
+      if ((!darServers || darServers.length === 0) && watchServers.length === 0 && Date.now() >= animedarCooldownUntil) {
         const darSlug = resolvedPrimarySlug;
         const tryFetchDar = async (slugToTry: string): Promise<EpisodeServer[]> => {
-          if (!slugToTry) return [];
-          const html = await this.fetchAnimedarHtml(`/anime-p/${slugToTry}/`, 3000);
+          if (!slugToTry || Date.now() < animedarCooldownUntil) return [];
+          const html = await this.fetchAnimedarHtml(`/anime-p/${slugToTry}/`, 2200);
           const $ = cheerio.load(html);
           const parsed = this.parseAnimedarDocument($, slugToTry);
           if (parsed.title && !candidateTitles.includes(parsed.title)) {
@@ -2321,10 +2583,10 @@ export class ScraperService {
           if (darSlug) {
             darServers = await tryFetchDar(darSlug).catch(() => []);
           }
-          if ((!darServers || darServers.length === 0) && candidateTitles.length > 0) {
+          if ((!darServers || darServers.length === 0) && candidateTitles.length > 0 && Date.now() >= animedarCooldownUntil) {
             const searchedDarSlug = await Promise.race([
               this.searchAnimedarHelperSlug(candidateTitles[0]).catch(() => null),
-              new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000))
+              new Promise<null>((resolve) => setTimeout(() => resolve(null), 2200))
             ]);
             if (searchedDarSlug && searchedDarSlug !== darSlug) {
               darServers = await tryFetchDar(searchedDarSlug).catch(() => []);
@@ -2343,13 +2605,21 @@ export class ScraperService {
         }
       }
 
-      // 4. المصدر الثالث #3: animerco.org / jet.animerco.org عند فشل OkAnime و AnimeDar
-      if (watchServers.length === 0 && downloadServers.length === 0 && candidateTitles.length > 0) {
-        const animercoServers = await this.extractAnimercoEpisodeServers(
-          candidateTitles,
-          epNum,
-          explicitSeason
-        ).catch(() => []);
+      // 4. المصدر الثالث #3: animerco.org / jet.animerco.org عند فشل OkAnime و AnimeDar أو عند اقتصار OkAnime على روابط قديمة متعطلة
+      const hasReliableModernHost = watchServers.some((s) =>
+        /vk\.com|vkvideo|vk video|ok\.ru|videa|dailymotion|megamax|share4max|sendvid|drive\.google/i.test(
+          `${s.serverName || ''} ${s.url || ''}`
+        )
+      );
+      if ((watchServers.length === 0 || !hasReliableModernHost) && candidateTitles.length > 0) {
+        const animercoServers = await Promise.race([
+          this.extractAnimercoEpisodeServers(
+            candidateTitles,
+            epNum,
+            explicitSeason
+          ).catch(() => []),
+          new Promise<EpisodeServer[]>((resolve) => setTimeout(() => resolve([]), 5000)),
+        ]);
         for (const srv of animercoServers) {
           if (!watchServers.some(s => s.url === srv.url)) {
             watchServers.push(srv);

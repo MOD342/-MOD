@@ -5,6 +5,7 @@ import NotificationsModal from './NotificationsModal';
 import { db, auth } from '../firebase';
 import { collection, query, where, limit, onSnapshot } from 'firebase/firestore';
 import { useDeviceDisplay } from '../hooks/useDeviceDisplay';
+import { computeCutoutBarGeometry } from '../utils/viewportMetrics';
 import type { HomeMode } from '../utils/appPreferences';
 
 export function AppLayout({
@@ -249,66 +250,82 @@ export function AppLayout({
         </aside>
       )}
 
-      {/* Hardware-Integrated Full-Width Top Bar for Phones & Cover Screens on Home */}
+      {/* Camera-Cutout Aligned Full-Width Top Bar for Phones & Cover Screens on Home */}
       {!useSideRail && activeTab === 'home' && (() => {
-        const cutout = display.cutoutRect;
-        const hasCutout = Boolean(cutout?.visible && cutout.width > 0 && cutout.height > 0);
-        const isCenterCutout = hasCutout && cutout.position === 'center';
-        const isLeftCutout = hasCutout && cutout.position === 'left';
-        const isRightCutout = hasCutout && cutout.position === 'right';
-        // When edge-to-edge safeTop is minimal (immersive/landscape) and cutout is centered, controls flank the cutout inline
-        const inlineFlankCenterCutout =
-          isCenterCutout && display.safeTop < 12 && display.viewportWidth >= 340;
-
-        const barPaddingLeft = isLeftCutout
-          ? Math.max(display.safeLeft + 12, cutout.left + cutout.width + 10)
-          : undefined;
-        const barPaddingRight = isRightCutout && display.viewportWidth > 0
-          ? Math.max(display.safeRight + 12, display.viewportWidth - cutout.left + 10)
-          : undefined;
-
-        const cutoutBorderRadius =
-          cutout?.shape === 'notch'
-            ? '0 0 12px 12px'
-            : `${Math.max(4, cutout?.radius || Math.ceil((cutout?.height || 22) / 2))}px`;
+        const barGeo = computeCutoutBarGeometry(display);
+        const isFlankCenter = barGeo.mode === 'flank-center';
+        const isTightLeftZone = isFlankCenter && barGeo.leftZoneWidth > 0 && barGeo.leftZoneWidth < 138;
 
         return (
           <header
             aria-label="الشريط العلوي"
             style={{
-              paddingTop: inlineFlankCenterCutout
-                ? `${Math.max(4, cutout.top)}px`
-                : 'calc(var(--safe-top, 0px) + 0.25rem)',
-              paddingBottom: '0.35rem',
-              paddingLeft: barPaddingLeft
-                ? `${barPaddingLeft}px`
-                : 'calc(var(--safe-left, 0px) + 0.75rem)',
-              paddingRight: barPaddingRight
-                ? `${barPaddingRight}px`
-                : 'calc(var(--safe-right, 0px) + 0.75rem)',
+              paddingTop: `${barGeo.headerTopPx}px`,
+              paddingBottom: '6px',
+              paddingLeft: `${barGeo.paddingLeftPx}px`,
+              paddingRight: `${barGeo.paddingRightPx}px`,
             }}
             className={`theme-keep-dark fixed top-0 left-0 right-0 w-full z-50 bg-[#07080e]/92 backdrop-blur-xl border-b border-white/[0.08] shadow-[0_8px_28px_rgba(0,0,0,0.48)] transition-all duration-200 ${
               showNav ? 'translate-y-0 opacity-100' : '-translate-y-full opacity-0 pointer-events-none'
             }`}
           >
-            {/* Physical Camera Cutout Frame integrated inside top status strip when status inset covers cutout */}
-            {hasCutout && !inlineFlankCenterCutout && (
+            <div
+              dir="ltr"
+              className="w-full max-w-7xl mx-auto flex items-center justify-between min-h-[44px]"
+            >
+              {/* Physical Left Side: Compact Utility Triggers */}
               <div
-                aria-hidden="true"
-                className="pointer-events-none absolute bg-[#020205] border border-white/[0.12] shadow-inner"
-                style={{
-                  left: `${cutout.left}px`,
-                  top: `${cutout.top}px`,
-                  width: `${cutout.width}px`,
-                  height: `${cutout.height}px`,
-                  borderRadius: cutoutBorderRadius,
-                }}
-              />
-            )}
+                style={isFlankCenter ? { width: `${barGeo.leftZoneWidth}px` } : undefined}
+                className={`flex items-center justify-start ${isTightLeftZone ? 'gap-0' : 'gap-1'} shrink-0 min-w-0`}
+              >
+                <button
+                  type="button"
+                  onClick={() => window.dispatchEvent(new Event('open-ai-chat'))}
+                  aria-label="مود (MOD)"
+                  className={`${isTightLeftZone ? '-mx-0.5' : ''} min-w-[44px] min-h-[44px] rounded-xl bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-rose-400 hover:bg-rose-500/20 hover:text-white active:scale-95 transition cursor-pointer shrink-0`}
+                >
+                  <Bot size={17} />
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRandomAnime}
+                  aria-label="أنمي عشوائي"
+                  className={`${isTightLeftZone ? '-mx-0.5' : ''} min-w-[44px] min-h-[44px] rounded-xl bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-orange-400 hover:bg-orange-500/20 hover:text-white active:scale-95 transition cursor-pointer shrink-0`}
+                >
+                  <Shuffle size={17} />
+                </button>
+                {user && (
+                  <button
+                    type="button"
+                    onClick={() => onNavigateTo('notifications')}
+                    aria-label="الإشعارات"
+                    className={`${isTightLeftZone ? '-mx-0.5' : ''} min-w-[44px] min-h-[44px] rounded-xl bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-blue-400 hover:bg-blue-500/20 hover:text-white active:scale-95 transition relative cursor-pointer shrink-0`}
+                  >
+                    <Bell size={17} />
+                    {unreadNotifsCount > 0 && (
+                      <span className="absolute top-1.5 left-1.5 bg-red-600 text-white text-[10px] font-black min-w-[16px] h-4 px-1 rounded-full flex items-center justify-center border border-[#07080e] tabular-nums">
+                        {unreadNotifsCount > 99 ? '99+' : unreadNotifsCount}
+                      </span>
+                    )}
+                  </button>
+                )}
+              </div>
 
-            <div className="w-full max-w-7xl mx-auto flex items-center justify-between gap-2 min-h-[44px]">
-              {/* RTL Start (Physical Right): Avatar + Brand Wordmark without pill wrapper */}
-              <div className="flex items-center gap-2 min-w-0">
+              {/* Exact Dead Spacer for Physical Center Camera Cutout */}
+              {isFlankCenter && (
+                <div
+                  aria-hidden="true"
+                  className="shrink-0 pointer-events-none"
+                  style={{ width: `${barGeo.cutoutSpacerWidth}px`, height: '1px' }}
+                />
+              )}
+
+              {/* Physical Right Side (RTL Start): Avatar + Brand Wordmark */}
+              <div
+                dir="rtl"
+                style={isFlankCenter ? { width: `${barGeo.rightZoneWidth}px` } : undefined}
+                className={`flex items-center justify-start ${isFlankCenter ? 'gap-1' : 'gap-2'} min-w-0`}
+              >
                 <button
                   type="button"
                   onClick={() => onNavigateTo('profile')}
@@ -356,9 +373,9 @@ export function AppLayout({
                         : 'اضغط للتبديل إلى الأنمي'
                       : 'أوتاكو MOD'
                   }
-                  className="flex items-center min-h-[44px] px-1.5 rounded-xl hover:bg-white/[0.05] active:scale-95 transition cursor-pointer min-w-0"
+                  className="flex items-center min-h-[44px] px-1 rounded-xl hover:bg-white/[0.05] active:scale-95 transition cursor-pointer min-w-0"
                 >
-                  <h1 className="text-[13px] sm:text-sm font-black tracking-tight text-white whitespace-nowrap truncate">
+                  <h1 className={`${isFlankCenter && barGeo.rightZoneWidth < 135 ? 'text-[11px]' : 'text-[13px] sm:text-sm'} font-black tracking-tight text-white whitespace-nowrap truncate`}>
                     أوتاكو{' '}
                     <span
                       className={
@@ -370,59 +387,6 @@ export function AppLayout({
                       MOD
                     </span>
                   </h1>
-                </button>
-              </div>
-
-              {/* Inline Hardware Camera Cutout Island when controls share the cutout row */}
-              {inlineFlankCenterCutout && (
-                <div
-                  aria-hidden="true"
-                  className="shrink-0 flex items-center justify-center pointer-events-none"
-                  style={{ minWidth: `${Math.max(cutout.width + 16, 42)}px` }}
-                >
-                  <div
-                    className="bg-[#020205] border border-white/[0.12] shadow-inner"
-                    style={{
-                      width: `${cutout.width}px`,
-                      height: `${cutout.height}px`,
-                      borderRadius: cutoutBorderRadius,
-                    }}
-                  />
-                </div>
-              )}
-
-              {/* RTL End (Physical Left): Compact Utility Triggers */}
-              <div className="flex items-center gap-1 shrink-0">
-                {user && (
-                  <button
-                    type="button"
-                    onClick={() => onNavigateTo('notifications')}
-                    aria-label="الإشعارات"
-                    className="min-w-[44px] min-h-[44px] rounded-xl bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-blue-400 hover:bg-blue-500/20 hover:text-white active:scale-95 transition relative cursor-pointer"
-                  >
-                    <Bell size={17} />
-                    {unreadNotifsCount > 0 && (
-                      <span className="absolute top-1.5 left-1.5 bg-red-600 text-white text-[10px] font-black min-w-[16px] h-4 px-1 rounded-full flex items-center justify-center border border-[#07080e] tabular-nums">
-                        {unreadNotifsCount > 99 ? '99+' : unreadNotifsCount}
-                      </span>
-                    )}
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={handleRandomAnime}
-                  aria-label="أنمي عشوائي"
-                  className="min-w-[44px] min-h-[44px] rounded-xl bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-orange-400 hover:bg-orange-500/20 hover:text-white active:scale-95 transition cursor-pointer"
-                >
-                  <Shuffle size={17} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => window.dispatchEvent(new Event('open-ai-chat'))}
-                  aria-label="مود (MOD)"
-                  className="min-w-[44px] min-h-[44px] rounded-xl bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-rose-400 hover:bg-rose-500/20 hover:text-white active:scale-95 transition cursor-pointer"
-                >
-                  <Bot size={17} />
                 </button>
               </div>
             </div>

@@ -54,14 +54,14 @@ export default function AnimeCommentsView({ animeId, focusCommentId, onBack, onA
       try {
         setLoadingAnime(true);
         const cached =
-          clientCache.get<any>(`client_anime_details_v8_${animeId}`) ||
+          clientCache.get<any>(`client_anime_details_v10_${animeId}`) ||
           clientCache.get<any>(`client_anime_details_${animeId}`);
         if (cached) {
           setAnime(cached);
           setLoadingAnime(false);
         }
         await clientCache.fetchWithRevalidate(
-          `client_anime_details_v8_${animeId}`,
+          `client_anime_details_v10_${animeId}`,
           `/api/anime/details/${animeId}`,
           (data: any) => {
             setAnime(data);

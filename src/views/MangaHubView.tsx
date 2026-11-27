@@ -23,6 +23,7 @@ import PullToRefresh from '../components/PullToRefresh';
 import { LongPressCopy } from '../components/LongPressCopy';
 import { resolveGenreTaxonomyItem, translateGenreToArabic } from '../utils/genreTaxonomy';
 import { useDeviceDisplay } from '../hooks/useDeviceDisplay';
+import { computeCutoutBarGeometry } from '../utils/viewportMetrics';
 import { useAuth } from '../contexts/AuthContext';
 import { mangaListService, type ReadingHistoryItem } from '../services/mangaListService';
 import {
@@ -345,38 +346,72 @@ export default function MangaHubView({
         dir="rtl"
       >
         {/* Top Bar for standalone Manga Hub navigation */}
-        {!isHomeMode && (
-          <header className="sticky top-0 z-30 bg-black/[0.97] border-b border-white/10 px-3.5 md:px-6 py-3 shadow-lg">
-            <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2.5 min-w-0">
-                {onBack && (
-                  <button
-                    type="button"
-                    onClick={onBack}
-                    aria-label="رجوع"
-                    className="min-w-[44px] min-h-[44px] rounded-xl bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 flex items-center justify-center text-neutral-200 transition cursor-pointer shrink-0"
-                  >
-                    <ChevronRight size={20} />
-                  </button>
+        {!isHomeMode && (() => {
+          const barGeo = computeCutoutBarGeometry(display);
+          const isFlankCenter = !display.isWideOrUnfolded && barGeo.mode === 'flank-center';
+          return (
+            <header
+              style={{
+                paddingTop: `${barGeo.headerTopPx}px`,
+                paddingBottom: '8px',
+                paddingLeft: `${barGeo.paddingLeftPx}px`,
+                paddingRight: `${barGeo.paddingRightPx}px`,
+              }}
+              className="sticky top-0 z-30 bg-black/[0.97] border-b border-white/10 shadow-lg"
+            >
+              <div
+                dir="ltr"
+                className="max-w-7xl mx-auto flex items-center justify-between gap-2 min-h-[44px]"
+              >
+                <div
+                  style={isFlankCenter ? { width: `${barGeo.leftZoneWidth}px` } : undefined}
+                  className="flex items-center justify-start shrink-0"
+                >
+                  <LayoutModeToggleButton mode={layoutMode} onToggle={cycleLayoutMode} />
+                </div>
+
+                {isFlankCenter && (
+                  <div
+                    aria-hidden="true"
+                    className="shrink-0 pointer-events-none"
+                    style={{ width: `${barGeo.cutoutSpacerWidth}px`, height: '1px' }}
+                  />
                 )}
-                <div className="min-w-0">
-                  <h1 className="font-black text-base md:text-lg text-white truncate">
-                    عالم المانجا والمانهوا
-                  </h1>
-                  <p className="text-[11px] text-neutral-400 truncate">
-                    أحدث الفصول المترجمة والمانهوا الملونة للقراءة أونلاين أو دون اتصال
-                  </p>
+
+                <div
+                  dir="rtl"
+                  style={isFlankCenter ? { width: `${barGeo.rightZoneWidth}px` } : undefined}
+                  className="flex items-center justify-start gap-2 min-w-0"
+                >
+                  {onBack && (
+                    <button
+                      type="button"
+                      onClick={onBack}
+                      aria-label="رجوع"
+                      className="min-w-[44px] min-h-[44px] rounded-xl bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 flex items-center justify-center text-neutral-200 transition cursor-pointer shrink-0"
+                    >
+                      <ChevronRight size={20} />
+                    </button>
+                  )}
+                  <div className="min-w-0">
+                    <h1 className="font-black text-sm md:text-lg text-white truncate">
+                      {isFlankCenter ? 'المانجا' : 'عالم المانجا والمانهوا'}
+                    </h1>
+                    {!isFlankCenter && (
+                      <p className="hidden sm:block text-[11px] text-neutral-400 truncate">
+                        أحدث الفصول المترجمة والمانهوا الملونة للقراءة أونلاين أو دون اتصال
+                      </p>
+                    )}
+                  </div>
                 </div>
               </div>
-
-              <LayoutModeToggleButton mode={layoutMode} onToggle={cycleLayoutMode} />
-            </div>
-          </header>
-        )}
+            </header>
+          );
+        })()}
 
         {/* Admin Manga Announcement Banner */}
         {bannerCfg.mangaAnnouncement && (
-          <div className={`px-3.5 md:px-6 ${isHomeMode ? 'pt-[calc(var(--safe-top,0px)+4.1rem)] lg:pt-3' : 'pt-3'} max-w-7xl mx-auto`}>
+          <div className={`px-3.5 md:px-6 ${isHomeMode ? 'pt-[calc(var(--cutout-band-top,calc(var(--safe-top,0px)+3.5rem))+0.35rem)] lg:pt-3' : 'pt-3'} max-w-7xl mx-auto`}>
             <div className="p-3 bg-gradient-to-r from-amber-500/10 via-orange-500/10 to-amber-500/10 border border-amber-500/20 rounded-2xl flex items-center justify-center gap-2 text-xs font-bold text-amber-200 text-center">
               <Sparkles size={14} className="text-amber-400 shrink-0" />
               <span>{bannerCfg.mangaAnnouncement}</span>
@@ -385,7 +420,7 @@ export default function MangaHubView({
         )}
 
         {loading && bannerItems.length === 0 ? (
-          <div className="max-w-7xl mx-auto p-4 space-y-6 pt-[calc(var(--safe-top,0px)+4.35rem)] md:pt-4">
+          <div className="max-w-7xl mx-auto p-4 space-y-6 pt-[calc(var(--cutout-band-top,calc(var(--safe-top,0px)+3.5rem))+0.5rem)] md:pt-4">
             <div className="h-[245px] sm:h-[315px] md:h-[365px] rounded-[24px] sm:rounded-[28px] bg-neutral-900 animate-pulse border border-white/10 w-full" />
             <div className="flex gap-2 overflow-hidden">
               {[...Array(4)].map((_, i) => (

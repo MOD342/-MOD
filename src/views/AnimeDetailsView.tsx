@@ -17,6 +17,7 @@ import ViewportPortal from '../components/ViewportPortal';
 import PullToRefresh from '../components/PullToRefresh';
 import BatchDownloadModal from '../components/BatchDownloadModal';
 import { useDeviceDisplay } from '../hooks/useDeviceDisplay';
+import { computeCutoutBarGeometry } from '../utils/viewportMetrics';
 import { FALLBACK_POSTER_DATA_URL } from '../utils/posterFallback';
 
 function RecommendationItem({ rec, user, isMod, onDelete }: any) {
@@ -377,7 +378,7 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
           if (json?.success && data) {
             recordRandomAnimeSeen(data._id, data.malId);
             if (data._id && data._id !== 'random') {
-              clientCache.set(`client_anime_details_v8_${data._id}`, data, 12 * 60 * 60 * 1000);
+              clientCache.set(`client_anime_details_v10_${data._id}`, data, 12 * 60 * 60 * 1000);
             }
             setAnime(data);
             setLoadError(false);
@@ -421,8 +422,21 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
 
     try {
       if (!forceBypass) {
-        const cached = clientCache.get<any>(`client_anime_details_v9_${id}`);
-        if (cached && cached.description && cached.description !== 'جاري تحديث قصة وتفاصيل هذا الأنمي قريباً.') {
+        const cached = clientCache.get<any>(`client_anime_details_v10_${id}`);
+        const isUpcoming = /قادم|upcoming|not_yet_released/i.test(String(cached?.status || ''));
+        const cachedEps: any[] = Array.isArray(cached?.episodes) ? cached.episodes : [];
+        const cachedMaxEp = cachedEps.reduce((m, e) => {
+          const n = parseInt(String(e?.num ?? 0), 10);
+          return Number.isFinite(n) && n > m ? n : m;
+        }, 0);
+        const hasValidEpisodes = isUpcoming || (cachedEps.length > 0 && cachedMaxEp <= cachedEps.length + 5);
+        if (
+          cached &&
+          hasValidEpisodes &&
+          Number(cached.catalogSchemaVersion || 0) >= 4 &&
+          cached.description &&
+          cached.description !== 'جاري تحديث قصة وتفاصيل هذا الأنمي قريباً.'
+        ) {
           setAnime(cached);
           setLoading(false);
           hasCachedData = true;
@@ -445,7 +459,7 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
         setAnime(data);
         setLoading(false);
         setLoadError(false);
-        clientCache.set(`client_anime_details_v9_${id}`, data, 12 * 60 * 60 * 1000);
+        clientCache.set(`client_anime_details_v10_${id}`, data, 12 * 60 * 60 * 1000);
         if (needsSynopsisArabicTranslation(data?.description)) {
           fetch('/api/anime/translate-synopsis', {
             method: 'POST',
@@ -1181,71 +1195,126 @@ export default function AnimeDetailsView({ id, showComments = false, focusCommen
       exit={{ opacity: 0 }}
       className="bg-black min-h-[var(--vv-height,100dvh)] pb-24"
     >
-      {/* Top Navbar */}
-      <div
-        style={{
-          paddingTop: 'calc(var(--safe-top, 0px) + 0.75rem)',
-          paddingLeft: 'calc(var(--safe-left, 0px) + 1rem)',
-          paddingRight: 'calc(var(--safe-right, 0px) + 1rem)',
-        }}
-        className={`theme-keep-dark fixed top-0 right-0 left-0 max-w-7xl mx-auto pb-3 flex gap-2 z-[60] top-bar items-center pointer-events-none transition-all duration-300 ${
-        showDetailsNav ? 'translate-y-0 opacity-100' : '-translate-y-full opacity-0'
-      }`}
-      >
-        <button
-          onClick={onBack}
-          title="رجوع"
-          className="w-10 h-10 bg-transparent rounded-full flex items-center justify-center text-white drop-shadow-[0_2px_6px_rgba(0,0,0,0.85)] hover:text-[#FF1744] hover:scale-110 active:scale-95 transition-all duration-300 pointer-events-auto cursor-pointer"
-        >
-          <ChevronRight size={26} />
-        </button>
-        <button
-          onClick={() => {
-            if (onHome) onHome();
-            else if (onNavigate) onNavigate('home');
-            else onBack();
-          }}
-          title="الصفحة الرئيسية"
-          className="w-10 h-10 bg-transparent rounded-full flex items-center justify-center text-white drop-shadow-[0_2px_6px_rgba(0,0,0,0.85)] hover:text-[#FF1744] hover:scale-110 active:scale-95 transition-all duration-300 pointer-events-auto cursor-pointer"
-        >
-          <Home size={22} />
-        </button>
-        <div className="flex-1" />
-        <button
-          disabled={randomLoading || loading}
-          onClick={() => {
-            if (randomLoading || loading) return;
-            recordRandomAnimeSeen(anime?._id, anime?.malId);
-            if (onAnimeClick) onAnimeClick('random');
-          }}
-          title="أنمي عشوائي"
-          className="w-10 h-10 bg-transparent rounded-full flex items-center justify-center text-white drop-shadow-[0_2px_6px_rgba(0,0,0,0.85)] hover:text-purple-400 hover:scale-110 active:scale-95 disabled:opacity-50 transition-all duration-300 pointer-events-auto cursor-pointer"
-        >
-          {randomLoading ? (
-            <Loader2 size={20} className="animate-spin text-purple-400" />
-          ) : (
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 3h5v5"/><path d="M4 20L21 3"/><path d="M21 16v5h-5"/><path d="M15 15l6 6"/><path d="M4 4l5 5"/></svg>
-          )}
-        </button>
-        <button onClick={() => { 
-              if(!user) signIn(); 
-              else {
-                const newStatus = !userEntry?.isFavorite;
-                import('../services/listService').then(({ listService }) => {
-                  listService.saveAnimeEntry(user.id, anime._id, {
-                    title: anime.title,
-                    posterUrl: anime.posterUrl,
-                    releaseYear: anime.season || '',
-                    isFavorite: newStatus
-                  }).then(loadUserData);
-                });
-              }
-            }} 
-            title="المفضلة"
-            className="w-10 h-10 bg-transparent rounded-full flex items-center justify-center text-white drop-shadow-[0_2px_6px_rgba(0,0,0,0.85)] hover:text-[#FF1744] hover:scale-110 active:scale-95 transition-all duration-300 pointer-events-auto cursor-pointer">
-          <Heart size={22} fill={userEntry?.isFavorite ? "#FF1744" : "transparent"} className={userEntry?.isFavorite ? "text-[#FF1744]" : "text-white"} />
-        </button>
-      </div>
+      {/* Camera-Cutout Aware Floating Top Navbar */}
+      {(() => {
+        const barGeo = computeCutoutBarGeometry(display);
+        const isFlankCenter = !display.isWideOrUnfolded && barGeo.mode === 'flank-center';
+        return (
+          <div
+            dir="ltr"
+            style={{
+              paddingTop: `${barGeo.headerTopPx}px`,
+              paddingLeft: `${barGeo.paddingLeftPx}px`,
+              paddingRight: `${barGeo.paddingRightPx}px`,
+            }}
+            className={`theme-keep-dark fixed top-0 right-0 left-0 max-w-7xl mx-auto pb-2 flex items-center justify-between z-[60] top-bar pointer-events-none transition-all duration-300 ${
+              showDetailsNav ? 'translate-y-0 opacity-100' : '-translate-y-full opacity-0'
+            }`}
+          >
+            {/* Physical Left: Random + Favorite */}
+            <div
+              style={isFlankCenter ? { width: `${barGeo.leftZoneWidth}px` } : undefined}
+              className="flex items-center justify-start gap-1.5 min-w-0"
+            >
+              <button
+                onClick={() => {
+                  if (!user) signIn();
+                  else {
+                    const newStatus = !userEntry?.isFavorite;
+                    import('../services/listService').then(({ listService }) => {
+                      listService
+                        .saveAnimeEntry(user.id, anime._id, {
+                          title: anime.title,
+                          posterUrl: anime.posterUrl,
+                          releaseYear: anime.season || '',
+                          isFavorite: newStatus,
+                        })
+                        .then(loadUserData);
+                    });
+                  }
+                }}
+                title="المفضلة"
+                aria-label="المفضلة"
+                className="min-w-[44px] min-h-[44px] w-11 h-11 bg-black/35 backdrop-blur-md rounded-full flex items-center justify-center text-white drop-shadow-[0_2px_6px_rgba(0,0,0,0.85)] hover:text-[#FF1744] hover:scale-105 active:scale-95 transition-all duration-300 pointer-events-auto cursor-pointer shrink-0"
+              >
+                <Heart
+                  size={21}
+                  fill={userEntry?.isFavorite ? '#FF1744' : 'transparent'}
+                  className={userEntry?.isFavorite ? 'text-[#FF1744]' : 'text-white'}
+                />
+              </button>
+              <button
+                disabled={randomLoading || loading}
+                onClick={() => {
+                  if (randomLoading || loading) return;
+                  recordRandomAnimeSeen(anime?._id, anime?.malId);
+                  if (onAnimeClick) onAnimeClick('random');
+                }}
+                title="أنمي عشوائي"
+                aria-label="أنمي عشوائي"
+                className="min-w-[44px] min-h-[44px] w-11 h-11 bg-black/35 backdrop-blur-md rounded-full flex items-center justify-center text-white drop-shadow-[0_2px_6px_rgba(0,0,0,0.85)] hover:text-purple-400 hover:scale-105 active:scale-95 disabled:opacity-50 transition-all duration-300 pointer-events-auto cursor-pointer shrink-0"
+              >
+                {randomLoading ? (
+                  <Loader2 size={20} className="animate-spin text-purple-400" />
+                ) : (
+                  <svg
+                    width="20"
+                    height="20"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M16 3h5v5" />
+                    <path d="M4 20L21 3" />
+                    <path d="M21 16v5h-5" />
+                    <path d="M15 15l6 6" />
+                    <path d="M4 4l5 5" />
+                  </svg>
+                )}
+              </button>
+            </div>
+
+            {isFlankCenter && (
+              <div
+                aria-hidden="true"
+                className="shrink-0 pointer-events-none"
+                style={{ width: `${barGeo.cutoutSpacerWidth}px`, height: '1px' }}
+              />
+            )}
+
+            {/* Physical Right (RTL Start): Back + Home */}
+            <div
+              dir="rtl"
+              style={isFlankCenter ? { width: `${barGeo.rightZoneWidth}px` } : undefined}
+              className="flex items-center justify-start gap-1.5 min-w-0"
+            >
+              <button
+                onClick={onBack}
+                title="رجوع"
+                aria-label="رجوع"
+                className="min-w-[44px] min-h-[44px] w-11 h-11 bg-black/35 backdrop-blur-md rounded-full flex items-center justify-center text-white drop-shadow-[0_2px_6px_rgba(0,0,0,0.85)] hover:text-[#FF1744] hover:scale-105 active:scale-95 transition-all duration-300 pointer-events-auto cursor-pointer shrink-0"
+              >
+                <ChevronRight size={24} />
+              </button>
+              <button
+                onClick={() => {
+                  if (onHome) onHome();
+                  else if (onNavigate) onNavigate('home');
+                  else onBack();
+                }}
+                title="الصفحة الرئيسية"
+                aria-label="الصفحة الرئيسية"
+                className="min-w-[44px] min-h-[44px] w-11 h-11 bg-black/35 backdrop-blur-md rounded-full flex items-center justify-center text-white drop-shadow-[0_2px_6px_rgba(0,0,0,0.85)] hover:text-[#FF1744] hover:scale-105 active:scale-95 transition-all duration-300 pointer-events-auto cursor-pointer shrink-0"
+              >
+                <Home size={21} />
+              </button>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Header Image */}
       <div

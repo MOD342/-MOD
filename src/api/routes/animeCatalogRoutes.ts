@@ -37,7 +37,7 @@ router.post(
     try {
       const translated = await translateToArabic(text);
       if (animeId && translated && translated !== text) {
-        const cacheKey = `anime-details-v10-${animeId}`;
+        const cacheKey = `anime-details-v12-${animeId}`;
         const cached = await serverCache.get<any>(cacheKey);
         if (cached) {
           cached.description = translated;
@@ -81,6 +81,7 @@ router.get(
       }
 
       const isRandomRequest = id === "random";
+      const bypassCache = String(req.query.bypass || "") === "true";
       if (isRandomRequest) {
         const excludeRaw = String(req.query.exclude || "");
         const excludedIds = excludeRaw
@@ -92,8 +93,8 @@ router.get(
         // Harvest any numeric IDs already warmed in RAM cache so random pool grows organically
         const poolSet = new Set<string>(RANDOM_ANIME_POOL);
         for (const k of serverCache.getKeys()) {
-          if (k.startsWith("anime-details-v10-")) {
-            const candidate = k.replace("anime-details-v10-", "");
+          if (k.startsWith("anime-details-v12-")) {
+            const candidate = k.replace("anime-details-v12-", "");
             if (/^\d+$/.test(candidate)) poolSet.add(candidate);
           }
         }
@@ -110,8 +111,8 @@ router.get(
         const cachedCandidates: string[] = [];
         const availableSet = new Set(available);
         for (const k of serverCache.getKeys()) {
-          if (k.startsWith("anime-details-v10-")) {
-            const candidate = k.replace("anime-details-v10-", "");
+          if (k.startsWith("anime-details-v12-")) {
+            const candidate = k.replace("anime-details-v12-", "");
             if (availableSet.has(candidate)) {
               cachedCandidates.push(candidate);
             }
@@ -126,14 +127,22 @@ router.get(
         }
       }
 
-      // Now check cache AFTER resolving random ID!
-      const cached = await serverCache.get<any>(`anime-details-v10-${id}`);
+      // Now check cache AFTER resolving random ID (honor bypass=true and reject empty/gapped caches)
+      const cached = !bypassCache ? await serverCache.get<any>(`anime-details-v12-${id}`) : null;
+      const cachedMaxEp = Array.isArray(cached?.episodes)
+        ? cached.episodes.reduce((m: number, e: any) => Math.max(m, parseInt(e?.num, 10) || 0), 0)
+        : 0;
+      const isCachedIncomplete =
+        !cached ||
+        (cached.status !== "قادم" &&
+          (!Array.isArray(cached.episodes) ||
+            cached.episodes.length === 0 ||
+            cachedMaxEp > cached.episodes.length + 5));
       if (
         cached !== null &&
+        !isCachedIncomplete &&
         cached.description &&
-        cached.description !== "جاري تحديث قصة وتفاصيل هذا الأنمي قريباً." &&
-        Array.isArray(cached.episodes) &&
-        (cached.episodes.length > 0 || cached.status === "قادم")
+        cached.description !== "جاري تحديث قصة وتفاصيل هذا الأنمي قريباً."
       ) {
         cached.genres = translateGenresListToArabic(cached.genres || []);
         const hasEnglishDescription = needsArabicTranslation(cached.description);
@@ -146,7 +155,7 @@ router.get(
           const translated = await raceTimeout(translateToArabic(cleanedDesc), 2500, "");
           if (translated && /[\u0600-\u06FF]/.test(translated)) {
             cached.description = translated;
-            await serverCache.set(`anime-details-v10-${id}`, cached, 12 * 60 * 60 * 1000);
+            await serverCache.set(`anime-details-v12-${id}`, cached, 12 * 60 * 60 * 1000);
           }
         }
         return res.json({ success: true, resolvedId: cached._id || id, data: cached });
@@ -175,6 +184,19 @@ router.get(
 
       const scraperSearchTimeout = isRandomRequest ? 3500 : 6000;
       const scraperDetailsTimeout = isRandomRequest ? 4500 : 8000;
+
+      let matchedOkanimeSlug =
+        !isRandomRequest && !/^\d+$/.test(id) && !id.startsWith("search-") ? id : "";
+      const candidateTitles: string[] = [];
+      const pushCandidateTitle = (raw: unknown) => {
+        const cleanT = typeof raw === "string" ? raw.trim() : "";
+        if (!cleanT) return;
+        if (!candidateTitles.includes(cleanT)) candidateTitles.push(cleanT);
+        const parts = cleanT.split(/[:\-–]/).map((s) => s.trim()).filter((s) => s.length >= 3);
+        for (const part of parts) {
+          if (!candidateTitles.includes(part)) candidateTitles.push(part);
+        }
+      };
 
       if (/^\d+$/.test(id)) {
         // 1. Fetch rich metadata from AniList (fast ~250ms, no rate limit) with Jikan fallback
@@ -235,35 +257,48 @@ router.get(
         if (catalogData) {
           const enCandidate = catalogData.title_english || "";
           const romajiCandidate = catalogData.title || "";
+          const synonyms: string[] = Array.isArray(catalogData.title_synonyms) ? catalogData.title_synonyms : [];
           requestedSeasonNum =
             extractSeasonNumFromText(romajiCandidate) ||
             extractSeasonNumFromText(enCandidate);
 
-          const candidates = Array.from(new Set([enCandidate, romajiCandidate].filter(Boolean)));
-          if (candidates.length > 0) {
-            for (const cand of candidates) {
-              const matchedSlug = await raceTimeout(
-                scraper.searchAnime(cand).catch(() => null),
-                scraperSearchTimeout,
-                null
-              );
-              if (matchedSlug) {
-                animelekId = matchedSlug;
-                break;
+          // Romaji-first matching aligns much more accurately with Arabic scraping sites (Shingeki no Kyojin, Kimetsu no Yaiba, One Piece, Naruto)
+          pushCandidateTitle(romajiCandidate);
+          pushCandidateTitle(enCandidate);
+          for (const syn of synonyms.slice(0, 3)) pushCandidateTitle(syn);
+
+          const catalogIsMovie = String(catalogData.type || "").toUpperCase() === "MOVIE";
+          for (const cand of candidateTitles.slice(0, 4)) {
+            const matchedSlug = await raceTimeout(
+              scraper.searchAnime(cand).catch(() => null),
+              scraperSearchTimeout,
+              null
+            );
+            if (matchedSlug) {
+              const slugLooksLikeMovie = /(?:^|-)movie(?:$|-)|(?:^|-)film(?:$|-)/i.test(matchedSlug);
+              if (slugLooksLikeMovie && !catalogIsMovie) {
+                continue;
               }
+              animelekId = matchedSlug;
+              matchedOkanimeSlug = matchedSlug;
+              break;
             }
           }
         }
       } else if (id.startsWith("search-")) {
         const titleQuery = decodeURIComponent(id.replace("search-", ""));
         requestedSeasonNum = extractSeasonNumFromText(titleQuery);
+        pushCandidateTitle(titleQuery);
 
         const [searchedId, aniRes] = await Promise.all([
           raceTimeout(scraper.searchAnime(titleQuery).catch(() => null), scraperSearchTimeout, null),
           anilistService.getAnimeFullDetails(titleQuery).catch(() => null),
         ]);
 
-        if (searchedId) animelekId = searchedId;
+        if (searchedId) {
+          animelekId = searchedId;
+          matchedOkanimeSlug = searchedId;
+        }
         if (aniRes && aniRes.anime) {
           catalogData = aniRes.anime;
           characters = aniRes.characters || [];
@@ -273,18 +308,27 @@ router.get(
           if (aniRes.sourceManga) {
             catalogData.sourceManga = aniRes.sourceManga;
           }
-          if (!searchedId && (catalogData.title || catalogData.title_english)) {
-            const retrySlug = await raceTimeout(
-              scraper.searchAnime(catalogData.title || catalogData.title_english).catch(() => null),
-              scraperSearchTimeout,
-              null
-            );
-            if (retrySlug) animelekId = retrySlug;
+          pushCandidateTitle(catalogData.title);
+          pushCandidateTitle(catalogData.title_english);
+          if (!searchedId && candidateTitles.length > 0) {
+            for (const cand of candidateTitles.slice(0, 3)) {
+              const retrySlug = await raceTimeout(
+                scraper.searchAnime(cand).catch(() => null),
+                scraperSearchTimeout,
+                null
+              );
+              if (retrySlug) {
+                animelekId = retrySlug;
+                matchedOkanimeSlug = retrySlug;
+                break;
+              }
+            }
           }
         }
       } else {
         // Direct slug from OkAnime / AnimeDar or recent episodes
         requestedSeasonNum = extractSeasonNumFromText(decodeURIComponent(id));
+        pushCandidateTitle(decodeURIComponent(id).replace(/-/g, " "));
       }
 
       // 2. Scrape real Arabic series/episodes/seasons from OkAnime (#1) + AnimeDar (#2) with strict timeout & single-flight
@@ -305,6 +349,25 @@ router.get(
         }
       } catch (e) {
         console.log(`[getAnimeDetails] Scraper fallback for ${animelekId}`);
+      }
+
+      // If OkAnime/AnimeDar failed or returned 0 episodes, pull full episode list from Animerco
+      if ((!data || !Array.isArray(data.episodes) || data.episodes.length === 0) && candidateTitles.length > 0) {
+        const animercoData = await raceTimeout(
+          scraper.getAnimercoAnimeDetails(candidateTitles, requestedSeasonNum).catch(() => null),
+          5500,
+          null
+        );
+        if (animercoData && Array.isArray(animercoData.episodes) && animercoData.episodes.length > 0) {
+          if (data) {
+            data.episodes = animercoData.episodes;
+            if ((!data.seasonsList || data.seasonsList.length === 0) && animercoData.seasonsList?.length) {
+              data.seasonsList = animercoData.seasonsList;
+            }
+          } else {
+            data = animercoData;
+          }
+        }
       }
 
       // If we got scraped data but still didn't have catalogData (e.g. direct slug navigation), fetch catalogData from AniList by scraped title
@@ -412,8 +475,22 @@ router.get(
         if (catalogData.mal_id) {
           data.malId = catalogData.mal_id.toString();
         }
-        if (!data.title || data.title === "Anime") {
-          data.title = catalogData.title_english || catalogData.title || "Anime";
+        if (/^\d+$/.test(id)) {
+          data._id = String(catalogData.mal_id || id);
+        } else if (catalogData.mal_id) {
+          data._id = String(catalogData.mal_id);
+        }
+        const catalogIsMovie = String(catalogData.type || "").toUpperCase() === "MOVIE";
+        const resolvedOkSlug =
+          matchedOkanimeSlug ||
+          (!/^\d+$/.test(animelekId) && !animelekId.startsWith("search-") ? animelekId : undefined);
+        data.okanimeSlug =
+          resolvedOkSlug && !(!catalogIsMovie && /(?:^|-)movie(?:$|-)|(?:^|-)film(?:$|-)/i.test(resolvedOkSlug))
+            ? resolvedOkSlug
+            : undefined;
+        data.romajiTitle = catalogData.title || data.romajiTitle || undefined;
+        if (/^\d+$/.test(id) || !data.title || data.title === "Anime") {
+          data.title = catalogData.title_english || catalogData.title || data.title || "Anime";
         }
         data.englishTitle = catalogData.title_english || catalogData.title || data.title || "";
         data.posterUrl =
@@ -447,10 +524,13 @@ router.get(
         }
       } else if (data) {
         data.status = normalizeArabicStatus(data.status);
+        if (matchedOkanimeSlug && !data.okanimeSlug) {
+          data.okanimeSlug = matchedOkanimeSlug;
+        }
       }
 
-      // 4. Populate and complete episodes so long-running anime (e.g. One Piece) have all aired episodes without truncation
-      // IMPORTANT: Never fabricate episodes for upcoming ("قادم") anime from the future!
+      // 4. Populate and complete episodes so long-running anime (e.g. One Piece 1..1180) have all aired episodes without gaps
+      // IMPORTANT: Never use planned total (12/24/25) to fabricate un-aired future episodes for ongoing anime!
       if (data) {
         if (!Array.isArray(data.episodes)) data.episodes = [];
         const isUpcoming =
@@ -462,30 +542,33 @@ router.get(
           data.episodesCount = parseInt(catalogData?.episodes) || 0;
         } else {
           const numericId = catalogData?.mal_id?.toString() || (/^\d+$/.test(id) ? id : String(data._id || "21"));
+          const epSlugPrefix = data.okanimeSlug || numericId;
           const isOngoing =
             data.status === "مستمر" ||
             Boolean(catalogData?.airing) ||
             /currently airing|releasing|مستمر/i.test(String(catalogData?.status || ""));
 
-          // For ongoing (مستمر) anime, NEVER use total planned episodes (e.g. 12 or 24) to generate un-aired future episodes!
-          // If we have real scraped episodes from OkAnime/AnimeDar, trust ONLY those real scraped episodes.
-          const hasRealScrapedEps = data.episodes.length > 0;
+          const maxRealEpNum = data.episodes.reduce(
+            (m: number, ep: any) => Math.max(m, parseInt(ep?.num, 10) || 0),
+            0,
+          );
+          const hasRealScrapedEps = data.episodes.length > 0 && maxRealEpNum > 0;
           const airedCatalogCount = isOngoing
             ? hasRealScrapedEps
-              ? data.episodes.length
+              ? Math.max(maxRealEpNum, parseInt(catalogData?.latestEpisode) || 0)
               : parseInt(catalogData?.latestEpisode) || 1
             : Math.max(
                 parseInt(catalogData?.latestEpisode) || 0,
-                parseInt(catalogData?.episodes) || 0
+                parseInt(catalogData?.episodes) || 0,
               );
 
           const targetCount = Math.min(
             isOngoing
               ? hasRealScrapedEps
-                ? data.episodes.length
+                ? Math.max(maxRealEpNum, airedCatalogCount, data.episodes.length, 1)
                 : Math.max(airedCatalogCount, 1)
-              : Math.max(airedCatalogCount, data.episodes.length, parseInt(data.episodesCount) || 0, 1),
-            1200
+              : Math.max(maxRealEpNum, airedCatalogCount, data.episodes.length, parseInt(data.episodesCount) || 0, 1),
+            1500,
           );
 
           // If ongoing anime had extra placeholder episodes beyond what actually aired, trim them
@@ -495,7 +578,7 @@ router.get(
             );
           }
 
-          if (data.episodes.length < targetCount) {
+          if (data.episodes.length < targetCount || maxRealEpNum > data.episodes.length) {
             const existingByNum = new Map<number, any>();
             data.episodes.forEach((ep: any) => {
               const n = parseInt(ep.num, 10);
@@ -508,10 +591,12 @@ router.get(
                 completeEps.push(existingByNum.get(i));
               } else {
                 completeEps.push({
-                  id: `${numericId}-episode-${i}`,
+                  id: data.okanimeSlug ? `${epSlugPrefix}__ep__${i}` : `${numericId}-episode-${i}`,
                   num: i.toString(),
                   title: `الحلقة ${i}`,
-                  link: `/anime/${numericId}/episode/${i}`,
+                  link: data.okanimeSlug
+                    ? `https://ww3.okanime.xyz/episode/${epSlugPrefix}-episode-${i}`
+                    : `/anime/${numericId}/episode/${i}`,
                   seasonNumber: requestedSeasonNum || 1,
                 });
               }
@@ -544,7 +629,7 @@ router.get(
       data.characters = characters;
       data.related = related.sort((a, b) => (a.mal_id || 0) - (b.mal_id || 0));
       data.relatedGraphVersion = 2;
-      data.catalogSchemaVersion = 3;
+      data.catalogSchemaVersion = 4;
       data.jikanRecommendations = jikanRecommendations;
       if (aniPictures.length > 0) {
         data.pictures = aniPictures;
@@ -590,7 +675,7 @@ router.get(
         const resolvedKeyId = data._id && data._id !== "random" ? String(data._id) : id;
         if (resolvedKeyId && resolvedKeyId !== "random") {
           await serverCache.set(
-            `anime-details-v10-${resolvedKeyId}`,
+            `anime-details-v12-${resolvedKeyId}`,
             data,
             12 * 60 * 60 * 1000,
           );
@@ -598,14 +683,14 @@ router.get(
         const requestParamId = req.params.id;
         if (requestParamId && requestParamId !== "random" && requestParamId !== resolvedKeyId) {
           await serverCache.set(
-            `anime-details-v10-${requestParamId}`,
+            `anime-details-v12-${requestParamId}`,
             data,
             12 * 60 * 60 * 1000,
           );
         }
         if (data.malId && String(data.malId) !== resolvedKeyId) {
           await serverCache.set(
-            `anime-details-v10-${data.malId}`,
+            `anime-details-v12-${data.malId}`,
             data,
             12 * 60 * 60 * 1000,
           );
