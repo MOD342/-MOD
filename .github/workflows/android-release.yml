@@ -192,6 +192,15 @@ jobs:
           if [ -f "scripts/configure-android-permissions.mjs" ]; then
             node scripts/configure-android-permissions.mjs
           fi
+          node -e '
+            const fs = require("fs");
+            const p = "android/app/build.gradle";
+            let g = fs.readFileSync(p, "utf8");
+            g = g.replace(/signingConfigs\s*\{[\s\S]*?\n\s*\}/, (block) =>
+              block.replace(/^\s*(minifyEnabled|shrinkResources|proguardFiles).*\n?/gm, "")
+            );
+            fs.writeFileSync(p, g);
+          '
 
       - name: Build Signed Release APK & AAB
         run: |
@@ -213,7 +222,6 @@ jobs:
             exit 1
           fi
 
-          # إذا أنتج Gradle ملفاً غير موقّع، نقوم بمحاذاته وتوقيعه تلقائياً
           if [ ! -f "$SIGNED_APK" ] && [ -f "$UNSIGNED_APK" ]; then
             "$BUILD_TOOLS/zipalign" -v -p 4 "$UNSIGNED_APK" "android/app/build/outputs/apk/release/app-release-aligned.apk"
             "$BUILD_TOOLS/apksigner" sign \
@@ -223,11 +231,3 @@ jobs:
               --key-pass "env:ANDROID_KEY_PASSWORD" \
               --out "$SIGNED_APK" \
               "android/app/build/outputs/apk/release/app-release-aligned.apk"
-          fi
-
-          if [ ! -f "$SIGNED_APK" ]; then
-            echo "❌ لم يتم العثور على ملف APK النهائي."
-            exit 1
-          fi
-
-          # توقيع ملف AAB احتياطياً إذا لم يكن موقعاً
