@@ -87,7 +87,7 @@ jobs:
           SECRET_FB_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
           SECRET_FB_DB_ID: ${{ secrets.VITE_FIREBASE_DATABASE_ID }}
         run: |
-          PKG_VERSION=$(node -p "require('./package.json').version || '1.0.0'")
+          PKG_VERSION=$(node -e "try { console.log(JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version || '1.0.0'); } catch { console.log('1.0.0'); }")
           TAG_VERSION=""
           if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
             TAG_VERSION="${GITHUB_REF_NAME#v}"
@@ -227,6 +227,3 @@ jobs:
           Key Alias    : ${{ steps.signing.outputs.key_alias }}
 
           SHA-1 Fingerprint   : ${{ steps.signing.outputs.sha1 }}
-          SHA-256 Fingerprint : ${{ steps.signing.outputs.sha256 }}
-
-          Firebase Console Setup (Google Sign-In on Android):
